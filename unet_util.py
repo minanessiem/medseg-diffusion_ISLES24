@@ -130,30 +130,6 @@ class ResnetBlock(Module):
         h = self.block2(h)
         return h + self.res_conv(x)
 
-class Upsample(nn.Module):
-    def __init__(self, dim, dim_out=None):
-        super(Upsample, self).__init__()
-        dim_out = dim_out if dim_out is not None else dim
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.conv = nn.Conv2d(dim, dim_out, 3, padding=1)
-
-    def forward(self, x):
-        x = self.upsample(x)
-        x = self.conv(x)
-        return x
-
-class Downsample(nn.Module):
-    def __init__(self, dim, dim_out=None):
-        super(Downsample, self).__init__()
-        dim_out = dim_out if dim_out is not None else dim
-        self.rearrange = Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1=2, p2=2)
-        self.conv = nn.Conv2d(dim * 4, dim_out, 1)
-
-    def forward(self, x):
-        x = self.rearrange(x)
-        x = self.conv(x)
-        return x
-
 class FeedForward(nn.Module):
     def __init__(self, dim, mult=4):
         super(FeedForward, self).__init__()

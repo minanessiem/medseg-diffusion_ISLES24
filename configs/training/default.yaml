@@ -1,0 +1,10 @@
+num_epochs: 50
+learning_rate: 0.0002
+timesteps: 100
+noise_schedule: cosine
+reduce_lr_factor: 0.5
+reduce_lr_patience: 3
+visualization_sample_interval: 5
+visualization_num_samples: 3
+model_save_dir: "outputs/models/"
+model_save_path_template: '${training.model_save_dir}best_diffusion_model_epoch_{}.pth'

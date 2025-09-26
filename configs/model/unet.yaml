@@ -1,0 +1,13 @@
+image_size: 32
+num_layers: 2
+weight_initializer: InitWeights_He  # From unet_util
+linear_attn_layers: null  # Or list like [true, true, true, false]
+skip_connect_image_feature_maps: false
+first_conv_channels: 16
+time_embedding_dim: 128
+mask_channels: 1
+output_channels: 1
+image_channels: 3
+att_heads: 4
+att_head_dim: 32
+bottleneck_transformer_layers: 1

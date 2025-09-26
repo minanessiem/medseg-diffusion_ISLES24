@@ -1,0 +1,8 @@
+defaults:
+  - model: unet
+  - dataset: lgg
+  - training: default
+
+random_seed: 42
+device: cuda  # Or cpu; auto-detect in main.py if possible
+mode: train  # Or evaluate
