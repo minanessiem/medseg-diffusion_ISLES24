@@ -98,7 +98,7 @@ def test_one_epoch(diffusion, test_dataloader, cfg):
 
     return test_mean_loss
 
-def save_model(diffusion, old_best_epoch, new_best_epoch, cfg):
+def save_model(diffusion, old_best_epoch, new_best_epoch, model_save_path_template):
     """
     Save the current best model, removing the previous best model file.
 
@@ -106,16 +106,15 @@ def save_model(diffusion, old_best_epoch, new_best_epoch, cfg):
         diffusion: The diffusion model.
         old_best_epoch: The epoch number of the previous best model.
         new_best_epoch: The epoch number of the current best model.
-        cfg (DictConfig): Hydra configuration object with path template.
+        model_save_path_template: String template for model save paths.
     """
-    path_template = cfg.training.model_save_path_template
     # Remove old best model if it exists
-    old_model_path = path_template.format(old_best_epoch)
+    old_model_path = model_save_path_template.format(old_best_epoch)
     if os.path.exists(old_model_path):
         os.remove(old_model_path)
 
     # Save the new best model
-    new_model_path = path_template.format(new_best_epoch)
+    new_model_path = model_save_path_template.format(new_best_epoch)
     torch.save(diffusion.state_dict(), new_model_path)
 
 def train_and_evaluate(
@@ -125,6 +124,8 @@ def train_and_evaluate(
     test_dataloader,
     optimizer,
     scheduler,
+    writer=None,  # New optional param for TensorBoard writer
+    model_save_path_template=None,  # New param for full save path template
 ):
     """
     Train and evaluate the diffusion model.
@@ -136,6 +137,8 @@ def train_and_evaluate(
         test_dataloader: DataLoader for the test dataset.
         optimizer: Optimizer for training.
         scheduler: Learning rate scheduler.
+        writer: TensorBoard SummaryWriter (optional).
+        model_save_path_template: String template for model save paths.
 
     Returns:
         train_losses: List of average training losses for each epoch.
@@ -159,9 +162,14 @@ def train_and_evaluate(
         test_loss = test_one_epoch(diffusion, test_dataloader, cfg)
         test_losses.append(test_loss)
 
+        if writer is not None:
+            writer.add_scalar('Loss/train', train_loss, epoch)
+            writer.add_scalar('Loss/test', test_loss, epoch)
+            writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch)
+
         # Save model if it's the best test loss
         if test_loss < best_test_loss:
-            save_model(diffusion, best_test_loss_epoch, epoch, cfg)
+            save_model(diffusion, best_test_loss_epoch, epoch, model_save_path_template)
             best_test_loss = test_loss
             best_test_loss_epoch = epoch
 
@@ -179,4 +187,6 @@ def train_and_evaluate(
             )
 
     print(f"\nTraining complete. Best Test Loss: {best_test_loss:.4f} at Epoch {best_test_loss_epoch}.")
+    if writer is not None:
+        writer.close()
     return train_losses, test_losses, best_test_loss_epoch

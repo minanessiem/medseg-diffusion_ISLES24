@@ -9,6 +9,9 @@ from src.models.components.diffusion import Diffusion
 from src.data.loaders import BrainMRIDataset, get_dataloaders  # Assuming get_dataloaders is implemented
 from src.training.trainer import get_optimizer_and_scheduler, train_and_evaluate
 from src.evaluation.evaluator import plot_losses, load_best_model, visualize_best_model_predictions, visualize_noise_schedulers  # Optional
+from torch.utils.tensorboard import SummaryWriter
+import os
+from datetime import datetime
 
 @hydra.main(config_path="configs", config_name="default")
 def main(cfg: DictConfig):
@@ -23,6 +26,17 @@ def main(cfg: DictConfig):
 
     # Optional: Visualize noise schedulers
     # visualize_noise_schedulers(cfg)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f"unet_img{cfg.model.image_size}_lr{cfg.training.learning_rate}_epochs{cfg.training.num_epochs}_steps{cfg.training.timesteps}_{timestamp}"
+    writer = None
+    model_save_path_template = cfg.training.model_save_path_template  # Default from config
+    if cfg.mode == "train":
+        run_output_dir = f"{cfg.training.output_root}{run_name}/"
+        os.makedirs(f"{run_output_dir}tensorboard/", exist_ok=True)
+        os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)  # Use config's relative model_save_dir
+        writer = SummaryWriter(log_dir=f"{run_output_dir}tensorboard/")
+        model_save_path_template = f"{run_output_dir}{cfg.training.model_save_path_template}"  # Prepend run dir to template
 
     # Build model
     unet = Unet(cfg).to(device)
@@ -40,6 +54,8 @@ def main(cfg: DictConfig):
             test_dl,
             optimizer,
             scheduler,
+            writer=writer,
+            model_save_path_template=model_save_path_template,  # New param for dynamic path
         )
         plot_losses(train_losses, test_losses)
     elif cfg.mode == "evaluate":
