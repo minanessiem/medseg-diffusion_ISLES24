@@ -13,6 +13,16 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 from datetime import datetime
 
+# Utility to parse multi_gpu flag
+
+def _parse_multi_gpu_flag(flag):
+    """Return list of GPU ids or None."""
+    if not flag or str(flag).lower() in {"false", "none", ""}:
+        return None
+    if isinstance(flag, (list, tuple)):
+        return [int(x) for x in flag]
+    return [int(x.strip()) for x in str(flag).split(',') if x.strip()]
+
 @hydra.main(config_path="configs", config_name="default")
 def main(cfg: DictConfig):
     # Set seeds for reproducibility (from notebook Cell 4)
@@ -40,7 +50,18 @@ def main(cfg: DictConfig):
 
     # Build model
     unet = Unet(cfg).to(device)
-    diffusion = Diffusion(model=unet, cfg=cfg, device=device).to(device)
+    diffusion = Diffusion(model=unet, cfg=cfg, device=device)
+
+    # Multi-GPU handling via DataParallel
+    gpu_ids = _parse_multi_gpu_flag(cfg.training.multi_gpu)
+    if gpu_ids:
+        visible = torch.cuda.device_count()
+        if max(gpu_ids) >= visible:
+            raise ValueError(f"Requested GPU id {max(gpu_ids)} but only {visible} GPUs visible.")
+        print(f"Using GPUs {gpu_ids} with torch.nn.DataParallel")
+        diffusion = torch.nn.DataParallel(diffusion, device_ids=gpu_ids).cuda(gpu_ids[0])
+    else:
+        diffusion = diffusion.to(device)
 
     # Get dataloaders
     train_dl, test_dl = get_dataloaders(cfg)
