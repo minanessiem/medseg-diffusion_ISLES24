@@ -22,3 +22,6 @@ env/
 # Other common caches
 .cache/
 *.egg-info/
+
+
+outputs/

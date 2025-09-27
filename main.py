@@ -45,6 +45,9 @@ def main(cfg: DictConfig):
     # Get dataloaders
     train_dl, test_dl = get_dataloaders(cfg)
 
+    if cfg.dataset.name == 'isles24':
+        assert cfg.model.image_channels == len(cfg.dataset.modalities), "Model image_channels must match number of modalities"
+
     if cfg.mode == "train":
         optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
         train_losses, test_losses, best_epoch = train_and_evaluate(
