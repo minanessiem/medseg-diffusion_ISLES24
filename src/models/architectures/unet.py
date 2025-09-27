@@ -1,8 +1,7 @@
 import copy
 import torch
 import torch.nn as nn
-
-from unet_util import Attention, LinearAttention, Downsample, Upsample, Residual, ResnetBlock, InitWeights_He
+from .unet_util import Attention, LinearAttention, Downsample, Upsample, Residual, ResnetBlock, InitWeights_He
 from src.models.components.dynamic_encoding import DynamicFusionLayer
 from src.models.components.time_encoding import TimeSinusoidalPE
 from src.models.components.bottleneck import BottleNeck

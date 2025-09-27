@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from unet_util import LayerNorm, ResnetBlock
+from src.models.architectures.unet_util import LayerNorm, ResnetBlock
 
 class AttentionLikeMechanism(nn.Module):
     def __init__(self, dim):

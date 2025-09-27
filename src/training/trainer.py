@@ -24,8 +24,7 @@ def get_optimizer_and_scheduler(cfg, model):
         optimizer,
         mode='min',
         factor=cfg.training.reduce_lr_factor,
-        patience=cfg.training.reduce_lr_patience,
-        verbose=True
+        patience=cfg.training.reduce_lr_patience
     )
     return optimizer, scheduler
 
@@ -61,6 +60,26 @@ def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg):
 
         # Accumulate loss
         total_loss += loss.item()
+=======
+    with tqdm(train_dataloader, desc="Training", leave=False) as pbar:
+        for img, mask, *_ in pbar:
+            # Move data to the appropriate device
+            img, mask = img.to(cfg.device), mask.to(cfg.device)
+
+            # Forward pass and compute loss
+            optimizer.zero_grad()
+            loss = diffusion(mask, img)
+
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
+
+            # Accumulate loss
+            total_loss += loss.item()
+
+            # Update tqdm postfix with current loss
+            pbar.set_postfix(loss=loss.item())
+>>>>>>> Stashed changes
 
     # Compute average loss and update scheduler
     train_mean_loss = total_loss / len(train_dataloader)
@@ -75,15 +94,24 @@ def test_one_epoch(diffusion, test_dataloader, cfg):
 
     Args:
         diffusion: The diffusion model.
+<<<<<<< Updated upstream
         test_dataloader: DataLoader for the test dataset.
         cfg (DictConfig): Hydra configuration object.
 
     Returns:
         test_mean_loss: Average test loss for the epoch.
+=======
+        test_dataloader: DataLoader for the testing dataset.
+        cfg (DictConfig): Hydra configuration object.
+
+    Returns:
+        test_mean_loss: Average testing loss for the epoch.
+>>>>>>> Stashed changes
     """
     diffusion.eval()
     total_loss = 0.0
 
+<<<<<<< Updated upstream
     for img, mask, label in tqdm(test_dataloader, desc="Testing", leave=False):
         # Move data to the appropriate device
         img, mask = img.to(cfg.device), mask.to(cfg.device)
@@ -97,6 +125,24 @@ def test_one_epoch(diffusion, test_dataloader, cfg):
     # Compute average loss
     test_mean_loss = total_loss / len(test_dataloader)
 
+=======
+    with tqdm(test_dataloader, desc="Testing", leave=False) as pbar:
+        for img, mask, *_ in pbar:
+            # Move data to the appropriate device
+            img, mask = img.to(cfg.device), mask.to(cfg.device)
+
+            # Forward pass and compute loss
+            loss = diffusion(mask, img)
+
+            # Accumulate loss
+            total_loss += loss.item()
+
+            # Update tqdm postfix with current loss
+            pbar.set_postfix(loss=loss.item())
+
+    # Compute average loss
+    test_mean_loss = total_loss / len(test_dataloader)
+>>>>>>> Stashed changes
     return test_mean_loss
 
 def save_model(diffusion, old_best_epoch, new_best_epoch, model_save_path_template):

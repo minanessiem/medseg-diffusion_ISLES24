@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
-import seaborn as sns
+# import seaborn as sns
 from matplotlib import pyplot as plt
-import albumentations as A
+# import albumentations as A
 from torchvision import transforms
 
 def process_and_visualize_cases(mri_df, max_rows, axs):

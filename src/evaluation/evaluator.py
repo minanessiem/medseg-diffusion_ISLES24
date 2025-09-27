@@ -7,6 +7,7 @@ from src.utils.general import device_grad_decorator, visualize_img
 from src.models.components.diffusion import unnormalize_to_zero_to_one  # Assuming it's moved or imported here; adjust if in unet_util
 from src.models.components.diffusion import NoiseScheduler  # For visualize_noise_schedulers
 import pandas as pd  # For dataframe in noise scheduler vis
+from src.models.architectures.unet_util import unnormalize_to_zero_to_one
 
 def plot_prediction(axs, index, dataset, prediction):
     """
