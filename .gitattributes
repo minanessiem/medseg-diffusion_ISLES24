@@ -1,0 +1,9 @@
+# Text files -- store LF, check out LF
+*          text eol=lf
+
+# Binary files -- keep as-is
+*.png      -text
+*.jpg      -text
+*.jpeg     -text
+*.gif      -text
+*.bin      -text
