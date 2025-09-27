@@ -1,8 +1,11 @@
 defaults:
   - model: unet
-  - dataset: lgg
+  - dataset: isles24
   - training: default
 
 random_seed: 42
 device: cuda  # Or cpu; auto-detect in main.py if possible
 mode: train  # Or evaluate
+
+dataset:
+  num_workers: 0  # Number of subprocesses for data loading (0 = single-process; set to 4-8 for multi-core speedup)

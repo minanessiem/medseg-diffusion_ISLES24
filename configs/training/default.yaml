@@ -1,5 +1,5 @@
 num_epochs: 50
-learning_rate: 0.0002
+learning_rate: 2e-4
 timesteps: 100
 noise_schedule: cosine
 output_root: "outputs/"
