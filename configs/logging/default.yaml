@@ -1,0 +1,3 @@
+interval: 100
+outputs: [console, tensorboard]
+table_format: simple

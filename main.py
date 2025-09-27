@@ -10,6 +10,7 @@ from src.data.loaders import BrainMRIDataset, get_dataloaders  # Assuming get_da
 from src.training.trainer import get_optimizer_and_scheduler, train_and_evaluate
 from src.evaluation.evaluator import plot_losses, load_best_model, visualize_best_model_predictions, visualize_noise_schedulers  # Optional
 from torch.utils.tensorboard import SummaryWriter
+from src.utils.logger import Logger
 import os
 from datetime import datetime
 
@@ -41,12 +42,27 @@ def main(cfg: DictConfig):
     run_name = f"unet_img{cfg.model.image_size}_lr{cfg.training.learning_rate}_epochs{cfg.training.num_epochs}_steps{cfg.training.timesteps}_{timestamp}"
     writer = None
     model_save_path_template = cfg.training.model_save_path_template  # Default from config
+    log_dir = "runs/"  # default
     if cfg.mode == "train":
         run_output_dir = f"{cfg.training.output_root}{run_name}/"
         os.makedirs(f"{run_output_dir}tensorboard/", exist_ok=True)
-        os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)  # Use config's relative model_save_dir
+        os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)
         writer = SummaryWriter(log_dir=f"{run_output_dir}tensorboard/")
-        model_save_path_template = f"{run_output_dir}{cfg.training.model_save_path_template}"  # Prepend run dir to template
+        log_dir = f"{run_output_dir}tensorboard/"
+        model_save_path_template = f"{run_output_dir}{cfg.training.model_save_path_template}"
+    else:
+        # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
+        log_dir = f"runs/eval_{timestamp}/"
+        writer = SummaryWriter(log_dir=log_dir)
+
+    # Initialize Logger with hydra config
+    logger = Logger(
+        log_dir=log_dir,
+        enabled_outputs=list(cfg.logging.outputs),
+        log_interval=int(cfg.logging.interval),
+        table_format=cfg.logging.table_format,
+        writer=writer,
+    )
 
     # Build model
     unet = Unet(cfg).to(device)
@@ -78,8 +94,8 @@ def main(cfg: DictConfig):
             test_dl,
             optimizer,
             scheduler,
-            writer=writer,
-            model_save_path_template=model_save_path_template,  # New param for dynamic path
+            logger=logger,
+            model_save_path_template=model_save_path_template,
         )
         plot_losses(train_losses, test_losses)
     elif cfg.mode == "evaluate":
@@ -87,6 +103,7 @@ def main(cfg: DictConfig):
         best_epoch = cfg.get('best_epoch', 50)  # Placeholder; in practice, track this
         diffusion = load_best_model(diffusion, cfg, best_epoch)
         visualize_best_model_predictions(diffusion, test_dl.dataset, cfg)
+    logger.close()
 
 if __name__ == '__main__':
     main()

@@ -2,6 +2,7 @@ defaults:
   - model: unet
   - dataset: isles24
   - training: default
+  - logging: default
 
 random_seed: 42
 device: cuda  # Or cpu; auto-detect in main.py if possible

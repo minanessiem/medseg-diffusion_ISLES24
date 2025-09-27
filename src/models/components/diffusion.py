@@ -249,7 +249,7 @@ class Diffusion(nn.Module):
             kwargs: Keyword arguments.
 
         Returns:
-            The loss for the model.
+            The average loss, per_sample_mses, t
         """
         mask, conditioned_image = mask.to(self.device), conditioned_image.to(self.device)
         t = torch.randint(0, self.num_timesteps, [mask.shape[0]], device=self.device).long()
@@ -260,5 +260,7 @@ class Diffusion(nn.Module):
         x_t = self.calculate_xt_from_x0(mask, t, noise)
         noise_hat = self.model(x_t, t, conditioned_image)
 
-        loss = F.mse_loss(noise_hat.reshape(mask.shape[0], -1), noise.reshape(mask.shape[0], -1))
-        return loss
+        # Compute per-sample MSE
+        sample_mses = torch.mean((noise_hat - noise) ** 2, dim=[1,2,3])
+        loss = torch.mean(sample_mses)
+        return loss, sample_mses, t

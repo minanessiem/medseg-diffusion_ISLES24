@@ -7,6 +7,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from src.utils.general import device_grad_decorator
 from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
+from src.utils.logger import Logger
+from src.utils.train_utils import calc_grad_norm, calc_param_norm
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -28,7 +30,7 @@ def get_optimizer_and_scheduler(cfg, model):
     )
     return optimizer, scheduler
 
-def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg):
+def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logger, global_step):
     """
     Train the diffusion model for one epoch.
 
@@ -45,105 +47,85 @@ def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg):
     diffusion.train()
     total_loss = 0.0
 
-<<<<<<< Updated upstream
-    for img, mask, label in tqdm(train_dataloader, desc="Training", leave=False):
-        # Move data to the appropriate device
-        img, mask = img.to(cfg.device), mask.to(cfg.device)
-
-        # Forward pass and compute loss
-        optimizer.zero_grad()
-        loss = diffusion(mask, img)
-
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-
-        # Accumulate loss
-        total_loss += loss.item()
-=======
     with tqdm(train_dataloader, desc="Training", leave=False) as pbar:
         for img, mask, *_ in pbar:
             # Move data to the appropriate device
             img, mask = img.to(cfg.device), mask.to(cfg.device)
 
-            # Forward pass and compute loss
             optimizer.zero_grad()
-            loss = diffusion(mask, img)
+            loss, sample_mses, ts = diffusion(mask, img)
 
-            # Backward pass and optimization
             loss.backward()
+            grad_norm = calc_grad_norm(diffusion.parameters())
             optimizer.step()
+            param_norm = calc_param_norm(diffusion.parameters())
 
-            # Accumulate loss
+            # logging
+            batch_size = mask.shape[0]
+            global_step += 1
+            samples = global_step * batch_size
+
+            logger.logkv_mean('loss', loss.item())
+            logger.logkv_mean('grad_norm', grad_norm)
+            logger.logkv_mean('param_norm', param_norm)
+            logger.logkv('step', global_step)
+            logger.logkv('samples', samples)
+            logger.logkv('lr', optimizer.param_groups[0]['lr'])
+            logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses})
+
+            if global_step % logger.log_interval == 0:
+                logger.dumpkvs(global_step)
+
             total_loss += loss.item()
 
-            # Update tqdm postfix with current loss
             pbar.set_postfix(loss=loss.item())
->>>>>>> Stashed changes
 
     # Compute average loss and update scheduler
     train_mean_loss = total_loss / len(train_dataloader)
     scheduler.step(train_mean_loss)
 
-    return train_mean_loss
+    return train_mean_loss, global_step
 
 @device_grad_decorator(no_grad=True)
-def test_one_epoch(diffusion, test_dataloader, cfg):
+def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
     """
     Evaluate the diffusion model for one epoch.
 
     Args:
         diffusion: The diffusion model.
-<<<<<<< Updated upstream
-        test_dataloader: DataLoader for the test dataset.
-        cfg (DictConfig): Hydra configuration object.
-
-    Returns:
-        test_mean_loss: Average test loss for the epoch.
-=======
         test_dataloader: DataLoader for the testing dataset.
         cfg (DictConfig): Hydra configuration object.
 
     Returns:
         test_mean_loss: Average testing loss for the epoch.
->>>>>>> Stashed changes
     """
     diffusion.eval()
     total_loss = 0.0
 
-<<<<<<< Updated upstream
-    for img, mask, label in tqdm(test_dataloader, desc="Testing", leave=False):
-        # Move data to the appropriate device
-        img, mask = img.to(cfg.device), mask.to(cfg.device)
-
-        # Forward pass and compute loss
-        loss = diffusion(mask, img)
-
-        # Accumulate loss
-        total_loss += loss.item()
-
-    # Compute average loss
-    test_mean_loss = total_loss / len(test_dataloader)
-
-=======
     with tqdm(test_dataloader, desc="Testing", leave=False) as pbar:
         for img, mask, *_ in pbar:
             # Move data to the appropriate device
             img, mask = img.to(cfg.device), mask.to(cfg.device)
 
-            # Forward pass and compute loss
-            loss = diffusion(mask, img)
+            loss, sample_mses, ts = diffusion(mask, img)
+            batch_size = mask.shape[0]
+            global_step += 1
+            samples = global_step * batch_size
 
-            # Accumulate loss
+            logger.logkv_mean('test_loss', loss.item())
+            logger.logkv('test_step', global_step)
+            logger.logkv('test_samples', samples)
+            logger.logkv_loss_quartiles(diffusion, ts, {'test_loss': sample_mses})
+
+            if global_step % logger.log_interval == 0:
+                logger.dumpkvs(global_step)
+
             total_loss += loss.item()
 
-            # Update tqdm postfix with current loss
             pbar.set_postfix(loss=loss.item())
 
-    # Compute average loss
     test_mean_loss = total_loss / len(test_dataloader)
->>>>>>> Stashed changes
-    return test_mean_loss
+    return test_mean_loss, global_step
 
 def save_model(diffusion, old_best_epoch, new_best_epoch, model_save_path_template):
     """
@@ -171,8 +153,8 @@ def train_and_evaluate(
     test_dataloader,
     optimizer,
     scheduler,
-    writer=None,  # New optional param for TensorBoard writer
-    model_save_path_template=None,  # New param for full save path template
+    logger,
+    model_save_path_template=None,
 ):
     """
     Train and evaluate the diffusion model.
@@ -197,22 +179,24 @@ def train_and_evaluate(
     train_losses = []
     test_losses = []
 
+    global_step = 0
+
     for epoch in range(1, cfg.training.num_epochs + 1):
         print(f"\nEpoch {epoch}/{cfg.training.num_epochs}")
         print("-" * 30)
 
         # Train for one epoch
-        train_loss = train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg)
+        train_loss, global_step = train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logger, global_step)
         train_losses.append(train_loss)
 
         # Evaluate for one epoch
-        test_loss = test_one_epoch(diffusion, test_dataloader, cfg)
+        test_loss, global_step = test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step)
         test_losses.append(test_loss)
 
-        if writer is not None:
-            writer.add_scalar('Loss/train', train_loss, epoch)
-            writer.add_scalar('Loss/test', test_loss, epoch)
-            writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch)
+        if logger.writer is not None:
+            logger.writer.add_scalar('Loss/train', train_loss, epoch)
+            logger.writer.add_scalar('Loss/test', test_loss, epoch)
+            logger.writer.add_scalar('LearningRate', optimizer.param_groups[0]['lr'], epoch)
 
         # Save model if it's the best test loss
         if test_loss < best_test_loss:
@@ -234,6 +218,6 @@ def train_and_evaluate(
             )
 
     print(f"\nTraining complete. Best Test Loss: {best_test_loss:.4f} at Epoch {best_test_loss_epoch}.")
-    if writer is not None:
-        writer.close()
+    if logger.writer is not None:
+        logger.writer.close()
     return train_losses, test_losses, best_test_loss_epoch
