@@ -46,6 +46,7 @@ def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg):
     diffusion.train()
     total_loss = 0.0
 
+<<<<<<< Updated upstream
     for img, mask, label in tqdm(train_dataloader, desc="Training", leave=False):
         # Move data to the appropriate device
         img, mask = img.to(cfg.device), mask.to(cfg.device)
