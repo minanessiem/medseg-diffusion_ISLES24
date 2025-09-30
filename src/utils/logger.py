@@ -125,6 +125,11 @@ class Logger:
         self.name2val.clear()
         self.name2cnt.clear()
 
+    def clear_accumulators(self) -> None:
+        """Explicitly clear the accumulation buffers for manual resets."""
+        self.name2val.clear()
+        self.name2cnt.clear()
+
     def close(self) -> None:
         for fmt in self.output_formats:
             if isinstance(fmt, TensorboardOutput):

@@ -4,6 +4,8 @@ import torch.nn as nn
 from tqdm import tqdm
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import copy
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.utils.general import device_grad_decorator
 from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
@@ -22,12 +24,21 @@ def get_optimizer_and_scheduler(cfg, model):
         optimizer, scheduler
     """
     optimizer = Adam(model.parameters(), lr=cfg.training.learning_rate)
-    scheduler = ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=cfg.training.reduce_lr_factor,
-        patience=cfg.training.reduce_lr_patience
-    )
+    
+    if cfg.training.scheduler_type == 'reduce_lr':
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=cfg.training.reduce_lr_factor,
+            patience=cfg.training.reduce_lr_patience
+        )
+    elif cfg.training.scheduler_type == 'cosine':
+        if cfg.training.max_steps is None:
+            raise ValueError("max_steps must be specified for cosine scheduler")
+        scheduler = CosineAnnealingLR(optimizer, T_max=cfg.training.max_steps, eta_min=0)
+    else:
+        raise ValueError(f"Unknown scheduler_type: {cfg.training.scheduler_type}")
+    
     return optimizer, scheduler
 
 def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logger, global_step):
@@ -221,3 +232,119 @@ def train_and_evaluate(
     if logger.writer is not None:
         logger.writer.close()
     return train_losses, test_losses, best_test_loss_epoch
+
+def step_based_train(
+    cfg,
+    diffusion,
+    train_dataloader,
+    optimizer,
+    scheduler,
+    logger,
+    model_save_path_template=None,
+    max_steps: int = None,
+    save_interval: int = 1000,
+    log_interval: int = 100,
+):
+    # Use config values, assuming they exist
+    save_interval = cfg.training.checkpoint_save_interval
+    log_interval = cfg.logging.interval  # Assuming from logging config
+    ema_rates = [float(r) for r in cfg.training.ema_rate.split(',') if r.strip()]
+    scheduler_interval = cfg.training.scheduler_interval
+    scheduler_type = cfg.training.scheduler_type
+    
+    diffusion.train()
+    global_step = 0
+    train_iterator = iter(train_dataloader)
+    
+    # EMA setup (inspired by MedSegDiff)
+    ema_params = [copy.deepcopy(list(diffusion.parameters())) for _ in ema_rates] if ema_rates else []
+    
+    # Scheduling refinements
+    interval_loss = 0.0
+    interval_count = 0
+    
+    while max_steps is None or global_step < max_steps:
+        try:
+            img, mask, *_ = next(train_iterator)
+        except StopIteration:
+            # Reinitialize iterator if dataset is exhausted
+            train_iterator = iter(train_dataloader)
+            img, mask, *_ = next(train_iterator)
+        
+        img, mask = img.to(cfg.device), mask.to(cfg.device)
+        
+        optimizer.zero_grad()
+        loss, sample_mses, ts = diffusion(mask, img)
+        
+        loss.backward()
+        grad_norm = calc_grad_norm(diffusion.parameters())
+        optimizer.step()
+        param_norm = calc_param_norm(diffusion.parameters())
+        
+        # Update EMAs (after optimizer step)
+        for rate, params in zip(ema_rates, ema_params):
+            for p, ema_p in zip(diffusion.parameters(), params):
+                ema_p.data = (1.0 - rate) * p.data + rate * ema_p.data
+        
+        # Logging
+        batch_size = mask.shape[0]
+        global_step += 1
+        samples = global_step * batch_size
+        
+        logger.logkv_mean('loss', loss.item())
+        logger.logkv_mean('grad_norm', grad_norm)
+        logger.logkv_mean('param_norm', param_norm)
+        logger.logkv('step', global_step)
+        logger.logkv('samples', samples)
+        logger.logkv('lr', optimizer.param_groups[0]['lr'])
+        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses})
+        
+        if global_step % log_interval == 0:
+            logger.dumpkvs(global_step)
+            logger.clear_accumulators()  # Ensure reset after dump
+        
+        # Accumulate for scheduling
+        interval_loss += loss.item()
+        interval_count += 1
+        
+        if global_step % scheduler_interval == 0:
+            if interval_count > 0:
+                mean_loss = interval_loss / interval_count
+                scheduler.step(mean_loss) if scheduler_type == 'reduce_lr' else scheduler.step()
+            interval_loss = 0.0
+            interval_count = 0
+        
+        # Periodic saving
+        if global_step % save_interval == 0 and global_step > 0:
+            save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg.training.checkpoint_path_template)
+        
+        # Optional visualization (configurable)
+        if global_step % cfg.training.visualization_sample_interval == 0:
+            sample_and_visualize(
+                diffusion,
+                train_dataloader.dataset,  # Use train for viz, or switch to test if available
+                num_samples=cfg.training.visualization_num_samples,
+                device=cfg.device,
+            )
+    
+    # Final save and log
+    save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg.training.checkpoint_path_template)
+    logger.dumpkvs(global_step)
+    logger.clear_accumulators()
+    
+    print(f"Step-based training complete at step {global_step}.")
+
+def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, path_template):
+    # Save main model
+    main_path = path_template.format(step)
+    torch.save(diffusion.state_dict(), main_path)
+    
+    # Save EMAs
+    for rate, params in zip(ema_rates, ema_params):
+        ema_path = path_template.replace('.pth', f'_ema_{rate:.4f}_{step:06d}.pth')
+        ema_state = {k: v for k, v in zip(diffusion.state_dict().keys(), (p.data for p in params))}
+        torch.save(ema_state, ema_path)
+    
+    # Save optimizer
+    opt_path = path_template.replace('.pth', f'_opt_{step:06d}.pth')
+    torch.save(optimizer.state_dict(), opt_path)
