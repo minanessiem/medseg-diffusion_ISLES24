@@ -134,3 +134,12 @@ class Logger:
         for fmt in self.output_formats:
             if isinstance(fmt, TensorboardOutput):
                 fmt.close()
+
+    def print_config(self, config_yaml: str, step: int = 0) -> None:
+        """Pretty print the configuration YAML string to console and TensorBoard."""
+        print("\n===== Resolved Configuration =====")
+        print(config_yaml)
+        print("================================\n")
+        for fmt in self.output_formats:
+            if isinstance(fmt, TensorboardOutput):
+                fmt.writer.add_text("Config", config_yaml.replace("\n", "  \n"), step)

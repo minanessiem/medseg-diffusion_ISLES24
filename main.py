@@ -1,5 +1,5 @@
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch
 import random
 import numpy as np
@@ -63,6 +63,7 @@ def main(cfg: DictConfig):
         table_format=cfg.logging.table_format,
         writer=writer,
     )
+    logger.print_config(OmegaConf.to_yaml(cfg, resolve=True))
 
     # Build model
     unet = Unet(cfg).to(device)
