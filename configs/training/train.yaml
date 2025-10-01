@@ -1,3 +1,4 @@
+# Training-specific parameters (split from default.yaml)
 # num_epochs: 50  # Deprecated: Use max_steps for step-based training instead
 learning_rate: 2e-4
 timesteps: 100
@@ -15,7 +16,3 @@ ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"
 scheduler_interval: 100
 scheduler_type: reduce_lr  # Or 'cosine' for cosine annealing
 max_steps: null  # Maximum training steps; null for indefinite
-evaluation:
-  run_dir: null  # Path to the run directory containing checkpoints
-  step: null  # Step number of the model to validate
-  ema_rate: null  # EMA rate to use (e.g., 0.9999); null if not using EMA

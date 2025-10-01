@@ -1,0 +1,5 @@
+# Evaluation-specific parameters (split from default.yaml)
+evaluation:
+  run_dir: null  # Path to the run directory containing checkpoints
+  step: null  # Step number of the model to validate
+  ema_rate: null  # EMA rate to use (e.g., 0.9999); null if not using EMA

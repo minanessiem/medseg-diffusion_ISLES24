@@ -87,21 +87,37 @@ def main(cfg: DictConfig):
 
     if cfg.mode == "train":
         optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
-        train_losses, test_losses, best_epoch = train_and_evaluate(
+        # Deprecated: Legacy epoch-based training - to be removed after step-based confirmation
+        # train_losses, test_losses, best_epoch = train_and_evaluate(
+        #     cfg,
+        #     diffusion,
+        #     train_dl,
+        #     test_dl,
+        #     optimizer,
+        #     scheduler,
+        #     logger=logger,
+        #     model_save_path_template=model_save_path_template,
+        # )
+        # plot_losses(train_losses, test_losses)
+        
+        # New step-based training
+        step_based_train(
             cfg,
             diffusion,
             train_dl,
-            test_dl,
             optimizer,
             scheduler,
-            logger=logger,
+            logger,
             model_save_path_template=model_save_path_template,
+            max_steps=cfg.training.max_steps,
         )
-        plot_losses(train_losses, test_losses)
     elif cfg.mode == "evaluate":
-        # Assuming best_epoch is known or passed via cfg; for demo, hard-code or load from file
-        best_epoch = cfg.get('best_epoch', 50)  # Placeholder; in practice, track this
-        diffusion = load_best_model(diffusion, cfg, best_epoch)
+        # Stub for evaluation: Load model/EMA from config and visualize
+        # Assuming load_checkpoint function exists or add a simple loader
+        checkpoint_path = f"{cfg.training.evaluation.run_dir}{cfg.training.checkpoint_path_template.format(cfg.training.evaluation.step)}"
+        if cfg.training.evaluation.ema_rate is not None:
+            checkpoint_path = checkpoint_path.replace('.pth', f'_ema_{cfg.training.evaluation.ema_rate}_{cfg.training.evaluation.step:06d}.pth')
+        diffusion.load_state_dict(torch.load(checkpoint_path))
         visualize_best_model_predictions(diffusion, test_dl.dataset, cfg)
     logger.close()
 

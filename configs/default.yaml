@@ -1,7 +1,8 @@
 defaults:
   - model: unet
   - dataset: isles24
-  - training: default
+  - training: train
+  # To include eval params: hydra run +training=eval or compose in config
   - logging: default
 
 random_seed: 42
