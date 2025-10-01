@@ -7,7 +7,7 @@ import numpy as np
 from src.models.architectures.unet import Unet
 from src.models.components.diffusion import Diffusion
 from src.data.loaders import BrainMRIDataset, get_dataloaders  # Assuming get_dataloaders is implemented
-from src.training.trainer import get_optimizer_and_scheduler, train_and_evaluate
+from src.training.trainer import get_optimizer_and_scheduler, step_based_train
 from src.evaluation.evaluator import plot_losses, load_best_model, visualize_best_model_predictions, visualize_noise_schedulers  # Optional
 from torch.utils.tensorboard import SummaryWriter
 from src.utils.logger import Logger
@@ -39,7 +39,7 @@ def main(cfg: DictConfig):
     # visualize_noise_schedulers(cfg)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"unet_img{cfg.model.image_size}_lr{cfg.training.learning_rate}_epochs{cfg.training.num_epochs}_steps{cfg.training.timesteps}_{timestamp}"
+    run_name = f"unet_img{cfg.model.image_size}_lr{cfg.training.learning_rate}_max_steps{cfg.training.max_steps}_diffusion_steps{cfg.training.timesteps}_{timestamp}"
     writer = None
     model_save_path_template = cfg.training.model_save_path_template  # Default from config
     log_dir = "runs/"  # default
