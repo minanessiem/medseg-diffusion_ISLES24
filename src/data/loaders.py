@@ -25,6 +25,8 @@ from src.data.modalities import process_tmax
 
 import logging
 
+import tqdm
+
 logging.getLogger('nibabel').setLevel(logging.WARNING)
 
 # A dictionary to map modality names to their processing functions
@@ -165,7 +167,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
 
         self.image_size = image_size
         print("Pre-calculating dataset size...")
-        for case_idx, filedict in enumerate(self.database):
+        for case_idx, filedict in tqdm(enumerate(self.database), total=len(self.database)):
             # Use the first modality to determine the number of slices
             first_mod_key = self.base_modalities[0]
             filepath = filedict[first_mod_key][0] if isinstance(filedict[first_mod_key], list) else filedict[first_mod_key]
