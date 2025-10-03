@@ -151,24 +151,70 @@ class Logger:
         # Preprocess: Handle MetaTensor, split multi-channel, normalize (keep 1-channel for grayscale)
         processed_images = []
         label_index = 0  # For assigning labels after splitting
-        for img in images:
+
+        # Helper to convert arbitrary CHW or HW tensor to RGB uint8 numpy
+        def _to_rgb_numpy(tensor: torch.Tensor) -> Optional[np.ndarray]:
+            orig_shape = list(tensor.shape)
+            if tensor.dim() == 4 and tensor.shape[0] == 1:  # squeeze batch dim
+                tensor = tensor.squeeze(0)
+            if tensor.dim() == 2:  # H, W
+                tensor = tensor.unsqueeze(0)
+            elif tensor.dim() == 4:
+                print(f"[LOGGER] WARNING: got 4-D tensor {orig_shape}; skipping log for this entry.")
+                return None
+
+            # clamp before any repeats
+            tensor = tensor.clamp(0, 1)
+
+            if tensor.shape[0] == 1:
+                tensor = tensor.repeat(3, 1, 1)
+            elif tensor.shape[0] > 3:
+                tensor = tensor[:3]
+
+            arr = (tensor.permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+            return arr
+
+        for idx, img in enumerate(images):
             if hasattr(img, 'as_tensor'):  # MONAI MetaTensor
                 img = img.as_tensor()
             img = unnormalize_to_zero_to_one(img).detach().cpu()
-            if img.dim() == 3 and img.shape[0] > 1:  # Multi-channel: split into list of 1-channel
+            if img.dim() == 3 and img.shape[0] > 1:  # Multi-channel: split and normalize per channel
                 for c in range(img.shape[0]):
-                    processed_images.append(img[c:c+1])
+                    slice_img = img[c:c+1]
+                    # Per-slice display normalization (stretch contrast)
+                    min_val = slice_img.min()
+                    max_val = slice_img.max()
+                    if max_val > min_val:
+                        slice_img = (slice_img - min_val) / (max_val - min_val + 1e-8)
+                    slice_img = slice_img.clamp(0, 1)
+                    processed_images.append(slice_img)
                     label_index += 1
             else:
-                processed_images.append(img)  # Keep as-is (1-channel)
+                # Stretch contrast for single-channel image
+                min_val = img.min()
+                max_val = img.max()
+                if max_val > min_val:
+                    img = (img - min_val) / (max_val - min_val + 1e-8)
+                img = img.clamp(0, 1)
+                processed_images.append(img)
                 label_index += 1
 
         # Add labels to each processed image if enabled and provided
         if labels and len(labels) == len(processed_images):
             labeled_images = []
             for idx, p_img in enumerate(processed_images):
-                # Convert to PIL (expand to 3 channels temporarily for drawing)
-                pil_img = Image.fromarray((p_img.repeat(3,1,1).permute(1,2,0).numpy() * 255).astype('uint8'))
+                # Ensure tensor is 3-D (C,H,W)
+                if p_img.dim() == 2:  # H x W
+                    p_img = p_img.unsqueeze(0)  # 1 x H x W
+
+                # Ensure tensor has channel dimension
+                if p_img.dim() == 2:
+                    p_img = p_img.unsqueeze(0)
+                # Convert to PIL, making a temporary RGB copy for colored text
+                arr_rgb = _to_rgb_numpy(p_img)
+                if arr_rgb is None:
+                    continue  # Skip problematic tensor
+                pil_img = Image.fromarray(arr_rgb)
                 draw = ImageDraw.Draw(pil_img)
                 font_size = self.cfg.label_font_size if self.cfg and hasattr(self.cfg, 'label_font_size') else 14
                 
@@ -186,11 +232,10 @@ class Logger:
                 text = labels[idx]
                 bbox = draw.textbbox((0, 0), text, font=font)
                 text_size = (bbox[2] - bbox[0], bbox[3] - bbox[1])
-                # Position: lower_right with offset
                 position = (pil_img.width - text_size[0] - 10, pil_img.height - text_size[1] - 10)
-                draw.text(position, text, fill=(255, 0, 0), font=font)
-                # Convert back to tensor, keeping RGB for color preservation
-                labeled_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1) / 255.0  # 3-channel RGB
+                draw.text(position, text, fill=tuple(self.cfg.label_color if self.cfg else (255,0,0)), font=font)
+                # Convert back to tensor keeping RGB (3-channel)
+                labeled_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1) / 255.0
                 labeled_images.append(labeled_tensor)
             processed_images = labeled_images
 
