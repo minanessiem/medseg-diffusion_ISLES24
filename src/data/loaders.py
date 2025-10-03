@@ -175,6 +175,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
                 num_slices = nibabel.load(filepath).shape[-1]
                 self.all_slices.extend([(case_idx, slice_idx) for slice_idx in range(num_slices)])
         
+        self.cache = {}  # Cache for preloaded 3D volumes per case_idx
         
 
     def __len__(self):
@@ -215,18 +216,23 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         case_idx, slice_idx = self.all_slices[x]
         filedict = self.database[case_idx]
         
-        # Load all required base modalities and the label, then extract the slice
+        if case_idx not in self.cache:
+            data = {}
+            keys_to_load = self.base_modalities + ['label']
+            for key in keys_to_load:
+                if key not in filedict or not filedict[key]:
+                    continue
+                
+                filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
+                if os.path.exists(filepath):
+                    nib_img = nibabel.load(filepath)
+                    data[key] = torch.from_numpy(nib_img.get_fdata().astype(np.float32))
+            self.cache[case_idx] = data
+        
         data_slice = {}
-        keys_to_load = self.base_modalities + ['label']
-        for key in keys_to_load:
-            if key not in filedict or not filedict[key]:
-                continue
-
-            filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
-            if os.path.exists(filepath):
-                nib_img = nibabel.load(filepath)
-                data_slice[key] = torch.tensor(nib_img.get_fdata(), dtype=torch.float32)[..., slice_idx]
-
+        for key in self.cache[case_idx]:
+            data_slice[key] = self.cache[case_idx][key][..., slice_idx]
+        
         processed_images = self._process_modalities(data_slice)
         
         image_channels = [processed_images[f"processed_{m}"] for m in self.modalities]
@@ -402,13 +408,17 @@ def get_dataloaders(cfg):
             train_dataset, 
             batch_size=cfg.dataset.train_batch_size, 
             shuffle=True,
-            num_workers=cfg.dataset.num_workers
+            num_workers=cfg.dataset.num_workers,
+            pin_memory=True,
+            persistent_workers=True if cfg.dataset.num_workers > 0 else False
         )
         test_dataloader = DataLoader(
             test_dataset, 
             batch_size=cfg.dataset.test_batch_size, 
             shuffle=False,
-            num_workers=cfg.dataset.num_workers
+            num_workers=cfg.dataset.num_workers,
+            pin_memory=True,
+            persistent_workers=True if cfg.dataset.num_workers > 0 else False
         )
         return train_dataloader, test_dataloader
     else:
