@@ -41,7 +41,6 @@ def main(cfg: DictConfig):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"unet_img{cfg.model.image_size}_lr{cfg.training.learning_rate}_max_steps{cfg.training.max_steps}_diffusion_steps{cfg.training.timesteps}_{timestamp}"
     writer = None
-    model_save_path_template = cfg.training.model_save_path_template  # Default from config
     log_dir = "runs/"  # default
     if cfg.mode == "train":
         run_output_dir = f"{cfg.training.output_root}{run_name}/"
@@ -49,7 +48,6 @@ def main(cfg: DictConfig):
         os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)
         writer = SummaryWriter(log_dir=f"{run_output_dir}tensorboard/")
         log_dir = f"{run_output_dir}tensorboard/"
-        model_save_path_template = f"{run_output_dir}{cfg.training.model_save_path_template}"
     else:
         # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
         log_dir = f"runs/eval_{timestamp}/"
@@ -100,7 +98,7 @@ def main(cfg: DictConfig):
         #     model_save_path_template=model_save_path_template,
         # )
         # plot_losses(train_losses, test_losses)
-        
+
         # New step-based training
         step_based_train(
             cfg,
@@ -109,8 +107,8 @@ def main(cfg: DictConfig):
             optimizer,
             scheduler,
             logger,
-            model_save_path_template=model_save_path_template,
             max_steps=cfg.training.max_steps,
+            test_dataloader=test_dl,  # Pass test_dl for logging
         )
     elif cfg.mode == "evaluate":
         # Stub for evaluation: Load model/EMA from config and visualize

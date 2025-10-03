@@ -1,20 +1,3 @@
-# num_epochs: 50  # Deprecated: Use max_steps for step-based training instead
-learning_rate: 2e-4
-timesteps: 100
-noise_schedule: cosine
-output_root: "/mnt/outputs/medsegdiff_outputs/"
-reduce_lr_factor: 0.5
-reduce_lr_patience: 3
-visualization_sample_interval: 5
-visualization_num_samples: 3
-model_save_dir: "models/"
-model_save_path_template: '${training.model_save_dir}best_diffusion_model_epoch_{}.pth'
-checkpoint_save_interval: 5000
-checkpoint_path_template: '${training.model_save_dir}diffusion_checkpoint_step_{}.pth'
-ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"
-scheduler_interval: 100
-scheduler_type: reduce_lr  # Or 'cosine' for cosine annealing
-max_steps: null  # Maximum training steps; null for indefinite
 evaluation:
   run_dir: null  # Path to the run directory containing checkpoints
   step: null  # Step number of the model to validate

@@ -11,6 +11,9 @@ from src.utils.general import device_grad_decorator
 from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
 from src.utils.logger import Logger
 from src.utils.train_utils import calc_grad_norm, calc_param_norm
+import torch
+from torch import no_grad
+from src.models.architectures.unet_util import unnormalize_to_zero_to_one
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -221,12 +224,15 @@ def train_and_evaluate(
 
         # Visualization
         if epoch % cfg.training.visualization_sample_interval == 0 or epoch == cfg.training.num_epochs:
+            '''
             sample_and_visualize(
                 diffusion,
                 test_dataloader.dataset,
                 num_samples=cfg.training.visualization_num_samples,
                 device=cfg.device,
             )
+            '''
+            pass
 
     print(f"\nTraining complete. Best Test Loss: {best_test_loss:.4f} at Epoch {best_test_loss_epoch}.")
     if logger.writer is not None:
@@ -244,6 +250,7 @@ def step_based_train(
     max_steps: int = None,
     save_interval: int = 1000,
     log_interval: int = 100,
+    test_dataloader = None,  # New optional param for test sampling
 ):
     # Use config values, assuming they exist
     save_interval = cfg.training.checkpoint_save_interval
@@ -286,6 +293,43 @@ def step_based_train(
             for p, ema_p in zip(diffusion.parameters(), params):
                 ema_p.data = (1.0 - rate) * p.data + rate * ema_p.data
         
+        # New: Image-based logging
+        if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0:
+            # Log forward process (reuse current batch for efficiency)
+            with torch.no_grad():
+                num_available = len(mask)
+                if num_available < cfg.logging.num_log_samples:
+                    print(f"Warning: Batch size {num_available} < num_log_samples {cfg.logging.num_log_samples}; logging {num_available} for forward.")
+                num_samples = min(cfg.logging.num_log_samples, num_available)
+                loss, sample_mses, t, intermediates = diffusion(mask[:num_samples], img[:num_samples], return_intermediates=True)
+                for i in range(num_samples):
+                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i]]
+                    metrics = {0: sample_mses[i].item()}
+                    logger.log_image_grid(f'Training/Forward_Step_{global_step}_sample{i}', sample_images, global_step, metrics, 'horizontal')
+        
+        if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0:
+            # Sample from test or train, accumulating multiple batches if needed
+            dl = test_dataloader if cfg.logging.log_test_samples and test_dataloader else train_dataloader
+            collected_imgs = []
+            remaining = cfg.logging.num_log_samples
+            while remaining > 0:
+                batch = next(iter(dl))
+                batch_imgs = batch[0][:remaining]  # Take up to remaining
+                collected_imgs.append(batch_imgs)
+                remaining -= len(batch_imgs)
+            
+            sample_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
+            num_samples = len(sample_img)
+            
+            for i in range(num_samples):
+                snapshots = []
+                for t, mask_snapshot in diffusion.sample_with_snapshots(sample_img[i:i+1], cfg.logging.snapshot_step_interval):
+                    snapshots.append((t, mask_snapshot[0]))
+                
+                for j, (t, mask_snap) in enumerate(snapshots):
+                    grid_images = [sample_img[i], mask_snap]
+                    logger.log_image_grid(f'Sampling/Snapshots_Step_{global_step}_sample{i}_t{t}', grid_images, global_step, grid_layout='vertical')
+        
         # Logging
         batch_size = mask.shape[0]
         global_step += 1
@@ -316,35 +360,33 @@ def step_based_train(
         
         # Periodic saving
         if global_step % save_interval == 0 and global_step > 0:
-            save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg.training.checkpoint_path_template)
+            save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg)
         
-        # Optional visualization (configurable)
-        if global_step % cfg.training.visualization_sample_interval == 0:
-            sample_and_visualize(
-                diffusion,
-                train_dataloader.dataset,  # Use train for viz, or switch to test if available
-                num_samples=cfg.training.visualization_num_samples,
-                device=cfg.device,
-            )
-    
+        # Removed old visualization block
+        
     # Final save and log
-    save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg.training.checkpoint_path_template)
+    save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg)
     logger.dumpkvs(global_step)
     logger.clear_accumulators()
     
     print(f"Step-based training complete at step {global_step}.")
 
-def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, path_template):
+def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, cfg):  # Pass cfg for templates
     # Save main model
-    main_path = path_template.format(step)
+    main_path = cfg.training.main_checkpoint_template.format(step)
+    os.makedirs(os.path.dirname(main_path), exist_ok=True)
     torch.save(diffusion.state_dict(), main_path)
+    print(f"Saved model checkpoint to {main_path} at step {step}")
     
-    # Save EMAs
+    # Save EMAs (one per rate)
     for rate, params in zip(ema_rates, ema_params):
-        ema_path = path_template.replace('.pth', f'_ema_{rate:.4f}_{step:06d}.pth')
+        formatted_rate = f"{rate:.{cfg.training.ema_rate_precision}f}"
+        ema_path = cfg.training.ema_checkpoint_template.format(step, rate=formatted_rate)
         ema_state = {k: v for k, v in zip(diffusion.state_dict().keys(), (p.data for p in params))}
         torch.save(ema_state, ema_path)
+        print(f"Saved EMA (rate {rate}) checkpoint to {ema_path} at step {step}")
     
     # Save optimizer
-    opt_path = path_template.replace('.pth', f'_opt_{step:06d}.pth')
+    opt_path = cfg.training.opt_checkpoint_template.format(step)
     torch.save(optimizer.state_dict(), opt_path)
+    print(f"Saved optimizer checkpoint to {opt_path} at step {step}")

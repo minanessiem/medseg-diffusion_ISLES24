@@ -7,6 +7,12 @@ from collections import defaultdict
 from tabulate import tabulate
 from torch.utils.tensorboard import SummaryWriter
 
+import torch
+from torchvision.utils import make_grid
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from src.models.architectures.unet_util import unnormalize_to_zero_to_one
+
 
 class BaseOutputFormat:
     """Abstract base class for output formats."""
@@ -134,6 +140,44 @@ class Logger:
         for fmt in self.output_formats:
             if isinstance(fmt, TensorboardOutput):
                 fmt.close()
+
+    def log_image_grid(self, tag: str, images: List[torch.Tensor], step: int, metrics: Optional[Dict[int, float]] = None, grid_layout: str = 'horizontal') -> None:
+        """Log a grid of images to TensorBoard with optional metric overlays."""
+        if not any(isinstance(fmt, TensorboardOutput) for fmt in self.output_formats):
+            return  # Skip if TensorBoard not enabled
+
+        # Preprocess: Handle MetaTensor, split multi-channel, normalize (keep 1-channel for grayscale)
+        processed_images = []
+        for img in images:
+            if hasattr(img, 'as_tensor'):  # MONAI MetaTensor
+                img = img.as_tensor()
+            img = unnormalize_to_zero_to_one(img).detach().cpu()
+            if img.dim() == 3 and img.shape[0] > 1:  # Multi-channel: split into list of 1-channel
+                for c in range(img.shape[0]):
+                    processed_images.append(img[c:c+1])
+            else:
+                processed_images.append(img)  # Keep as-is (1-channel)
+
+        # Create grid (will be 1-channel if inputs are)
+        if grid_layout == 'horizontal':
+            grid = make_grid(processed_images, nrow=len(processed_images), normalize=True)
+        else:  # vertical
+            grid = make_grid(processed_images, nrow=1, normalize=True)
+
+        # Add text overlays if metrics provided
+        if metrics:
+            # Since grid might be 1-channel, expand to 3 for PIL/RGB handling
+            array = ((grid.repeat(3,1,1) if grid.shape[0]==1 else grid[:3].permute(1, 2, 0)).numpy() * 255).astype('uint8')
+            pil_grid = Image.fromarray(array)
+            draw = ImageDraw.Draw(pil_grid)
+            font = ImageFont.load_default()
+            for i, metric in metrics.items():
+                draw.text((10, 10 + i*20), f"Loss: {metric:.4f}", fill=(255, 0, 0), font=font)
+            grid = torch.from_numpy(np.array(pil_grid)).permute(2, 0, 1) / 255.0
+
+        for fmt in self.output_formats:
+            if isinstance(fmt, TensorboardOutput):
+                fmt.writer.add_image(tag, grid, step)
 
     def print_config(self, config_yaml: str, step: int = 0) -> None:
         """Pretty print the configuration YAML string to console and TensorBoard."""

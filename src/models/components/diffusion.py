@@ -222,6 +222,32 @@ class Diffusion(nn.Module):
         denoised_mask = unnormalize_to_zero_to_one(noisy_mask)
         return denoised_mask
 
+    @device_grad_decorator(device=None, no_grad=True)
+    def sample_with_snapshots(self, conditioned_image, snapshot_interval: int = None):
+        """
+        Generator version of sample that yields intermediate noisy masks every snapshot_interval steps.
+        Args:
+            conditioned_image (tensor): Conditioning images.
+            snapshot_interval (int): Yield every N steps; if None or > num_timesteps, only yield final.
+        Yields:
+            tuple(int, tensor): (t, current_noisy_mask) at intervals, and finally the denoised mask.
+        """
+        if snapshot_interval is None:
+            snapshot_interval = self.num_timesteps + 1  # Effectively disable intermediates
+
+        noisy_mask = torch.randn(
+            (conditioned_image.shape[0], self.mask_channels, self.image_size, self.image_size),
+            device=self.device,
+        )
+
+        for t in reversed(range(self.num_timesteps)):
+            noisy_mask = self.reverse_one_step(noisy_mask, t, conditioned_image)
+            if (self.num_timesteps - t) % snapshot_interval == 0 or t == 0:
+                yield t, unnormalize_to_zero_to_one(noisy_mask.clone())  # Yield normalized copy
+
+        final_denoised = unnormalize_to_zero_to_one(noisy_mask)
+        yield 0, final_denoised  # Final yield
+
     @device_grad_decorator(device=None)
     def calculate_xt_from_x0(self, x_0, t, noise):
         """
@@ -238,7 +264,7 @@ class Diffusion(nn.Module):
         return first_term + second_term
 
     @device_grad_decorator(device=None)
-    def forward(self, mask, conditioned_image, *args, **kwargs):
+    def forward(self, mask, conditioned_image, return_intermediates=False, *args, **kwargs):
         """
         Forward pass through the Diffusion model.
 
@@ -263,4 +289,14 @@ class Diffusion(nn.Module):
         # Compute per-sample MSE
         sample_mses = torch.mean((noise_hat - noise) ** 2, dim=[1,2,3])
         loss = torch.mean(sample_mses)
+
+        if return_intermediates:
+            intermediates = {
+                'img': conditioned_image,
+                'mask': mask,
+                'x_t': x_t,
+                'noise': noise,
+                'noise_hat': noise_hat
+            }
+            return loss, sample_mses, t, intermediates
         return loss, sample_mses, t
