@@ -167,7 +167,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
 
         self.image_size = image_size
         print("Pre-calculating dataset size...")
-        for case_idx, filedict in tqdm(enumerate(self.database), total=len(self.database)):
+        for case_idx, filedict in tqdm.tqdm(enumerate(self.database), total=len(self.database)):
             # Use the first modality to determine the number of slices
             first_mod_key = self.base_modalities[0]
             filepath = filedict[first_mod_key][0] if isinstance(filedict[first_mod_key], list) else filedict[first_mod_key]
