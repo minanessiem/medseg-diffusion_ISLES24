@@ -4,7 +4,7 @@ from collections import namedtuple
 from functools import partial
 from random import random
 
-import cv2
+# import cv2
 import torch
 from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
