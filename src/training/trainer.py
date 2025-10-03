@@ -295,46 +295,65 @@ def step_based_train(
         
         # New: Image-based logging
         if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0:
-            # Log forward process (reuse current batch for efficiency)
+            # Log forward process (accumulate fresh batches from dataloader)
             with torch.no_grad():
-                num_available = len(mask)
-                if num_available < cfg.logging.num_log_samples:
-                    print(f"Warning: Batch size {num_available} < num_log_samples {cfg.logging.num_log_samples}; logging {num_available} for forward.")
-                num_samples = min(cfg.logging.num_log_samples, num_available)
-                loss, sample_mses, t, intermediates = diffusion(mask[:num_samples], img[:num_samples], return_intermediates=True)
-                for i in range(num_samples):
-                    # Generate labels dynamically
-                    num_modalities = len(cfg.dataset.modalities)
-                    labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)] + ["Target Mask", "Noisy Mask (x_t)", "True Noise", "Predicted Noise"]
-                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i]]
-                    if len(sample_images) != len(labels):  # Adjust if split happened
-                        labels = labels[:num_modalities] + labels[num_modalities:]  # Simplified; assume img is split in logger
-                    metrics = {0: sample_mses[i].item()}
-                    logger.log_image_grid(f'Training/Forward_Step_{global_step}_sample{i}', sample_images, global_step, metrics, 'horizontal', labels=labels)
-        
-        if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0:
-            # Sample from test or train, accumulating multiple batches if needed
-            dl = test_dataloader if cfg.logging.log_test_samples and test_dataloader else train_dataloader
-            collected_imgs = []
-            remaining = cfg.logging.num_log_samples
-            while remaining > 0:
-                batch = next(iter(dl))
-                batch_imgs = batch[0][:remaining]  # Take up to remaining
-                collected_imgs.append(batch_imgs)
-                remaining -= len(batch_imgs)
-            
-            sample_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
-            num_samples = len(sample_img)
-            
-            for i in range(num_samples):
-                snapshots = []
-                for t, mask_snapshot in diffusion.sample_with_snapshots(sample_img[i:i+1], cfg.logging.snapshot_step_interval):
-                    snapshots.append((t, mask_snapshot[0]))
+                collected_masks = []
+                collected_imgs = []
+                remaining = cfg.logging.num_log_samples
+                while remaining > 0:
+                    batch = next(iter(train_dataloader))  # Fetch fresh batch
+                    batch_mask, batch_img = batch[1][:remaining], batch[0][:remaining]  # Assuming [img, mask, ...] from dataloader
+                    collected_masks.append(batch_mask)
+                    collected_imgs.append(batch_img)
+                    remaining -= len(batch_mask)
                 
-                for j, (t, mask_snap) in enumerate(snapshots):
-                    grid_images = [sample_img[i], mask_snap]
-                    labels = ["Modality", f"Denoised at t={t}"]
-                    logger.log_image_grid(f'Sampling/Snapshots_Step_{global_step}_sample{i}_t{t}', grid_images, global_step, grid_layout='vertical', labels=labels)
+                full_mask = torch.cat(collected_masks, dim=0).to(cfg.device)
+                full_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
+                num_samples = len(full_mask)
+                
+                if num_samples < cfg.logging.num_log_samples:
+                    print(f"Warning: Accumulated {num_samples} < num_log_samples {cfg.logging.num_log_samples} for forward.")
+                
+                loss, sample_mses, t, intermediates = diffusion(full_mask, full_img, return_intermediates=True)
+                
+                all_images = []
+                labels = []
+                metrics = {}
+                num_modalities = len(cfg.dataset.modalities)
+                base_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)] + ["Target Mask", "Noisy Mask (x_t)", "True Noise", "Predicted Noise"]
+                for i in range(num_samples):
+                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i]]
+                    all_images.extend(sample_images)
+                    labels.extend(base_labels)
+                    metrics[i] = sample_mses[i].item()
+                
+                logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=len(base_labels))
+            
+            if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0:
+                # Sample from test or train, accumulating multiple batches if needed
+                dl = test_dataloader if cfg.logging.log_test_samples and test_dataloader else train_dataloader
+                collected_imgs = []
+                remaining = cfg.logging.num_log_samples
+                while remaining > 0:
+                    batch = next(iter(dl))
+                    batch_imgs = batch[0][:remaining]  # Take up to remaining
+                    collected_imgs.append(batch_imgs)
+                    remaining -= len(batch_imgs)
+                
+                sample_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
+                num_samples = len(sample_img)
+                
+                for timestep in range(0, diffusion.num_timesteps, cfg.logging.snapshot_step_interval):  # Adjusted to collect per timestep
+                    all_snapshot_images = []
+                    labels = []
+                    for i in range(num_samples):
+                        snapshots = list(diffusion.sample_with_snapshots(sample_img[i:i+1], cfg.logging.snapshot_step_interval))
+                        mask_snap = next((mask for t, mask in snapshots if t == timestep), snapshots[-1][1])  # Fallback to final
+                        grid_images = [sample_img[i], mask_snap]
+                        all_snapshot_images.extend(grid_images)
+                        labels.extend(["Modality", f"Denoised at t={timestep}"])
+                    
+                    logger.log_image_grid(f'Sampling/Snapshots_Step_{global_step}_t{timestep}', all_snapshot_images, global_step, grid_layout='horizontal', labels=labels, per_sample_ncol=2)
         
         # Logging
         batch_size = mask.shape[0]

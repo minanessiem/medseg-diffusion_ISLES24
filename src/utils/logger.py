@@ -144,7 +144,7 @@ class Logger:
             if isinstance(fmt, TensorboardOutput):
                 fmt.close()
 
-    def log_image_grid(self, tag: str, images: List[torch.Tensor], step: int, metrics: Optional[Dict[int, float]] = None, grid_layout: str = 'horizontal', labels: Optional[List[str]] = None) -> None:
+    def log_image_grid(self, tag: str, images: List[torch.Tensor], step: int, metrics: Optional[Dict[int, float]] = None, grid_layout: str = 'horizontal', labels: Optional[List[str]] = None, per_sample_ncol: Optional[int] = None) -> None:
         if not any(isinstance(fmt, TensorboardOutput) for fmt in self.output_formats):
             return  # Skip if TensorBoard not enabled
 
@@ -194,11 +194,11 @@ class Logger:
                 labeled_images.append(labeled_tensor)
             processed_images = labeled_images
 
-        # Create grid (will be 1-channel if inputs are)
-        if grid_layout == 'horizontal':
-            grid = make_grid(processed_images, nrow=len(processed_images), normalize=True)
-        else:  # vertical
-            grid = make_grid(processed_images, nrow=1, normalize=True)
+        # Create grid
+        nrow = len(processed_images) if grid_layout == 'horizontal' else 1
+        if grid_layout == 'horizontal' and per_sample_ncol:
+            nrow = per_sample_ncol  # Group into rows of per_sample_ncol images
+        grid = make_grid(processed_images, nrow=nrow, normalize=True)
 
         # Add text overlays if metrics provided
         if metrics:
