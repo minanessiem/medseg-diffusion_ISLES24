@@ -10,3 +10,10 @@ sampling_log_interval: 5000  # Steps between sampling logs
 num_log_samples: 4  # Number of samples to log
 log_test_samples: true  # Use test dataloader for sampling (vs. train)
 min_log_step: 100  # Minimum global_step to start image/sampling logging
+
+# New Label Options
+enable_image_labels: true  # Toggle labels on/off
+label_color: [255, 0, 0]  # RGB for text color
+label_font_size: 22  # Font size
+label_position: "lower_right"  # Options: lower_right, upper_left, etc.
+label_offset: [10, 10]  # Pixels from edges

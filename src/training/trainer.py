@@ -303,9 +303,14 @@ def step_based_train(
                 num_samples = min(cfg.logging.num_log_samples, num_available)
                 loss, sample_mses, t, intermediates = diffusion(mask[:num_samples], img[:num_samples], return_intermediates=True)
                 for i in range(num_samples):
+                    # Generate labels dynamically
+                    num_modalities = len(cfg.dataset.modalities)
+                    labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)] + ["Target Mask", "Noisy Mask (x_t)", "True Noise", "Predicted Noise"]
                     sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i]]
+                    if len(sample_images) != len(labels):  # Adjust if split happened
+                        labels = labels[:num_modalities] + labels[num_modalities:]  # Simplified; assume img is split in logger
                     metrics = {0: sample_mses[i].item()}
-                    logger.log_image_grid(f'Training/Forward_Step_{global_step}_sample{i}', sample_images, global_step, metrics, 'horizontal')
+                    logger.log_image_grid(f'Training/Forward_Step_{global_step}_sample{i}', sample_images, global_step, metrics, 'horizontal', labels=labels)
         
         if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0:
             # Sample from test or train, accumulating multiple batches if needed
@@ -328,7 +333,8 @@ def step_based_train(
                 
                 for j, (t, mask_snap) in enumerate(snapshots):
                     grid_images = [sample_img[i], mask_snap]
-                    logger.log_image_grid(f'Sampling/Snapshots_Step_{global_step}_sample{i}_t{t}', grid_images, global_step, grid_layout='vertical')
+                    labels = ["Modality", f"Denoised at t={t}"]
+                    logger.log_image_grid(f'Sampling/Snapshots_Step_{global_step}_sample{i}_t{t}', grid_images, global_step, grid_layout='vertical', labels=labels)
         
         # Logging
         batch_size = mask.shape[0]

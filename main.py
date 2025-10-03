@@ -60,6 +60,7 @@ def main(cfg: DictConfig):
         log_interval=int(cfg.logging.interval),
         table_format=cfg.logging.table_format,
         writer=writer,
+        cfg=cfg.logging,  # Pass logging config
     )
     logger.print_config(OmegaConf.to_yaml(cfg, resolve=True))
 
