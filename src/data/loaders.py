@@ -415,7 +415,7 @@ def get_dataloaders(cfg):
         test_dataloader = DataLoader(
             test_dataset, 
             batch_size=cfg.dataset.test_batch_size, 
-            shuffle=False,
+            shuffle=True,
             num_workers=cfg.dataset.num_workers,
             pin_memory=True,
             persistent_workers=True if cfg.dataset.num_workers > 0 else False

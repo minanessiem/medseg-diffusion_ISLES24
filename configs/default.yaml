@@ -17,4 +17,4 @@ dataset:
 
 hydra:
   run:
-    dir: ${training.output_root}${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: '/mnt/outputs/medsegdiff_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'

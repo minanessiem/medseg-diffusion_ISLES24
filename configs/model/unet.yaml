@@ -1,5 +1,5 @@
 image_size: 256
-num_layers: 2
+num_layers: 4
 weight_initializer: InitWeights_He  # From unet_util
 linear_attn_layers: null  # Or list like [true, true, true, false]
 skip_connect_image_feature_maps: false
@@ -8,6 +8,6 @@ time_embedding_dim: 128
 mask_channels: 1
 output_channels: 1
 image_channels: 2
-att_heads: 2
+att_heads: 6
 att_head_dim: 4
 bottleneck_transformer_layers: 1

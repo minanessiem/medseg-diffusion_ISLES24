@@ -1,4 +1,4 @@
-interval: 1000
+interval: 20
 outputs: [console, tensorboard]
 table_format: simple
 # New/Consolidated Image Logging
@@ -6,7 +6,7 @@ image_log_interval: 100  # Steps between forward process image logs
 enable_image_logging: true  # Toggle forward process image logs
 enable_sampling_snapshots: true  # Toggle sampling/reverse process logs
 snapshot_step_interval: 20  # Interval for snapshots during reverse process
-sampling_log_interval: 1000  # Steps between sampling logs
+sampling_log_interval: 300  # Steps between sampling logs
 num_log_samples: 4  # Number of samples to log
 log_test_samples: true  # Use test dataloader for sampling (vs. train)
 min_log_step: 20  # Minimum global_step to start image/sampling logging
