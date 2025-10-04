@@ -33,7 +33,9 @@ def get_optimizer_and_scheduler(cfg, model):
             optimizer,
             mode='min',
             factor=cfg.training.reduce_lr_factor,
-            patience=cfg.training.reduce_lr_patience
+            patience=cfg.training.reduce_lr_patience,
+            threshold=cfg.training.reduce_lr_threshold,
+            cooldown=cfg.training.reduce_lr_cooldown
         )
     elif cfg.training.scheduler_type == 'cosine':
         if cfg.training.max_steps is None:
@@ -438,7 +440,26 @@ def step_based_train(
         if global_step % scheduler_interval == 0:
             if interval_count > 0:
                 mean_loss = interval_loss / interval_count
+                prev_lr = optimizer.param_groups[0]['lr']
+                prev_best = scheduler.best
+                prev_bad_epochs = scheduler.num_bad_epochs
+                prev_cooldown = scheduler.cooldown_counter
+                
                 scheduler.step(mean_loss) if scheduler_type == 'reduce_lr' else scheduler.step()
+                
+                new_lr = optimizer.param_groups[0]['lr']
+                reduced = new_lr < prev_lr
+                
+                print(f"Scheduler Update at step {global_step}:")
+                print(f"  Configured Threshold: {scheduler.threshold:.6e}")
+                print(f"  Configured Cooldown: {scheduler.cooldown}")
+                print(f"  Mean Loss: {mean_loss:.6f}")
+                print(f"  Previous Best: {prev_best:.6f}")
+                print(f"  New Best: {scheduler.best:.6f}")
+                print(f"  Bad Epochs: {prev_bad_epochs} -> {scheduler.num_bad_epochs}")
+                print(f"  Cooldown: {prev_cooldown} -> {scheduler.cooldown_counter}")
+                print(f"  LR: {prev_lr:.6e} -> {new_lr:.6e} (Reduced: {reduced})")
+                
             interval_loss = 0.0
             interval_count = 0
         
