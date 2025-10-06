@@ -1,0 +1,20 @@
+defaults:
+  - model: unet_cluster
+  - dataset: isles24_cluster
+  - training: train_cluster
+  # To include eval params: hydra run +training=eval or compose in config
+  - logging: default
+
+random_seed: 42
+device: cuda  # Or cpu; auto-detect in main.py if possible
+mode: train  # Or evaluate
+
+training:
+  multi_gpu: false  # false -> single GPU; or comma-separated string of GPU ids like "0,1"
+
+dataset:
+  num_workers: 48  # Number of subprocesses for data loading
+
+hydra:
+  run:
+    dir: '/mnt/outputs/medsegdiff_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'

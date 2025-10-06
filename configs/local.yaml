@@ -1,7 +1,7 @@
 defaults:
-  - model: unet
-  - dataset: isles24
-  - training: train
+  - model: unet_local
+  - dataset: isles24_local
+  - training: train_local
   # To include eval params: hydra run +training=eval or compose in config
   - logging: default
 
@@ -13,8 +13,8 @@ training:
   multi_gpu: false  # false -> single GPU; or comma-separated string of GPU ids like "0,1"
 
 dataset:
-  num_workers: 0  # Number of subprocesses for data loading (0 = single-process; set to 4-8 for multi-core speedup)
+  num_workers: 4  # Number of subprocesses for data loading (0 = single-process; set to 4-8 for multi-core speedup)
 
 hydra:
   run:
-    dir: '/mnt/outputs/medsegdiff_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'
+    dir: './outputs/medsegdiff_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'
