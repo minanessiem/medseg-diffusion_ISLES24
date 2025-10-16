@@ -18,7 +18,7 @@ from omegaconf import DictConfig
 class BaseOutputFormat:
     """Abstract base class for output formats."""
 
-    def writekvs(self, kvs: Dict[str, float], step: int) -> None:
+    def writekvs(self, kvs: Dict[str, float], step: int, accumulator: Optional[str] = None) -> None:
         raise NotImplementedError
 
 
@@ -28,11 +28,14 @@ class ConsoleOutput(BaseOutputFormat):
     def __init__(self, table_format: str = "simple") -> None:
         self.table_format = table_format
 
-    def writekvs(self, kvs: Dict[str, float], step: int) -> None:  # noqa: D401
+    def writekvs(self, kvs: Dict[str, float], step: int, accumulator: Optional[str] = None) -> None:  # noqa: D401
         if not kvs:
             return
         rows = [(k, f"{v:.6g}") for k, v in sorted(kvs.items())]
-        print("\n===== Logger dump (step", step, ") =====")
+        header = f"\n===== Logger dump (step {step}) ====="
+        if accumulator:
+            header = f"\n===== Logger dump for accumulator '{accumulator}' (step {step}) ====="
+        print(header)
         print(tabulate(rows, headers=["key", "value"], tablefmt=self.table_format))
         print("================================\n")
 
@@ -43,9 +46,10 @@ class TensorboardOutput(BaseOutputFormat):
     def __init__(self, log_dir: str, writer: Optional[SummaryWriter] = None) -> None:
         self.writer = writer or SummaryWriter(log_dir=log_dir)
 
-    def writekvs(self, kvs: Dict[str, float], step: int) -> None:
+    def writekvs(self, kvs: Dict[str, float], step: int, accumulator: Optional[str] = None) -> None:
         for k, v in kvs.items():
             self.writer.add_scalar(k, v, step)
+        self.writer.flush()  # Ensure immediate write
 
     def close(self) -> None:
         self.writer.close()
@@ -80,26 +84,27 @@ class Logger:
             else:
                 raise ValueError(f"Unknown logging output '{out}'")
 
-        # mean accumulation buffers
-        self.name2val: Dict[str, float] = defaultdict(float)
-        self.name2cnt: Dict[str, int] = defaultdict(int)
+        # accumulators: dict of named buffers
+        self.accumulators = defaultdict(lambda: {'name2val': defaultdict(float), 'name2cnt': defaultdict(int)})
 
     # ------------------------------------------------------------------
     # Public accumulation methods
     # ------------------------------------------------------------------
-    def logkv(self, key: str, val: float) -> None:
+    def logkv(self, key: str, val: float, accumulator: str = 'train') -> None:
         """Log an instantaneous value (no mean aggregation)."""
-        self.name2val[key] = val
+        acc = self.accumulators[accumulator]
+        acc['name2val'][key] = val
         # ensure it is dumped even with mean logic; cnt=1 marks as non-mean
-        self.name2cnt[key] = 1
+        acc['name2cnt'][key] = 1
 
-    def logkv_mean(self, key: str, val: float) -> None:
+    def logkv_mean(self, key: str, val: float, accumulator: str = 'train') -> None:
         """Accumulate a value toward its running mean."""
-        old = self.name2val.get(key, 0.0)
-        cnt = self.name2cnt.get(key, 0)
+        acc = self.accumulators[accumulator]
+        old = acc['name2val'].get(key, 0.0)
+        cnt = acc['name2cnt'].get(key, 0)
         new_val = (old * cnt + float(val)) / (cnt + 1)
-        self.name2val[key] = new_val
-        self.name2cnt[key] = cnt + 1
+        acc['name2val'][key] = new_val
+        acc['name2cnt'][key] = cnt + 1
 
     # ------------------------------------------------------------------
     # Diffusion-specific helper
@@ -109,6 +114,7 @@ class Logger:
         diffusion,  # has .num_timesteps
         ts,  # torch.Tensor[int] shape [batch]
         losses: Dict[str, "torch.Tensor"],  # key -> per-sample tensor same shape
+        accumulator: str = 'train'
     ) -> None:
         import torch  # local import to avoid torch in logger namespace for tools w/o torch
 
@@ -123,21 +129,27 @@ class Logger:
             vals = value_tensor.detach().flatten()
             for sub_t, sub_loss in zip(ts.detach().cpu().tolist(), vals.cpu().tolist()):
                 quartile = min(3, int(4 * sub_t / num_steps))
-                self.logkv_mean(f"{key}_q{quartile}", sub_loss)
+                self.logkv_mean(f"{key}_q{quartile}", sub_loss, accumulator=accumulator)
+
+    def log_metrics_dict(self, prefix: str, metrics_dict: Dict[str, float], step: int, accumulator: str = 'train') -> None:
+        for key, value in metrics_dict.items():
+            self.logkv_mean(f"{prefix}_{key}", value, accumulator=accumulator)
 
     # ------------------------------------------------------------------
-    def dumpkvs(self, step: int) -> None:
-        kvs = {k: float(v) for k, v in self.name2val.items()}
+    def dumpkvs(self, step: int, accumulator: str = 'train') -> None:
+        acc = self.accumulators[accumulator]
+        kvs = {k: float(v) for k, v in acc['name2val'].items()}
         for fmt in self.output_formats:
-            fmt.writekvs(kvs, step)
-        # reset means after dump
-        self.name2val.clear()
-        self.name2cnt.clear()
+            fmt.writekvs(kvs, step, accumulator=accumulator)
+        # reset after dump
+        acc['name2val'].clear()
+        acc['name2cnt'].clear()
 
-    def clear_accumulators(self) -> None:
+    def clear_accumulators(self, accumulator: str = 'train') -> None:
         """Explicitly clear the accumulation buffers for manual resets."""
-        self.name2val.clear()
-        self.name2cnt.clear()
+        acc = self.accumulators[accumulator]
+        acc['name2val'].clear()
+        acc['name2cnt'].clear()
 
     def close(self) -> None:
         for fmt in self.output_formats:

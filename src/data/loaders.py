@@ -412,23 +412,26 @@ def get_dataloaders(cfg):
             pin_memory=True,
             persistent_workers=True if cfg.dataset.num_workers > 0 else False
         )
-        test_dataloader = DataLoader(
+        val_dataloader = DataLoader(
             test_dataset, 
-            batch_size=cfg.dataset.test_batch_size, 
-            shuffle=True,
+            batch_size=cfg.validation.val_batch_size, 
+            shuffle=False,
             num_workers=cfg.dataset.num_workers,
             pin_memory=True,
             persistent_workers=True if cfg.dataset.num_workers > 0 else False
         )
-        return train_dataloader, test_dataloader
+        sample_dataloader = DataLoader(
+            test_dataset, 
+            batch_size=cfg.dataset.test_batch_size, 
+            shuffle=True,
+            num_workers=cfg.dataset.num_workers,
+            pin_memory=False,
+            persistent_workers=False
+        )
+        return {
+            'train': train_dataloader,
+            'val': val_dataloader,
+            'sample': sample_dataloader
+        }
     else:
-        mri_df = load_mri_df(cfg.dataset.dir)
-        train_df, test_df = split_dataset(mri_df, cfg)
-
-        train_dataset = BrainMRIDataset(train_df, cfg)
-        test_dataset = BrainMRIDataset(test_df, cfg)
-
-        train_dataloader = DataLoader(train_dataset, batch_size=cfg.dataset.train_batch_size, shuffle=True)
-        test_dataloader = DataLoader(test_dataset, batch_size=cfg.dataset.test_batch_size, shuffle=False)
-
-        return train_dataloader, test_dataloader
+        raise ValueError(f"Dataset {cfg.dataset.name} not implemented")

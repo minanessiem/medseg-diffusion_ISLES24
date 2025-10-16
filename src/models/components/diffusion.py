@@ -202,12 +202,13 @@ class Diffusion(nn.Module):
         return predicted_previous_mask
 
     @device_grad_decorator(device=None, no_grad=True)
-    def sample(self, conditioned_image):
+    def sample(self, conditioned_image, disable_tqdm=False):
         """
         Generate a sample based on conditioning image.
 
         Args:
             conditioned_image (tensor): Conditioning images tensor with the shape of [batch_size, channels, height, width].
+            disable_tqdm (bool): If True, disable the tqdm progress bar.
         Returns:
             Generated masks tensor.
         """
@@ -216,7 +217,7 @@ class Diffusion(nn.Module):
             device=self.device,
         )
 
-        for t in tqdm(reversed(range(self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
+        for t in tqdm(reversed(range(self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps, disable=disable_tqdm):
             noisy_mask = self.reverse_one_step(noisy_mask, t, conditioned_image)
 
         denoised_mask = unnormalize_to_zero_to_one(noisy_mask)

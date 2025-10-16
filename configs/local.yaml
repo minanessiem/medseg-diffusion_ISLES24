@@ -2,6 +2,7 @@ defaults:
   - model: unet_local
   - dataset: isles24_local
   - training: train_local
+  - validation: default
   # To include eval params: hydra run +training=eval or compose in config
   - logging: default
 

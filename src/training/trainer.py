@@ -14,6 +14,7 @@ from src.utils.train_utils import calc_grad_norm, calc_param_norm
 import torch
 from torch import no_grad
 from src.models.architectures.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
+from src.metrics.metrics import get_metric
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -81,16 +82,16 @@ def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logg
             global_step += 1
             samples = global_step * batch_size
 
-            logger.logkv_mean('loss', loss.item())
-            logger.logkv_mean('grad_norm', grad_norm)
-            logger.logkv_mean('param_norm', param_norm)
-            logger.logkv('step', global_step)
-            logger.logkv('samples', samples)
-            logger.logkv('lr', optimizer.param_groups[0]['lr'])
-            logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses})
+            logger.logkv_mean('loss', loss.item(), accumulator='train')
+            logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
+            logger.logkv_mean('param_norm', param_norm, accumulator='train')
+            logger.logkv('step', global_step, accumulator='train')
+            logger.logkv('samples', samples, accumulator='train')
+            logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
+            logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
 
             if global_step % logger.log_interval == 0:
-                logger.dumpkvs(global_step)
+                logger.dumpkvs(global_step, accumulator='train')
 
             total_loss += loss.item()
 
@@ -128,13 +129,13 @@ def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
             global_step += 1
             samples = global_step * batch_size
 
-            logger.logkv_mean('test_loss', loss.item())
-            logger.logkv('test_step', global_step)
-            logger.logkv('test_samples', samples)
-            logger.logkv_loss_quartiles(diffusion, ts, {'test_loss': sample_mses})
+            logger.logkv_mean('test_loss', loss.item(), accumulator='val')
+            logger.logkv('test_step', global_step, accumulator='val')
+            logger.logkv('test_samples', samples, accumulator='val')
+            logger.logkv_loss_quartiles(diffusion, ts, {'test_loss': sample_mses}, accumulator='val')
 
             if global_step % logger.log_interval == 0:
-                logger.dumpkvs(global_step)
+                logger.dumpkvs(global_step, accumulator='val')
 
             total_loss += loss.item()
 
@@ -142,6 +143,55 @@ def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
 
     test_mean_loss = total_loss / len(test_dataloader)
     return test_mean_loss, global_step
+
+@device_grad_decorator(no_grad=True)
+def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
+    diffusion.eval()
+    pbar = tqdm(val_dl, desc="Validation", leave=True)
+    for img, true_mask, _ in pbar:
+        img = img.to(cfg.device)
+        true_mask = true_mask.to(cfg.device)
+        # Generate predictions (assume diffusion.sample returns predicted masks [B, 1, H, W])
+        pred_mask = diffusion.sample(img, disable_tqdm=True)
+        
+        # Process each sample in batch (since metrics are slice-wise)
+        batch_size = img.shape[0]
+        for i in range(batch_size):
+            pred = pred_mask[i]
+            true = true_mask[i]
+            for metric in metrics:
+                metric(pred, true)  # Call forward
+        
+        # Compute current running metrics and update postfix
+        current_results = {}
+        for metric in metrics:
+            metric_results = metric.compute()
+            if isinstance(metric_results, dict):
+                current_results.update(metric_results)
+            else:
+                current_results[metric.__class__.__name__] = metric_results
+        
+        key_metrics = {k: f"{current_results.get(k, 0):.4f}" for k in ['dice_2d_fg', 'f1_2d']}
+        pbar.set_postfix(**key_metrics)
+
+    # Compute aggregated results
+    results = {}
+    for metric in metrics:
+        metric_results = metric.compute()
+        if isinstance(metric_results, dict):  # For aggregators
+            results.update(metric_results)
+        else:
+            results[metric.__class__.__name__] = metric_results
+
+    # Update tqdm postfix with key metrics
+    key_metrics = {k: f"{v:.4f}" for k, v in results.items() if k in ['dice_2d_fg', 'f1_2d']}
+    pbar.set_postfix(**key_metrics)
+
+    # Reset metrics
+    for metric in metrics:
+        metric.reset()
+
+    return results
 
 def save_model(diffusion, old_best_epoch, new_best_epoch, model_save_path_template):
     """
@@ -241,22 +291,16 @@ def train_and_evaluate(
         logger.writer.close()
     return train_losses, test_losses, best_test_loss_epoch
 
-def step_based_train(
-    cfg,
-    diffusion,
-    train_dataloader,
-    optimizer,
-    scheduler,
-    logger,
-    model_save_path_template=None,
-    max_steps: int = None,
-    save_interval: int = 1000,
-    log_interval: int = 100,
-    test_dataloader = None,  # New optional param for test sampling
-):
-    # Use config values, assuming they exist
+def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger):
+    # Access dataloaders
+    train_dataloader = dataloaders['train']
+    sample_dataloader = dataloaders['sample']  # Formerly test_dataloader
+    val_dataloader = dataloaders['val']  # For future validation
+
+    # Use cfg values directly (remove params)
+    max_steps = cfg.training.max_steps
     save_interval = cfg.training.checkpoint_save_interval
-    log_interval = cfg.logging.interval  # Assuming from logging config
+    log_interval = cfg.logging.interval
     ema_rates = [float(r) for r in cfg.training.ema_rate.split(',') if r.strip()]
     scheduler_interval = cfg.training.scheduler_interval
     scheduler_type = cfg.training.scheduler_type
@@ -299,6 +343,14 @@ def step_based_train(
         # Increment global_step here, after training but before logging
         global_step += 1
         samples = global_step * batch_size
+        
+        # Validation check
+        if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
+            metrics = [get_metric(m['name'], m.get('params', {})) for m in cfg.validation.metrics]
+            val_results = validate_one_epoch(diffusion, val_dataloader, metrics, logger, global_step, cfg)
+            logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
+            logger.dumpkvs(global_step, accumulator='val')
+            logger.clear_accumulators(accumulator='val')
         
         # New: Image-based logging
         if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0 and global_step >= cfg.logging.min_log_step:
@@ -352,9 +404,9 @@ def step_based_train(
             print(f"Starting sampling logging at step {global_step}")
             
             # Select dataloader
-            if test_dataloader is None and cfg.logging.log_test_samples:
-                print("Warning: test_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
-            dl = test_dataloader if cfg.logging.log_test_samples and test_dataloader is not None else train_dataloader
+            if sample_dataloader is None and cfg.logging.log_test_samples:
+                print("Warning: sample_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
+            dl = sample_dataloader if cfg.logging.log_test_samples and sample_dataloader is not None else train_dataloader
             if dl is None:
                 print("Warning: No dataloader available for sampling – skipping snapshot logging.")
             else:
@@ -421,17 +473,17 @@ def step_based_train(
                 )
         
         # Logging (scalars)
-        logger.logkv_mean('loss', loss.item())
-        logger.logkv_mean('grad_norm', grad_norm)
-        logger.logkv_mean('param_norm', param_norm)
-        logger.logkv('step', global_step)
-        logger.logkv('samples', samples)
-        logger.logkv('lr', optimizer.param_groups[0]['lr'])
-        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses})
+        logger.logkv_mean('loss', loss.item(), accumulator='train')
+        logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
+        logger.logkv_mean('param_norm', param_norm, accumulator='train')
+        logger.logkv('step', global_step, accumulator='train')
+        logger.logkv('samples', samples, accumulator='train')
+        logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
+        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
         
         if global_step % log_interval == 0:
-            logger.dumpkvs(global_step)
-            logger.clear_accumulators()  # Ensure reset after dump
+            logger.dumpkvs(global_step, accumulator='train')
+            logger.clear_accumulators(accumulator='train')
         
         # Accumulate for scheduling
         interval_loss += loss.item()
@@ -471,8 +523,8 @@ def step_based_train(
         
     # Final save and log
     save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg)
-    logger.dumpkvs(global_step)
-    logger.clear_accumulators()
+    logger.dumpkvs(global_step, accumulator='train')
+    logger.clear_accumulators(accumulator='train')
     
     print(f"Step-based training complete at step {global_step}.")
 

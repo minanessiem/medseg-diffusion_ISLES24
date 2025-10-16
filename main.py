@@ -92,7 +92,10 @@ def main(cfg: DictConfig):
         diffusion = diffusion.to(device)
 
     # Get dataloaders
-    train_dl, test_dl = get_dataloaders(cfg)
+    dataloaders = get_dataloaders(cfg)
+    train_dl = dataloaders['train']
+    val_dl = dataloaders['val']
+    sample_dl = dataloaders['sample']
 
     if cfg.dataset.name == 'isles24':
         assert cfg.model.image_channels == len(cfg.dataset.modalities), "Model image_channels must match number of modalities"
@@ -116,12 +119,10 @@ def main(cfg: DictConfig):
         step_based_train(
             cfg,
             diffusion,
-            train_dl,
+            dataloaders,
             optimizer,
             scheduler,
-            logger,
-            max_steps=cfg.training.max_steps,
-            test_dataloader=test_dl,  # Pass test_dl for logging
+            logger
         )
     elif cfg.mode == "evaluate":
         # Stub for evaluation: Load model/EMA from config and visualize
@@ -130,7 +131,7 @@ def main(cfg: DictConfig):
         if cfg.training.evaluation.ema_rate is not None:
             checkpoint_path = checkpoint_path.replace('.pth', f'_ema_{cfg.training.evaluation.ema_rate}_{cfg.training.evaluation.step:06d}.pth')
         diffusion.load_state_dict(torch.load(checkpoint_path))
-        visualize_best_model_predictions(diffusion, test_dl.dataset, cfg)
+        visualize_best_model_predictions(diffusion, sample_dl.dataset, cfg)
     logger.close()
 
 if __name__ == '__main__':

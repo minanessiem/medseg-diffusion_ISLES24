@@ -1,4 +1,4 @@
-interval: 20
+interval: 100
 outputs: [console, tensorboard]
 table_format: simple
 # New/Consolidated Image Logging
