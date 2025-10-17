@@ -1,0 +1,6 @@
+
+validation_interval: 1000  # Steps between validation runs
+val_batch_size: 16
+metrics:
+  - name: SliceWiseMetricsAggregator
+    params: {}  # Add specific params here if needed, e.g., epsilon: 1e-6
