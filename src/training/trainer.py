@@ -16,6 +16,8 @@ from torch import no_grad
 from src.models.architectures.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
 from src.metrics.metrics import get_metric
 
+import gc
+
 def get_optimizer_and_scheduler(cfg, model):
     """
     Create optimizer and learning rate scheduler based on configuration.
@@ -346,11 +348,19 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger):
         
         # Validation check
         if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
+            # Free memory before validation
+            gc.collect()
+            torch.cuda.empty_cache()
+            
             metrics = [get_metric(m['name'], m.get('params', {})) for m in cfg.validation.metrics]
             val_results = validate_one_epoch(diffusion, val_dataloader, metrics, logger, global_step, cfg)
             logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
             logger.dumpkvs(global_step, accumulator='val')
             logger.clear_accumulators(accumulator='val')
+            
+            # Free memory after validation
+            gc.collect()
+            torch.cuda.empty_cache()
         
         # New: Image-based logging
         if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0 and global_step >= cfg.logging.min_log_step:
