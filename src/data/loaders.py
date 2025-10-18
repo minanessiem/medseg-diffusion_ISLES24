@@ -153,7 +153,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
     Dataset class for ISLES24 that returns 2D slices from 3D volumes.
     Inspired by BRATSDataset3D and CustomDataset3D.
     """
-    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32):
+    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32, use_caching=True):
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
@@ -166,6 +166,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         self.all_slices = []
 
         self.image_size = image_size
+        self.use_caching = use_caching
         print("Pre-calculating dataset size...")
         for case_idx, filedict in tqdm.tqdm(enumerate(self.database), total=len(self.database)):
             # Use the first modality to determine the number of slices
@@ -175,7 +176,10 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
                 num_slices = nibabel.load(filepath).shape[-1]
                 self.all_slices.extend([(case_idx, slice_idx) for slice_idx in range(num_slices)])
         
-        self.cache = {}  # Cache for preloaded 3D volumes per case_idx
+        if self.use_caching:
+            self.cache = {}  # Cache for preloaded 3D volumes per case_idx
+        else:
+            self.cache = None
         
 
     def __len__(self):
@@ -216,7 +220,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         case_idx, slice_idx = self.all_slices[x]
         filedict = self.database[case_idx]
         
-        if case_idx not in self.cache:
+        if self.use_caching and case_idx not in self.cache:
             data = {}
             keys_to_load = self.base_modalities + ['label']
             for key in keys_to_load:
@@ -230,8 +234,21 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
             self.cache[case_idx] = data
         
         data_slice = {}
-        for key in self.cache[case_idx]:
-            data_slice[key] = self.cache[case_idx][key][..., slice_idx]
+        if self.use_caching:
+            for key in self.cache[case_idx]:
+                data_slice[key] = self.cache[case_idx][key][..., slice_idx]
+        else:
+            # Load directly without caching
+            keys_to_load = self.base_modalities + ['label']
+            for key in keys_to_load:
+                if key not in filedict or not filedict[key]:
+                    continue
+                
+                filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
+                if os.path.exists(filepath):
+                    nib_img = nibabel.load(filepath)
+                    vol_data = torch.from_numpy(nib_img.get_fdata().astype(np.float32))
+                    data_slice[key] = vol_data[..., slice_idx]
         
         processed_images = self._process_modalities(data_slice)
         
@@ -393,7 +410,8 @@ def get_dataloaders(cfg):
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=False,
-            image_size=cfg.model.image_size
+            image_size=cfg.model.image_size,
+            use_caching=True
         )
         test_dataset = ISLES24Dataset2D(
             directory=cfg.dataset.dir,
@@ -402,7 +420,8 @@ def get_dataloaders(cfg):
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=True,
-            image_size=cfg.model.image_size
+            image_size=cfg.model.image_size,
+            use_caching=False
         )
         train_dataloader = DataLoader(
             train_dataset, 
@@ -417,7 +436,7 @@ def get_dataloaders(cfg):
             batch_size=cfg.validation.val_batch_size, 
             shuffle=False,
             num_workers=cfg.dataset.num_workers,
-            pin_memory=True,
+            pin_memory=False,
             persistent_workers=True if cfg.dataset.num_workers > 0 else False
         )
         sample_dataloader = DataLoader(
