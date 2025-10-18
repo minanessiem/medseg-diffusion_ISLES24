@@ -155,7 +155,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
     Dataset class for ISLES24 that returns 2D slices from 3D volumes.
     Inspired by BRATSDataset3D and CustomDataset3D.
     """
-    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32, use_caching=True, shared_cache=None, cache_lock=None):
+    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32, use_caching=False, shared_cache=None, cache_lock=None):
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
@@ -413,7 +413,7 @@ def get_dataloaders(cfg):
         train_dataloader, test_dataloader
     """
     if cfg.dataset.name == 'isles24':
-        shared_cache = {} if cfg.dataset.get('use_shared_cache', True) else None  # Optional config flag for easy toggling
+        shared_cache = {} if cfg.dataset.use_shared_cache else None  # Optional config flag for easy toggling
         cache_lock = threading.Lock() if shared_cache else None
         
         train_dataset = ISLES24Dataset2D(
@@ -424,7 +424,7 @@ def get_dataloaders(cfg):
             modalities=cfg.dataset.modalities,
             test_flag=False,
             image_size=cfg.model.image_size,
-            use_caching=True,
+            use_caching=cfg.dataset.use_caching,
             shared_cache=shared_cache,
             cache_lock=cache_lock
         )
@@ -436,7 +436,7 @@ def get_dataloaders(cfg):
             modalities=cfg.dataset.modalities,
             test_flag=True,
             image_size=cfg.model.image_size,
-            use_caching=bool(shared_cache),  # Enable if shared_cache provided
+            use_caching=cfg.dataset.use_caching,
             shared_cache=shared_cache,
             cache_lock=cache_lock
         )
@@ -446,7 +446,8 @@ def get_dataloaders(cfg):
             shuffle=True,
             num_workers=cfg.dataset.num_workers,
             pin_memory=True,
-            persistent_workers=True if cfg.dataset.num_workers > 0 else False
+            persistent_workers=True if cfg.dataset.num_workers > 0 else False,
+            prefetch_factor=cfg.dataset.train_prefetch_factor
         )
         val_dataloader = DataLoader(
             test_dataset, 
@@ -454,7 +455,8 @@ def get_dataloaders(cfg):
             shuffle=False,
             num_workers=cfg.dataset.num_workers,
             pin_memory=False,
-            persistent_workers=True if cfg.dataset.num_workers > 0 else False
+            persistent_workers=True if cfg.dataset.num_workers > 0 else False,
+            prefetch_factor=cfg.dataset.test_prefetch_factor
         )
         sample_dataloader = DataLoader(
             test_dataset, 
@@ -462,7 +464,8 @@ def get_dataloaders(cfg):
             shuffle=True,
             num_workers=cfg.dataset.num_workers,
             pin_memory=False,
-            persistent_workers=False
+            persistent_workers=False,
+            prefetch_factor=cfg.dataset.test_prefetch_factor
         )
         return {
             'train': train_dataloader,
