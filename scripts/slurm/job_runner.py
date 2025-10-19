@@ -94,8 +94,8 @@ class SlurmJobRunner:
         host_logdir = config["host_logdir"]
         os.makedirs(host_logdir, exist_ok=True)
         
-        output_file = os.path.join(host_logdir, f"{job_name}.out")
-        error_file = os.path.join(host_logdir, f"{job_name}.err")
+        output_file = os.path.join(host_logdir, "output.out")
+        error_file = os.path.join(host_logdir, "error.err")
         
         # Add output files to config
         config["output_file"] = output_file
