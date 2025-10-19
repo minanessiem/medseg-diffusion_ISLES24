@@ -19,4 +19,4 @@ use_shared_cache: true  # Or false to disable sharing
 train_prefetch_factor: 2
 
 # Same for val/sample DataLoaders
-test_prefetch_factor: 2
+test_prefetch_factor: 8

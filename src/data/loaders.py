@@ -444,16 +444,16 @@ def get_dataloaders(cfg):
             train_dataset, 
             batch_size=cfg.dataset.train_batch_size, 
             shuffle=True,
-            num_workers=cfg.dataset.num_workers,
+            num_workers=cfg.dataset.num_train_workers,
             pin_memory=True,
-            persistent_workers=True if cfg.dataset.num_workers > 0 else False,
+            persistent_workers=False, # True if cfg.dataset.num_workers > 0 else False,
             prefetch_factor=cfg.dataset.train_prefetch_factor
         )
         val_dataloader = DataLoader(
             test_dataset, 
             batch_size=cfg.validation.val_batch_size, 
             shuffle=False,
-            num_workers=cfg.dataset.num_workers,
+            num_workers=cfg.dataset.num_valid_workers,
             pin_memory=False,
             persistent_workers=True if cfg.dataset.num_workers > 0 else False,
             prefetch_factor=cfg.dataset.test_prefetch_factor
@@ -462,10 +462,10 @@ def get_dataloaders(cfg):
             test_dataset, 
             batch_size=cfg.dataset.test_batch_size, 
             shuffle=True,
-            num_workers=cfg.dataset.num_workers,
+            num_workers=cfg.dataset.num_test_workers,
             pin_memory=False,
             persistent_workers=False,
-            prefetch_factor=cfg.dataset.test_prefetch_factor
+            # prefetch_factor=cfg.dataset.test_prefetch_factor
         )
         return {
             'train': train_dataloader,

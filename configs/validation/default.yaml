@@ -1,5 +1,5 @@
 
-validation_interval: 1000  # Steps between validation runs
+validation_interval: 5000  # Steps between validation runs
 val_batch_size: 16
 metrics:
   - name: SliceWiseMetricsAggregator
