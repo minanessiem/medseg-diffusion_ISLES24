@@ -46,7 +46,7 @@ def apply_override(cfg: Dict, override: str) -> Dict:
 
 def load_config(config_name: str, overrides: List[str]) -> Dict:
     """Load and merge YAML configs mimicking basic Hydra composition."""
-    config_path = f"../../configs/{config_name}.yaml"  # Adjust path as needed
+    config_path = f"configs/{config_name}.yaml"  # Relative from project root
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
     
@@ -55,7 +55,7 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
         for default in cfg['defaults']:
             if isinstance(default, dict):
                 section, file_name = next(iter(default.items()))
-                sub_path = f"../../configs/{section}/{file_name}.yaml"
+                sub_path = f"configs/{section}/{file_name}.yaml"
                 with open(sub_path, 'r') as f:
                     sub_cfg = yaml.safe_load(f)
                 cfg = deep_merge(cfg, sub_cfg)
