@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import yaml
 from typing import Dict
+import pprint
 
 from src.utils.run_name import generate_run_name
 
@@ -50,7 +51,7 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
     
-    # Merge defaults
+    # Merge defaults with nesting
     if 'defaults' in cfg:
         for default in cfg['defaults']:
             if isinstance(default, dict):
@@ -58,7 +59,10 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
                 sub_path = f"configs/{section}/{file_name}.yaml"
                 with open(sub_path, 'r') as f:
                     sub_cfg = yaml.safe_load(f)
-                cfg = deep_merge(cfg, sub_cfg)
+                if section in cfg and isinstance(cfg[section], dict):
+                    cfg[section] = deep_merge(cfg[section], sub_cfg)
+                else:
+                    cfg[section] = sub_cfg
         del cfg['defaults']  # Clean up
     
     # Apply overrides
@@ -98,6 +102,7 @@ def main():
     
     # Load custom config
     cfg = load_config(args.config_name, overrides)
+    pprint.pprint(cfg)  # Debug print of final config
     
     # Generate run_name using utility
     run_name = generate_run_name(cfg, timestamp)
