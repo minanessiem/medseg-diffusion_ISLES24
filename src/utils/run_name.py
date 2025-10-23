@@ -1,7 +1,6 @@
 import datetime
-from omegaconf import DictConfig
 
-def generate_run_name(cfg: DictConfig, timestamp: str = None) -> str:
+def generate_run_name(cfg, timestamp: str = None) -> str:
     """Generate the run name string based on the resolved Hydra config.
 
     Args:
