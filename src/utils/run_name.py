@@ -1,10 +1,10 @@
 import datetime
 
 def generate_run_name(cfg, timestamp: str = None) -> str:
-    """Generate the run name string based on the resolved Hydra config.
+    """Generate the run name string based on the resolved config.
 
     Args:
-        cfg: The resolved DictConfig object.
+        cfg: The resolved config (DictConfig or plain dict).
         timestamp: Optional timestamp string; if None, generate current timestamp.
 
     Returns:
@@ -14,7 +14,16 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
     scheduler_str = ""
-    if cfg.training.get('scheduler_type') == 'reduce_lr':
+    if isinstance(cfg, dict):
+        training = cfg.get('training', {})
+        model = cfg.get('model', {})
+        dataset = cfg.get('dataset', {})
+    else:  # Assume DictConfig
+        training = cfg.training
+        model = cfg.model
+        dataset = cfg.dataset
+    
+    if training.get('scheduler_type') == 'reduce_lr':
         params = {
             'rlrfctr': 'reduce_lr_factor',
             'rlrpat': 'reduce_lr_patience',
@@ -22,14 +31,14 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
             'rlrcool': 'reduce_lr_cooldown'
         }
         for abbr, key in params.items():
-            val = cfg.training.get(key)
+            val = training.get(key)
             if val is not None:
                 scheduler_str += f"_{abbr}{val}"
     
-    run_name = (f"unet_img{cfg.model.image_size}_numlayers{cfg.model.num_layers}_firstconv{cfg.model.first_conv_channels}_"
-                f"timembdim{cfg.model.time_embedding_dim}_attheads{cfg.model.att_heads}_attheaddim{cfg.model.att_head_dim}_"
-                f"btllayers{cfg.model.bottleneck_transformer_layers}_btchsz{cfg.dataset.train_batch_size}_"
-                f"lr{cfg.training.learning_rate}_maxsteps{cfg.training.max_steps}_diffsteps{cfg.training.timesteps}"
+    run_name = (f"unet_img{model['image_size']}_numlayers{model['num_layers']}_firstconv{model['first_conv_channels']}_"
+                f"timembdim{model['time_embedding_dim']}_attheads{model['att_heads']}_attheaddim{model['att_head_dim']}_"
+                f"btllayers{model['bottleneck_transformer_layers']}_btchsz{dataset['train_batch_size']}_"
+                f"lr{training['learning_rate']}_maxsteps{training['max_steps']}_diffsteps{training['timesteps']}"
                 f"{scheduler_str}_{timestamp}")
     
     return run_name
