@@ -45,6 +45,25 @@ def apply_override(cfg: Dict, override: str) -> Dict:
     current[keys[-1]] = value
     return cfg
 
+def resolve_interpolations(cfg: Dict, root: Dict = None) -> Dict:
+    """Recursively resolve ${path.to.key} interpolations in the dict."""
+    if root is None:
+        root = cfg
+    if isinstance(cfg, dict):
+        for key, value in cfg.items():
+            cfg[key] = resolve_interpolations(value, root)
+        return cfg
+    elif isinstance(cfg, str) and cfg.startswith('${') and cfg.endswith('}'):
+        path = cfg[2:-1].split('.')
+        current = root
+        for p in path:
+            if isinstance(current, dict) and p in current:
+                current = current[p]
+            else:
+                raise KeyError(f"Interpolation key '{cfg}' not found")
+        return current
+    return cfg
+
 def load_config(config_name: str, overrides: List[str]) -> Dict:
     """Load and merge YAML configs mimicking basic Hydra composition."""
     config_path = f"configs/{config_name}.yaml"  # Relative from project root
@@ -69,6 +88,9 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
     # Apply overrides
     for ovr in overrides:
         cfg = apply_override(cfg, ovr)
+    
+    # Resolve interpolations
+    cfg = resolve_interpolations(cfg)
     
     return cfg
 
