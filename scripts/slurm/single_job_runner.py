@@ -151,7 +151,7 @@ def main():
         config["host_outputs_dir"] = config["host_base"] + relative_out
     else:
         raise ValueError(f"output_root '{{config[\"container_outputs_dir\"]}}' does not start with expected container_prefix '{{config[\"container_prefix\"]}}'")
-    
+
     # Update logdir paths with new logdir_name
     config = update_logdir_paths(config)
     
