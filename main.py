@@ -71,18 +71,19 @@ def main(cfg: DictConfig):
     # Optional: Visualize noise schedulers
     # visualize_noise_schedulers(cfg)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = generate_run_name(cfg, timestamp)
+    # Use overridden timestamp/run_name if provided
+    timestamp = cfg.get("timestamp", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    run_name = cfg.get("run_name", generate_run_name(cfg, timestamp))
     
     # Compute and create run_dir
-    run_dir = f"{cfg.environment.training.output_root}{run_name}/"
-    os.makedirs(run_dir, exist_ok=True)
-    os.makedirs(f"{run_dir}tensorboard/", exist_ok=True)
-    os.makedirs(f"{run_dir}models/", exist_ok=True)
+    run_output_dir = f"{cfg.environment.training.output_root}{run_name}/"
+    os.makedirs(run_output_dir, exist_ok=True)
+    os.makedirs(f"{run_output_dir}tensorboard/", exist_ok=True)
+    os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)
 
     OmegaConf.set_struct(cfg, False)  # Allow update to hydra key
     # Override Hydra run.dir to run_dir for logs
-    OmegaConf.update(cfg, "hydra.run.dir", run_dir)
+    OmegaConf.update(cfg, "hydra.run.dir", run_output_dir)
     OmegaConf.set_struct(cfg, True)  # Restore
 
     # Move early Hydra logs (e.g., main.log) from temp to run_dir
@@ -90,22 +91,22 @@ def main(cfg: DictConfig):
     temp_log_dir = HydraConfig.get().run.dir  # Direct runtime access
     early_log = f"{temp_log_dir}/main.log"
     if os.path.exists(early_log):
-        os.makedirs(run_dir, exist_ok=True)
-        os.rename(early_log, f"{run_dir}/main.log")
-        print(f"Moved main.log to {run_dir}")
+        os.makedirs(run_output_dir, exist_ok=True)
+        os.rename(early_log, f"{run_output_dir}/main.log")
+        print(f"Moved main.log to {run_output_dir}")
 
     # Move .hydra/ metadata folder to run_dir
     hydra_dir = '.hydra'
     if os.path.exists(hydra_dir):
-        target_hydra = f"{run_dir}/.hydra"
+        target_hydra = f"{run_output_dir}/.hydra"
         shutil.move(hydra_dir, target_hydra)
         print(f"Moved .hydra/ to {target_hydra}")
 
     writer = None
     log_dir = "runs/"  # default
     if cfg.mode == "train":
-        writer = SummaryWriter(log_dir=f"{run_dir}tensorboard/")
-        log_dir = f"{run_dir}tensorboard/"
+        writer = SummaryWriter(log_dir=f"{run_output_dir}tensorboard/")
+        log_dir = f"{run_output_dir}tensorboard/"
     else:
         # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
         log_dir = f"runs/eval_{timestamp}/"
@@ -169,7 +170,7 @@ def main(cfg: DictConfig):
             optimizer,
             scheduler,
             logger,
-            run_dir=run_dir  # Pass run_dir
+            run_dir=run_output_dir  # Pass run_dir
         )
     elif cfg.mode == "evaluate":
         # Stub for evaluation: Load model/EMA from config and visualize

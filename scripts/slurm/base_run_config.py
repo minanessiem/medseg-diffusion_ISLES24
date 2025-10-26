@@ -31,6 +31,7 @@ BASE_CONFIG = {
     "container_outputs_base": "/mnt/outputs/",  # General base, experiment subdir from config
     "container_prefix": "/mnt/",
     "host_base": ssd_store_path,
+    "container_outputs_dir": "/mnt/outputs/",  # Initial value
     
     # Output directory configuration
     "logdir_name": "medsegdiff_outputs",

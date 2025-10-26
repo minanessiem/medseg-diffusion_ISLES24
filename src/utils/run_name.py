@@ -42,7 +42,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     run_name = (f"unet_img{model['image_size']}_numlayers{model['num_layers']}_firstconv{model['first_conv_channels']}_"
                 f"timembdim{model['time_embedding_dim']}_attheads{model['att_heads']}_attheaddim{model['att_head_dim']}_"
                 f"btllayers{model['bottleneck_transformer_layers']}_btchsz{dataset['train_batch_size']}_"
-                f"lr{optimizer['learning_rate']}_maxsteps{training['max_steps']}_diffsteps{diffusion['timesteps']}"
+                f"lr{str(optimizer['learning_rate'])}_maxsteps{training['max_steps']}_diffsteps{diffusion['timesteps']}"
                 f"{scheduler_str}_{timestamp}")
     
     return run_name

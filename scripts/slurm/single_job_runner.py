@@ -137,6 +137,10 @@ def main():
     config["job_name"] = job_name
     config["logdir_name"] = run_name  # For outputs
     config["hydra_config_name"] = args.config_name
+    
+    # Add timestamp and run_name to overrides for main.py
+    overrides.append(f"timestamp={timestamp}")
+    overrides.append(f"run_name={run_name}")
     config["hydra_overrides"] = overrides
     
     # Update config with resolved output_root
@@ -146,7 +150,7 @@ def main():
         relative_out = config["container_outputs_dir"][len(config["container_prefix"]):]
         config["host_outputs_dir"] = config["host_base"] + relative_out
     else:
-        raise ValueError(f"output_root '{config["container_outputs_dir"]}' does not start with expected container_prefix '{config["container_prefix"]}'")
+        raise ValueError(f"output_root '{{config[\"container_outputs_dir\"]}}' does not start with expected container_prefix '{{config[\"container_prefix\"]}}'")
     
     # Update logdir paths with new logdir_name
     config = update_logdir_paths(config)
