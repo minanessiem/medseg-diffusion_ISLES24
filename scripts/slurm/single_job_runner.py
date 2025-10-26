@@ -59,6 +59,7 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
                 sub_path = f"configs/{section}/{file_name}.yaml"
                 with open(sub_path, 'r') as f:
                     sub_cfg = yaml.safe_load(f)
+                # Consistent merge for all - deep_merge if section exists, else assign
                 if section in cfg and isinstance(cfg[section], dict):
                     cfg[section] = deep_merge(cfg[section], sub_cfg)
                 else:
