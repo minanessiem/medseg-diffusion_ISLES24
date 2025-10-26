@@ -15,4 +15,4 @@ mode: train  # Or evaluate
 
 hydra:
   run:
-    dir: '/mnt/outputs/'
+    dir: '/mnt/outputs/medsegdiff_outputs/'

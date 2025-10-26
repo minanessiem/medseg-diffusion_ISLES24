@@ -7,7 +7,7 @@ dataset:
   train_batch_size: 4
   test_batch_size: 4
 training:
-  output_root: '/mnt/outputs/'
+  output_root: '/mnt/outputs/medsegdiff_outputs/'
   model_save_dir: 'models/'
   multi_gpu: false
 device: cuda
