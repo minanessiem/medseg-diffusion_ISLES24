@@ -28,7 +28,9 @@ BASE_CONFIG = {
     # Container mount points (where directories appear inside container)
     "container_code_dir": "/mnt/code",
     "container_datasets_dir": "/mnt/datasets",
-    "container_outputs_dir": "/mnt/outputs",
+    "container_outputs_base": "/mnt/outputs/",  # General base, experiment subdir from config
+    "container_prefix": "/mnt/",
+    "host_base": ssd_store_path,
     
     # Output directory configuration
     "logdir_name": "medsegdiff_outputs",
