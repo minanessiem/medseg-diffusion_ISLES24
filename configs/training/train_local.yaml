@@ -1,20 +1,10 @@
 # Training-specific parameters (split from default.yaml)
 # num_epochs: 50  # Deprecated: Use max_steps for step-based training instead
-learning_rate: 2e-4
-timesteps: 100
-noise_schedule: cosine
-output_root: "./outputs/medsegdiff_outputs/"
-reduce_lr_factor: 0.75
-reduce_lr_patience: 2
-reduce_lr_threshold: 1e-4
-reduce_lr_cooldown: 1
-model_save_dir: "./outputs/medsegdiff_outputs/models/"
+
+max_steps: 100000  # Maximum training steps
 checkpoint_save_interval: 500
-main_checkpoint_template: '${training.output_root}models/diffusion_chkpt_step_{:06d}.pth'
-ema_checkpoint_template: '${training.output_root}models/ema_chkpt_step_{:06d}_ema_{rate}.pth'
-opt_checkpoint_template: '${training.output_root}models/opt_chkpt_step_{:06d}.pth'
+main_checkpoint_template: 'models/diffusion_chkpt_step_{:06d}.pth'
+ema_checkpoint_template: 'models/ema_chkpt_step_{:06d}_ema_{rate}.pth'
+opt_checkpoint_template: 'models/opt_chkpt_step_{:06d}.pth'
 ema_rate_precision: 4  # Decimal places for EMA rate in filename
 ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"
-scheduler_interval: 1000
-scheduler_type: reduce_lr  # Or 'cosine' for cosine annealing
-max_steps: 100000  # Maximum training steps

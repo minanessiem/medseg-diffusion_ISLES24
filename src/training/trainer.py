@@ -17,6 +17,7 @@ from src.models.architectures.unet_util import unnormalize_to_zero_to_one, norma
 from src.metrics.metrics import get_metric
 
 import gc
+from omegaconf import OmegaConf
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -29,6 +30,17 @@ def get_optimizer_and_scheduler(cfg, model):
     Returns:
         optimizer, scheduler
     """
+    OmegaConf.set_struct(cfg, False)
+    # Temporary aliases for config transition
+    cfg.training.learning_rate = cfg.optimizer.learning_rate
+    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
+    cfg.training.reduce_lr_factor = cfg.optimizer.reduce_lr_factor
+    cfg.training.reduce_lr_patience = cfg.optimizer.reduce_lr_patience
+    cfg.training.reduce_lr_threshold = cfg.optimizer.reduce_lr_threshold
+    cfg.training.reduce_lr_cooldown = cfg.optimizer.reduce_lr_cooldown
+    cfg.training.max_steps = cfg.training.max_steps  # Retained in training
+    OmegaConf.set_struct(cfg, True)
+
     optimizer = Adam(model.parameters(), lr=cfg.training.learning_rate)
     
     if cfg.training.scheduler_type == 'reduce_lr':
@@ -293,7 +305,31 @@ def train_and_evaluate(
         logger.writer.close()
     return train_losses, test_losses, best_test_loss_epoch
 
-def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger):
+def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, run_dir=None):
+    OmegaConf.set_struct(cfg, False)
+    # Temporary aliases for config transition
+    # Optimizer/scheduler (some may be set in get_optimizer)
+    cfg.training.scheduler_interval = cfg.optimizer.scheduler_interval
+    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
+    
+    # Diffusion
+    cfg.training.timesteps = cfg.diffusion.timesteps
+    
+    # Training loop
+    cfg.training.max_steps = cfg.training.max_steps
+    cfg.training.checkpoint_save_interval = cfg.training.checkpoint_save_interval
+    cfg.training.ema_rate = cfg.training.ema_rate
+    cfg.training.ema_rate_precision = cfg.training.ema_rate_precision
+    
+    # Validation/logging
+    cfg.validation.validation_interval = cfg.validation.validation_interval
+    
+    # Dataset (for modalities)
+    cfg.dataset.modalities = cfg.dataset.modalities  # Retained or from base
+    
+    # Environment (device from main, but alias if needed)
+    cfg.device = cfg.environment.device
+
     # Access dataloaders
     train_dataloader = dataloaders['train']
     sample_dataloader = dataloaders['sample']  # Formerly test_dataloader
@@ -527,20 +563,27 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger):
         
         # Periodic saving
         if global_step % save_interval == 0 and global_step > 0:
-            save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg)
+            save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg, run_dir)
         
         # Removed old visualization block
         
     # Final save and log
-    save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg)
+    save_checkpoint(diffusion, optimizer, ema_params, ema_rates, global_step, cfg, run_dir)
     logger.dumpkvs(global_step, accumulator='train')
     logger.clear_accumulators(accumulator='train')
     
     print(f"Step-based training complete at step {global_step}.")
 
-def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, cfg):  # Pass cfg for templates
+def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, cfg, run_dir=None):  # Pass cfg for templates
+    OmegaConf.set_struct(cfg, False)
+    # Aliases for templates
+    cfg.training.main_checkpoint_template = cfg.training.main_checkpoint_template
+    cfg.training.ema_checkpoint_template = cfg.training.ema_checkpoint_template
+    cfg.training.opt_checkpoint_template = cfg.training.opt_checkpoint_template
+    cfg.training.ema_rate_precision = cfg.training.ema_rate_precision
+
     # Save main model
-    main_path = cfg.training.main_checkpoint_template.format(step)
+    main_path = f"{run_dir}{cfg.training.main_checkpoint_template.format(step)}"
     os.makedirs(os.path.dirname(main_path), exist_ok=True)
     torch.save(diffusion.state_dict(), main_path)
     print(f"Saved model checkpoint to {main_path} at step {step}")
@@ -548,12 +591,13 @@ def save_checkpoint(diffusion, optimizer, ema_params, ema_rates, step, cfg):  # 
     # Save EMAs (one per rate)
     for rate, params in zip(ema_rates, ema_params):
         formatted_rate = f"{rate:.{cfg.training.ema_rate_precision}f}"
-        ema_path = cfg.training.ema_checkpoint_template.format(step, rate=formatted_rate)
+        ema_path = f"{run_dir}{cfg.training.ema_checkpoint_template.format(step, rate=formatted_rate)}"
         ema_state = {k: v for k, v in zip(diffusion.state_dict().keys(), (p.data for p in params))}
         torch.save(ema_state, ema_path)
         print(f"Saved EMA (rate {rate}) checkpoint to {ema_path} at step {step}")
     
     # Save optimizer
-    opt_path = cfg.training.opt_checkpoint_template.format(step)
+    opt_path = f"{run_dir}{cfg.training.opt_checkpoint_template.format(step)}"
     torch.save(optimizer.state_dict(), opt_path)
     print(f"Saved optimizer checkpoint to {opt_path} at step {step}")
+    OmegaConf.set_struct(cfg, True)

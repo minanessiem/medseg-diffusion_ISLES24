@@ -3,10 +3,11 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 import random
 import numpy as np
+import shutil
 
 from src.models.architectures.unet import Unet
 from src.models.components.diffusion import Diffusion
-from src.data.loaders import BrainMRIDataset, get_dataloaders  # Assuming get_dataloaders is implemented
+from src.data.loaders import get_dataloaders
 from src.training.trainer import get_optimizer_and_scheduler, step_based_train
 from src.evaluation.evaluator import plot_losses, load_best_model, visualize_best_model_predictions, visualize_noise_schedulers  # Optional
 from torch.utils.tensorboard import SummaryWriter
@@ -25,8 +26,37 @@ def _parse_multi_gpu_flag(flag):
         return [int(x) for x in flag]
     return [int(x.strip()) for x in str(flag).split(',') if x.strip()]
 
-@hydra.main(config_path="configs", config_name="default")
+@hydra.main(config_path="configs", config_name="default", version_base=None)
 def main(cfg: DictConfig):
+    # Temporary aliases for config transition - remove after full refactor
+    OmegaConf.set_struct(cfg, False)  # Temporarily allow dynamic keys
+    # Optimizer aliases
+    cfg.training.learning_rate = cfg.optimizer.learning_rate
+    cfg.training.reduce_lr_factor = cfg.optimizer.reduce_lr_factor
+    cfg.training.reduce_lr_patience = cfg.optimizer.reduce_lr_patience
+    cfg.training.reduce_lr_threshold = cfg.optimizer.reduce_lr_threshold
+    cfg.training.reduce_lr_cooldown = cfg.optimizer.reduce_lr_cooldown
+    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
+    cfg.training.scheduler_interval = cfg.optimizer.scheduler_interval
+    
+    # Diffusion aliases
+    cfg.training.timesteps = cfg.diffusion.timesteps
+    cfg.training.noise_schedule = cfg.diffusion.noise_schedule
+    
+    # Environment aliases (training)
+    cfg.training.output_root = cfg.environment.training.output_root
+    cfg.training.model_save_dir = cfg.environment.training.model_save_dir
+    cfg.training.multi_gpu = cfg.environment.training.multi_gpu
+    
+    # Environment aliases (top-level and dataset)
+    cfg.device = cfg.environment.device
+    cfg.dataset.dir = cfg.environment.dataset.dir
+    cfg.dataset.json_list = cfg.environment.dataset.json_list
+    cfg.dataset.num_workers = cfg.environment.dataset.num_workers
+    cfg.dataset.train_batch_size = cfg.environment.dataset.train_batch_size
+    cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
+    OmegaConf.set_struct(cfg, True)  # Restore struct mode
+
     # Set seeds for reproducibility (from notebook Cell 4)
     torch.manual_seed(cfg.random_seed)
     random.seed(cfg.random_seed)
@@ -42,14 +72,38 @@ def main(cfg: DictConfig):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = generate_run_name(cfg, timestamp)
     
+    # Compute and create run_dir
+    run_dir = f"{cfg.environment.training.output_root}{run_name}/"
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(f"{run_dir}tensorboard/", exist_ok=True)
+    os.makedirs(f"{run_dir}models/", exist_ok=True)
+
+    OmegaConf.set_struct(cfg, False)  # Allow update to hydra key
+    # Override Hydra run.dir to run_dir for logs
+    OmegaConf.update(cfg, "hydra.run.dir", run_dir)
+    OmegaConf.set_struct(cfg, True)  # Restore
+
+    # Move early Hydra logs (e.g., main.log) from temp to run_dir
+    from hydra.core.hydra_config import HydraConfig
+    temp_log_dir = HydraConfig.get().run.dir  # Direct runtime access
+    early_log = f"{temp_log_dir}/main.log"
+    if os.path.exists(early_log):
+        os.makedirs(run_dir, exist_ok=True)
+        os.rename(early_log, f"{run_dir}/main.log")
+        print(f"Moved main.log to {run_dir}")
+
+    # Move .hydra/ metadata folder to run_dir
+    hydra_dir = '.hydra'
+    if os.path.exists(hydra_dir):
+        target_hydra = f"{run_dir}/.hydra"
+        shutil.move(hydra_dir, target_hydra)
+        print(f"Moved .hydra/ to {target_hydra}")
+
     writer = None
     log_dir = "runs/"  # default
     if cfg.mode == "train":
-        run_output_dir = f"{cfg.training.output_root}{run_name}/"
-        os.makedirs(f"{run_output_dir}tensorboard/", exist_ok=True)
-        os.makedirs(f"{run_output_dir}{cfg.training.model_save_dir}", exist_ok=True)
-        writer = SummaryWriter(log_dir=f"{run_output_dir}tensorboard/")
-        log_dir = f"{run_output_dir}tensorboard/"
+        writer = SummaryWriter(log_dir=f"{run_dir}tensorboard/")
+        log_dir = f"{run_dir}tensorboard/"
     else:
         # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
         log_dir = f"runs/eval_{timestamp}/"
@@ -112,7 +166,8 @@ def main(cfg: DictConfig):
             dataloaders,
             optimizer,
             scheduler,
-            logger
+            logger,
+            run_dir=run_dir  # Pass run_dir
         )
     elif cfg.mode == "evaluate":
         # Stub for evaluation: Load model/EMA from config and visualize

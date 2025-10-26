@@ -69,5 +69,5 @@ ulimit -n 4096
 srun \\
   --container-mounts=$CODE_DIR:{container_code_dir},$DATASETS_DIR:{container_datasets_dir},$OUTPUTS_DIR:{container_outputs_dir} \\
   --container-image=$IMAGE \\
-  bash -c "export PYTHONNOUSERSITE=1; python3 {container_code_dir}/medseg-diffusion/main.py --config-name {hydra_config_name} {hydra_overrides_str}"
+  bash -c "export PYTHONNOUSERSITE=1; python3 {container_code_dir}/medseg-diffusion_ISLES24/main.py --config-name {hydra_config_name} {hydra_overrides_str}"
 """

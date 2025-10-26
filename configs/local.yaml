@@ -1,21 +1,18 @@
 defaults:
+  - _self_
+  - environment: local
   - model: unet_local
-  - dataset: isles24_local
+  - dataset: base_isles24
   - training: train_local
+  - optimizer: default
+  - diffusion: default
   - validation: default
   # To include eval params: hydra run +training=eval or compose in config
   - logging: default
 
 random_seed: 42
-device: cuda  # Or cpu; auto-detect in main.py if possible
 mode: train  # Or evaluate
-
-training:
-  multi_gpu: false  # false -> single GPU; or comma-separated string of GPU ids like "0,1"
-
-dataset:
-  num_workers: 4  # Number of subprocesses for data loading (0 = single-process; set to 4-8 for multi-core speedup)
 
 hydra:
   run:
-    dir: './outputs/medsegdiff_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}'
+    dir: '.'
