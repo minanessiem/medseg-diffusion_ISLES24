@@ -52,7 +52,9 @@ def main(cfg: DictConfig):
     cfg.device = cfg.environment.device
     cfg.dataset.dir = cfg.environment.dataset.dir
     cfg.dataset.json_list = cfg.environment.dataset.json_list
-    cfg.dataset.num_workers = cfg.environment.dataset.num_workers
+    cfg.dataset.num_train_workers = cfg.environment.dataset.num_train_workers
+    cfg.dataset.num_valid_workers = cfg.environment.dataset.num_valid_workers
+    cfg.dataset.num_test_workers = cfg.environment.dataset.num_test_workers
     cfg.dataset.train_batch_size = cfg.environment.dataset.train_batch_size
     cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
     OmegaConf.set_struct(cfg, True)  # Restore struct mode
