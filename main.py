@@ -96,7 +96,7 @@ def main(cfg: DictConfig):
         print(f"Moved main.log to {run_output_dir}")
 
     # Move .hydra/ metadata folder to run_dir
-    hydra_dir = '.hydra'
+    hydra_dir = f"{temp_log_dir}/.hydra"
     if os.path.exists(hydra_dir):
         target_hydra = f"{run_output_dir}/.hydra"
         shutil.move(hydra_dir, target_hydra)
