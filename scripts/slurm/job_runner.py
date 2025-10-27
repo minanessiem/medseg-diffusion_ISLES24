@@ -92,12 +92,10 @@ class SlurmJobRunner:
         # Create output files using the logdir from config
         # Note: We use host_logdir here since SLURM runs on the host system
         host_logdir = config["host_logdir"]
-        os.makedirs(host_logdir, exist_ok=True)
-        
+
         output_file = os.path.join(host_logdir, "output.out")
         error_file = os.path.join(host_logdir, "error.err")
         
-        # Add output files to config
         config["output_file"] = output_file
         config["error_file"] = error_file 
         
@@ -111,7 +109,9 @@ class SlurmJobRunner:
             for key, value in config.items():
                 print(f"  {key}: {value}")
             return None
-            
+        else:
+            os.makedirs(host_logdir, exist_ok=True)
+        
         # Build Hydra overrides string
         if 'hydra_overrides' in config and config['hydra_overrides']:
             config['hydra_overrides_str'] = ' '.join(config['hydra_overrides'])
