@@ -1,11 +1,11 @@
 defaults:
   - _self_
-  - environment: local
-  - model: unet_local
-  - dataset: base_isles24
-  - training: train_local
-  - optimizer: default
-  - diffusion: default
+  - environment: isles_local
+  - model: unet_32_1l_8c_2x2a_128t_debug
+  - dataset: isles24
+  - training: train_50Ks_9999e
+  - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
+  - diffusion: diffusion_100ts_cosinesch
   - validation: default
   # To include eval params: hydra run +training=eval or compose in config
   - logging: default

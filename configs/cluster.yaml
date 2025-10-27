@@ -1,10 +1,10 @@
 defaults:
   - _self_
-  - environment: cluster
-  - model: unet_cluster
-  - dataset: base_isles24
-  - training: train_cluster
-  - optimizer: default
+  - environment: isles_cluster
+  - model: unet_256_4l_16c_6x4a_128t_large
+  - dataset: isles24
+  - training: train_50Ks_9999e
+  - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
   - diffusion: default
   - validation: default
   # To include eval params: hydra run +training=eval or compose in config
