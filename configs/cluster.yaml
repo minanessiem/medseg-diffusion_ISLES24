@@ -12,6 +12,8 @@ defaults:
 
 random_seed: 42
 mode: train  # Or evaluate
+timestamp: null
+run_name: null
 
 hydra:
   run:
