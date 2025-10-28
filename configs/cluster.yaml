@@ -3,9 +3,9 @@ defaults:
   - environment: isles_cluster
   - model: unet_256_4l_16c_6x4a_128t_large
   - dataset: isles24
-  - training: train_50Ks_9999e
+  - training: train_100Kms_50Ks_9999e
   - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
-  - diffusion: default
+  - diffusion: diffusion_100ts_cosinesch
   - validation: default
   # To include eval params: hydra run +training=eval or compose in config
   - logging: default
