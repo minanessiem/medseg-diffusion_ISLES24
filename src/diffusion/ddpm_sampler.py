@@ -9,64 +9,12 @@ from src.models.architectures.unet_util import normalize_to_neg_one_to_one, unno
 from src.utils.general import device_grad_decorator
 from omegaconf import OmegaConf
 
-class NoiseScheduler:
-    def __init__(self, timesteps, beta_min=0.0001, beta_max=0.02, mode='linear', cosine_s=8e-3):
-        """
-        Args:
-            timesteps (int): The number of timesteps for the noise schedule.
-            beta_min (float): The minimum value of beta in the schedule.
-            beta_max (float): The maximum value of beta in the schedule.
-            mode (str): The type of scheduling to use. Options are 'quad', 'linear', 'cosine'.
-            cosine_s (float): S parameter for cosine scheduling. Defaults to 8e-3.
-        """
-        self.timesteps = timesteps
-        self.beta_min = beta_min
-        self.beta_max = beta_max
-        self.mode = mode
-        self.cosine_s = cosine_s
-        assert mode in ['quad', 'linear', 'cosine'], '"Unsupported scheduling mode'
+from .diffusion import Diffusion
+from .noise_scheduler import NoiseScheduler  # Will be implemented separately
 
-    def get_beta_schedule(self):
-        if self.mode == "quad":
-            betas = (
-                torch.linspace(
-                    self.beta_min ** 0.5, self.beta_max ** 0.5, self.timesteps, dtype=torch.float64
-                )
-                ** 2
-            )
-        elif self.mode == "linear":
-            betas = torch.linspace(
-                self.beta_min, self.beta_max, self.timesteps, dtype=torch.float64
-            )
-        elif self.mode == "cosine":
-            timesteps = (
-                torch.arange(self.timesteps + 1, dtype=torch.float64) / self.timesteps + self.cosine_s
-            )
-            alphas = timesteps / (1 + self.cosine_s) * math.pi / 2
-            alphas = torch.cos(alphas).pow(2)
-            alphas = alphas / alphas[0]
-            betas = 1 - alphas[1:] / alphas[:-1]
-            betas = betas.clamp(min=0 ,max=0.999)
-
-        return betas.numpy()
-
-    def get_alpha_schedule(self):
-        beta_schedule = self.get_beta_schedule()
-        alpha_schedule = 1 - beta_schedule
-        return alpha_schedule
-
-    def get_alpha_bar_schedule(self):
-        alpha_schedule = self.get_alpha_schedule()
-        alpha_bar_schedule = np.cumprod(alpha_schedule)
-        return alpha_bar_schedule
-
-    def get_alphas_bar_previous_schedule(self):
-        alpha_bar_schedule = self.get_alpha_bar_schedule()
-        alpha_bars_prev = np.pad(alpha_bar_schedule[:-1], (1, 0), mode='constant', constant_values=1)
-        return alpha_bars_prev
-
-class Diffusion(nn.Module):
+class DDPMSampler(Diffusion):
     """
+    DDPM-specific implementation of the diffusion sampler, inheriting from abstract Diffusion.
     A denoising probabilistic Gaussian diffusion model (DDPM).
 
     Attributes:
@@ -81,30 +29,25 @@ class Diffusion(nn.Module):
 
     def __init__(self, model, cfg, device=None):
         """
-        Initialize the Diffusion model.
+        Initialize the DDPM sampler.
 
         Args:
             model (nn.Module): Neural network model for generating predictions.
             cfg (DictConfig): Hydra configuration object.
             device (torch.device): Device to run the model (CPU or GPU).
         """
-        super().__init__()
+        super().__init__(model, cfg, device)
         OmegaConf.set_struct(cfg, False)
         # Temporary aliases for config transition
         cfg.training.timesteps = cfg.diffusion.timesteps
         cfg.training.noise_schedule = cfg.diffusion.noise_schedule
         OmegaConf.set_struct(cfg, True)
 
-        self.model = model
-        self.image_channels = model.image_channels
-        self.mask_channels = model.mask_channels
-        self.image_size = model.image_size
-        self.device = torch.device(cfg.device) if device is None else device
         self._setup_diffusion_parameters(cfg.training.timesteps, cfg.training.noise_schedule)
 
     def _setup_diffusion_parameters(self, timesteps, noise_schedule):
         """
-        Setup the diffusion process parameters.
+        Setup the diffusion process parameters for DDPM.
 
         Args:
             timesteps (int): Number of timesteps for the diffusion process.
@@ -121,7 +64,7 @@ class Diffusion(nn.Module):
 
     def _setup_diffusion_tensors(self, betas, alphas, alpha_bars, alpha_bars_prev):
         """
-        Setup and convert diffusion tensors to the correct type and device, and register them as buffers.
+        Setup and convert diffusion tensors to the correct type and device, and register them as buffers for DDPM.
 
         Args:
             betas, alphas, alpha_bars, alpha_bars_prev: Tensors for diffusion.
@@ -159,7 +102,7 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None, no_grad=True)
     def calculate_x0_from_xt(self, x_t, t, noise):
         """
-        Predict the start image from noise.
+        Predict the start image from noise in DDPM.
 
         Args:
             x_t (tensor): The noisy image at timestep t.
@@ -175,6 +118,17 @@ class Diffusion(nn.Module):
 
     @device_grad_decorator(device=None, no_grad=True)
     def estimate_mean(self, predicted_noise, x_t, t):
+        """
+        Estimate the mean for the reverse process in DDPM.
+
+        Args:
+            predicted_noise (tensor): Predicted noise.
+            x_t (tensor): Noisy image at timestep t.
+            t (int): Current timestep.
+
+        Returns:
+            Estimated mean tensor.
+        """
         sqrt_inverse_alpha = self.batch_select_time_indices(self.sqrt_inverse_alphas, t)
         noise_coefficient = self.batch_select_time_indices(self.estimated_mean_noise_coefficient, t)
         estimated_mean = sqrt_inverse_alpha * (x_t - noise_coefficient * predicted_noise)
@@ -182,6 +136,15 @@ class Diffusion(nn.Module):
 
     @device_grad_decorator(device=None, no_grad=True)
     def estimate_variance(self, t):
+        """
+        Estimate the variance for the reverse process in DDPM.
+
+        Args:
+            t (int): Current timestep.
+
+        Returns:
+            Tuple of log variance beta_tilda and log variance beta.
+        """
         estimated_log_variance_beta_tilda = self.batch_select_time_indices(self.estimated_log_variance_beta_tilda, t)
         estimated_log_variance_beta = self.batch_select_time_indices(self.estimated_log_variance_beta, t)
         return estimated_log_variance_beta_tilda, estimated_log_variance_beta
@@ -189,13 +152,15 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None, no_grad=True)
     def reverse_one_step(self, noisy_mask, t, conditioned_image):
         """
-        Sample from the model.
+        Sample from the model in DDPM reverse process.
+
         Args:
             mask (tensor): The input tensor.
             t (int): The current timestep.
             conditioned_image (tensor): Conditioning tensor.
+
         Returns:
-            The predicted mask and the start mask.
+            The predicted previous mask.
         """
         batched_times = torch.full((noisy_mask.shape[0],), t, dtype=torch.long, device=self.device)
 
@@ -211,7 +176,7 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None, no_grad=True)
     def sample(self, conditioned_image, disable_tqdm=False):
         """
-        Generate a sample based on conditioning image.
+        Generate a sample based on conditioning image using DDPM.
 
         Args:
             conditioned_image (tensor): Conditioning images tensor with the shape of [batch_size, channels, height, width].
@@ -233,7 +198,8 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None, no_grad=True)
     def sample_with_snapshots(self, conditioned_image, snapshot_interval: int = None):
         """
-        Generator version of sample that yields intermediate noisy masks every snapshot_interval steps.
+        Generator version of sample that yields intermediate noisy masks every snapshot_interval steps in DDPM.
+
         Args:
             conditioned_image (tensor): Conditioning images.
             snapshot_interval (int): Yield every N steps; if None or > num_timesteps, only yield final.
@@ -259,6 +225,8 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None)
     def calculate_xt_from_x0(self, x_0, t, noise):
         """
+        Compute noisy image from original in DDPM forward process.
+
         Args:
             x_0 (tensor): The start image.
             t (int): The current timestep.
@@ -274,11 +242,12 @@ class Diffusion(nn.Module):
     @device_grad_decorator(device=None)
     def forward(self, mask, conditioned_image, return_intermediates=False, *args, **kwargs):
         """
-        Forward pass through the Diffusion model.
+        Forward pass through the DDPM model.
 
         Args:
-            img (tensor): Input image tensor.
+            mask (tensor): Input mask tensor.
             conditioned_image (tensor): Conditioning image tensor.
+            return_intermediates (bool): If True, return intermediates.
             args: Additional arguments.
             kwargs: Keyword arguments.
 

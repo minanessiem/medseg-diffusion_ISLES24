@@ -84,7 +84,7 @@ def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logg
             img, mask = img.to(cfg.device), mask.to(cfg.device)
 
             optimizer.zero_grad()
-            loss, sample_mses, ts = diffusion(mask, img)
+            loss, sample_mses, ts = diffusion.forward(mask, conditioned_image=img)
 
             loss.backward()
             grad_norm = calc_grad_norm(diffusion.parameters())
@@ -138,7 +138,7 @@ def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
             # Move data to the appropriate device
             img, mask = img.to(cfg.device), mask.to(cfg.device)
 
-            loss, sample_mses, ts = diffusion(mask, img)
+            loss, sample_mses, ts = diffusion.forward(mask, conditioned_image=img)
             batch_size = mask.shape[0]
             global_step += 1
             samples = global_step * batch_size
@@ -366,7 +366,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         batch_size = mask.shape[0]  # Define here, after data load
         
         optimizer.zero_grad()
-        loss, sample_mses, ts = diffusion(mask, img)
+        loss, sample_mses, ts = diffusion.forward(mask, conditioned_image=img)
         
         loss.backward()
         grad_norm = calc_grad_norm(diffusion.parameters())
@@ -426,7 +426,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 if num_samples < cfg.logging.num_log_samples:
                     print(f"Warning: Accumulated {num_samples} < num_log_samples {cfg.logging.num_log_samples} for forward.")
                 
-                loss, sample_mses, t, intermediates = diffusion(full_mask, full_img, return_intermediates=True)
+                loss, sample_mses, t, intermediates = diffusion.forward(full_mask, full_img, return_intermediates=True)
                 
                 all_images = []
                 labels = []

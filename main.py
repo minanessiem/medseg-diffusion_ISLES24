@@ -125,7 +125,7 @@ def main(cfg: DictConfig):
 
     # Build model
     unet = Unet(cfg).to(device)
-    diffusion = Diffusion(model=unet, cfg=cfg, device=device)
+    diffusion = Diffusion.build_diffusion(unet, cfg, device)
 
     # Multi-GPU handling via DataParallel
     gpu_ids = _parse_multi_gpu_flag(cfg.training.multi_gpu)
