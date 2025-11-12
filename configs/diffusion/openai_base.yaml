@@ -1,0 +1,60 @@
+# Base configuration for OpenAI diffusion variants
+# Use with Hydra defaults to avoid duplication across configs
+#
+# To use: Add "defaults: - openai_base" at top of variant configs
+
+type: OpenAI_DDPM
+timesteps: 1000
+noise_schedule: cosine  # 'linear' or 'cosine'
+
+# Model prediction type
+# - EPSILON: Predict noise (most common, recommended)
+# - START_X: Predict x_0 directly
+# - PREVIOUS_X: Predict x_{t-1}
+model_mean_type: EPSILON
+
+# Variance handling
+# - FIXED_SMALL: Use small fixed variance (recommended for images)
+# - FIXED_LARGE: Use large fixed variance
+# - LEARNED: Learn variance (requires output_channels *= 2)
+# - LEARNED_RANGE: Learn variance in range [SMALL, LARGE]
+model_var_type: FIXED_SMALL
+
+# Loss function
+# - MSE: Standard L2 loss (recommended)
+# - RESCALED_MSE: Scaled MSE for better gradients
+# - KL: Variational lower bound
+# - RESCALED_KL: Scaled KL divergence
+loss_type: MSE
+
+# Time embedding scaling
+# Recommended: true for timesteps >= 500, false for timesteps < 500
+# Rescales t to [0, 1000] range for consistent time embeddings
+rescale_timesteps: true
+
+# Advanced variance options (keep false unless using KL loss)
+use_kl: false
+predict_xstart: false
+rescale_learned_sigmas: false
+sigma_small: false
+
+# Spaced diffusion (faster sampling with fewer steps)
+# Empty string = use all timesteps
+# Examples: "250" = 250 evenly-spaced steps, "ddim50" = 50-step DDIM
+timestep_respacing: ""
+
+# Sampling mode
+# - 'ddpm': Standard DDPM sampling (slower, higher quality)
+# - 'ddim': DDIM sampling (faster, slightly lower quality)
+sampling_mode: ddpm
+
+# DDIM eta parameter (only used if sampling_mode='ddim')
+# - 0.0: Deterministic DDIM (fastest, reproducible)
+# - 1.0: Stochastic DDIM (equivalent to DDPM)
+# - 0.0-1.0: Interpolation between deterministic and stochastic
+ddim_eta: 0.0
+
+# Loss-aware sampling (experimental)
+# Preferentially samples timesteps with higher loss for better learning
+use_loss_aware_sampling: false
+

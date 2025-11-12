@@ -6,7 +6,7 @@ import numpy as np
 import shutil
 
 from src.models.architectures.unet import Unet
-from src.models.components.diffusion import Diffusion
+from src.diffusion.diffusion import Diffusion
 from src.data.loaders import get_dataloaders
 from src.training.trainer import get_optimizer_and_scheduler, step_based_train
 from src.evaluation.evaluator import plot_losses, load_best_model, visualize_best_model_predictions, visualize_noise_schedulers  # Optional
@@ -125,18 +125,27 @@ def main(cfg: DictConfig):
 
     # Build model
     unet = Unet(cfg).to(device)
-    diffusion = Diffusion.build_diffusion(unet, cfg, device)
 
-    # Multi-GPU handling via DataParallel
+    # Multi-GPU: Wrap UNet BEFORE building diffusion
+    # This ensures gradients flow correctly to all GPUs, especially for OpenAI adapter
     gpu_ids = _parse_multi_gpu_flag(cfg.training.multi_gpu)
     if gpu_ids:
         visible = torch.cuda.device_count()
         if max(gpu_ids) >= visible:
             raise ValueError(f"Requested GPU id {max(gpu_ids)} but only {visible} GPUs visible.")
         print(f"Using GPUs {gpu_ids} with torch.nn.DataParallel")
-        diffusion = torch.nn.DataParallel(diffusion, device_ids=gpu_ids).cuda(gpu_ids[0])
-    else:
+        unet = torch.nn.DataParallel(unet, device_ids=gpu_ids).cuda(gpu_ids[0])
+        print(f"  Wrapped UNet in DataParallel (primary device: cuda:{gpu_ids[0]})")
+
+    # Build diffusion with potentially wrapped UNet
+    diffusion = Diffusion.build_diffusion(unet, cfg, device)
+
+    # Ensure diffusion is on correct device
+    if not gpu_ids:
         diffusion = diffusion.to(device)
+    else:
+        # Already on correct device via UNet wrapping
+        print(f"  Diffusion built with multi-GPU UNet")
 
     # Get dataloaders
     dataloaders = get_dataloaders(cfg)

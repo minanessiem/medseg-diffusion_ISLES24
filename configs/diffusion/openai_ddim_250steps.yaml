@@ -1,0 +1,11 @@
+defaults:
+  - openai_base
+
+# DDIM with 250 sampling steps (4x faster than DDPM)
+# Good balance between speed and quality
+timesteps: 1000
+noise_schedule: cosine
+timestep_respacing: "250"
+sampling_mode: ddim
+ddim_eta: 0.0
+

@@ -1,0 +1,10 @@
+defaults:
+  - openai_base
+
+# Fast debug config matching current setup
+# Use for quick experiments and testing
+timesteps: 100
+noise_schedule: cosine
+rescale_timesteps: false  # Not needed for 100 steps
+sampling_mode: ddpm
+

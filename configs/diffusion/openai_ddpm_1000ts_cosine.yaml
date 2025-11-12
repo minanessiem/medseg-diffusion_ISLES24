@@ -1,0 +1,9 @@
+defaults:
+  - openai_base
+
+# Standard DDPM with 1000 timesteps and cosine schedule
+# Recommended for high-quality generation
+timesteps: 1000
+noise_schedule: cosine
+sampling_mode: ddpm
+
