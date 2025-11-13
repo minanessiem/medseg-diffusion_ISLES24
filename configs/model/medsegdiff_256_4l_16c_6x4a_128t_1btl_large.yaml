@@ -11,3 +11,4 @@ image_channels: 2
 att_heads: 6
 att_head_dim: 4
 bottleneck_transformer_layers: 1
+architecture: "medsegdiff"

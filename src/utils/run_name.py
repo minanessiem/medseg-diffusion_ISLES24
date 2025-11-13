@@ -26,23 +26,82 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         optimizer = cfg.optimizer
         diffusion = cfg.diffusion
     
-    scheduler_str = ""
-    if optimizer.get('scheduler_type') == 'reduce_lr':
-        params = {
-            'rlrfctr': 'reduce_lr_factor',
-            'rlrpat': 'reduce_lr_patience',
-            'rlrthrsh': 'reduce_lr_threshold',
-            'rlrcool': 'reduce_lr_cooldown'
-        }
-        for abbr, key in params.items():
-            val = optimizer.get(key)
-            if val is not None:
-                scheduler_str += f"_{abbr}{val}"
+    # Model string: {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
+    model_str = (f"{model['architecture']}_{model['image_size']}_{model['num_layers']}l_{model['first_conv_channels']}c_"
+                 f"{model['att_heads']}x{model['att_head_dim']}a_{model['time_embedding_dim']}t_"
+                 f"{model['bottleneck_transformer_layers']}btl")
     
-    run_name = (f"unet_img{model['image_size']}_numlayers{model['num_layers']}_firstconv{model['first_conv_channels']}_"
-                f"timembdim{model['time_embedding_dim']}_attheads{model['att_heads']}_attheaddim{model['att_head_dim']}_"
-                f"btllayers{model['bottleneck_transformer_layers']}_btchsz{dataset['train_batch_size']}_"
-                f"lr{str(optimizer['learning_rate'])}_maxsteps{training['max_steps']}_diffsteps{diffusion['timesteps']}"
-                f"{scheduler_str}_{timestamp}")
+    # Batch size
+    batch_str = f"b{dataset['train_batch_size']}"
+    
+    # Optimizer string: {lr_formatted}lr_{scheduler_type}s_{factor}f_{patience}p_{threshold}t_{cooldown}c_{interval}i
+    lr = optimizer['learning_rate']
+    lr_formatted = f"{lr:.0e}".replace('e-0', 'e').replace('e-', 'e')  # 2e-4 -> 2e4
+    optimizer_str = f"{lr_formatted}lr"
+    
+    if optimizer.get('scheduler_type') == 'reduce_lr':
+        optimizer_str += "_reducelrs"
+        
+        # Factor: 0.75 -> 075
+        factor = optimizer.get('reduce_lr_factor')
+        if factor is not None:
+            factor_str = f"{factor:.2f}".replace('.', '')  # Remove decimal point
+            optimizer_str += f"_{factor_str}f"
+        
+        # Patience
+        patience = optimizer.get('reduce_lr_patience')
+        if patience is not None:
+            optimizer_str += f"_{patience}p"
+        
+        # Threshold: 1e-4 -> 1e4
+        threshold = optimizer.get('reduce_lr_threshold')
+        if threshold is not None:
+            threshold_str = f"{threshold:.0e}".replace('e-0', 'e').replace('e-', 'e')
+            optimizer_str += f"_{threshold_str}t"
+        
+        # Cooldown
+        cooldown = optimizer.get('reduce_lr_cooldown')
+        if cooldown is not None:
+            optimizer_str += f"_{cooldown}c"
+        
+        # Interval: 1000 -> 1Ki
+        interval = optimizer.get('scheduler_interval')
+        if interval is not None:
+            if interval >= 1000 and interval % 1000 == 0:
+                interval_str = f"{interval // 1000}Ki"
+            else:
+                interval_str = f"{interval}i"
+            optimizer_str += f"_{interval_str}"
+    
+    # Training steps
+    steps_str = f"s{training['max_steps']}"
+    
+    # Diffusion string: {oai_prefix}_{sampling_mode}_ds{timesteps}_nz{noise_schedule}_tr{timestep_respacing}
+    diffusion_parts = []
+    
+    # Add "oai" prefix if type is OpenAI_DDPM
+    if diffusion.get('type') == 'OpenAI_DDPM':
+        diffusion_parts.append('oai')
+    
+    # Sampling mode
+    sampling_mode = diffusion.get('sampling_mode', 'ddpm')
+    diffusion_parts.append(sampling_mode)
+    
+    # Timesteps
+    diffusion_parts.append(f"ds{diffusion['timesteps']}")
+    
+    # Noise schedule
+    noise_schedule = diffusion.get('noise_schedule', 'linear')
+    diffusion_parts.append(f"nz{noise_schedule}")
+    
+    # Timestep respacing (only if not empty)
+    timestep_respacing = diffusion.get('timestep_respacing', '')
+    if timestep_respacing:
+        diffusion_parts.append(f"tr{timestep_respacing}")
+    
+    diffusion_str = '_'.join(diffusion_parts)
+    
+    # Combine all parts
+    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{steps_str}_{diffusion_str}_{timestamp}"
     
     return run_name
