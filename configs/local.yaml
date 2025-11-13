@@ -5,7 +5,7 @@ defaults:
   - model: medsegdiff_32_1l_8c_2x2a_128t_1btl_debug
   - dataset: isles24
   - training: train_100Kms_50Ks_9999e
-  - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
+  - optimizer: opt_2e4lr_reducelrs_075f_4p_1e4t_3c_1Ki
   - logging: default
   - diffusion: openai_ddpm_100ts_debug
   - validation: default
