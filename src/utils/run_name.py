@@ -35,7 +35,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     batch_str = f"b{dataset['train_batch_size']}"
     
     # Optimizer string: {lr_formatted}lr_{scheduler_type}s_{factor}f_{patience}p_{threshold}t_{cooldown}c_{interval}i
-    lr = optimizer['learning_rate']
+    lr = float(optimizer['learning_rate'])  # Convert to float in case it's a string
     lr_formatted = f"{lr:.0e}".replace('e-0', 'e').replace('e-', 'e')  # 2e-4 -> 2e4
     optimizer_str = f"{lr_formatted}lr"
     
@@ -56,6 +56,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         # Threshold: 1e-4 -> 1e4
         threshold = optimizer.get('reduce_lr_threshold')
         if threshold is not None:
+            threshold = float(threshold)  # Convert to float in case it's a string
             threshold_str = f"{threshold:.0e}".replace('e-0', 'e').replace('e-', 'e')
             optimizer_str += f"_{threshold_str}t"
         
