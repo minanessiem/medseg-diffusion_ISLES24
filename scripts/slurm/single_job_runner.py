@@ -70,19 +70,42 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
     
-    # Merge defaults with nesting
+    # Merge defaults with nesting (recursively)
     if 'defaults' in cfg:
         for default in cfg['defaults']:
-            if isinstance(default, dict):
-                section, file_name = next(iter(default.items()))
+            if isinstance(default, str):
+                # Skip Hydra's special _self_ keyword (controls merge order)
+                if default == '_self_':
+                    continue
+                # Simple string reference: load another config file recursively
+                # e.g., '- local' or '- cluster'
+                sub_cfg = load_config(default, [])  # Recursive call
+                cfg = deep_merge(cfg, sub_cfg)
+            elif isinstance(default, dict):
+                key, file_name = next(iter(default.items()))
+                
+                # Handle Hydra's 'override /section: file' syntax
+                is_override = False
+                if key.startswith('override /'):
+                    is_override = True
+                    section = key[len('override /'):].strip()  # Strip 'override /' prefix
+                else:
+                    section = key
+                
                 sub_path = f"configs/{section}/{file_name}.yaml"
                 with open(sub_path, 'r') as f:
                     sub_cfg = yaml.safe_load(f)
-                # Consistent merge for all - deep_merge if section exists, else assign
-                if section in cfg and isinstance(cfg[section], dict):
-                    cfg[section] = deep_merge(cfg[section], sub_cfg)
-                else:
+                
+                # Override replaces, normal default merges
+                if is_override:
+                    # Override: replace entire section
                     cfg[section] = sub_cfg
+                else:
+                    # Normal default: merge if section exists, else assign
+                    if section in cfg and isinstance(cfg[section], dict):
+                        cfg[section] = deep_merge(cfg[section], sub_cfg)
+                    else:
+                        cfg[section] = sub_cfg
         del cfg['defaults']  # Clean up
     
     # Apply overrides
