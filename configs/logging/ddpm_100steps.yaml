@@ -1,0 +1,7 @@
+defaults:
+  - default
+
+# Logging config optimized for DDPM with 100 timesteps
+# 10 evenly spaced snapshots: t=100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0
+snapshot_step_interval: 10  # 100 / 10 = 10 steps between snapshots
+

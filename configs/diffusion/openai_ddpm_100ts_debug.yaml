@@ -1,10 +1,14 @@
 defaults:
   - openai_base
+#  - logging: ddpm_100steps  # Removed nested logging
+#  - override logging@snapshot_step_interval: 10
 
 # Fast debug config matching current setup
 # Use for quick experiments and testing
+# Logging: 10 snapshots evenly spaced (interval=10)
 timesteps: 100
 noise_schedule: cosine
 rescale_timesteps: false  # Not needed for 100 steps
 sampling_mode: ddpm
+logging_config: ddpm_100steps  # Override for 100 steps
 

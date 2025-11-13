@@ -1,3 +1,4 @@
+# Base local environment config
 defaults:
   - _self_
   - environment: isles_local
@@ -5,13 +6,12 @@ defaults:
   - dataset: isles24
   - training: train_100Kms_50Ks_9999e
   - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
-  - diffusion: diffusion_100ts_cosinesch
-  - validation: default
-  # To include eval params: hydra run +training=eval or compose in config
   - logging: default
+  - diffusion: openai_ddpm_100ts_debug
+  - validation: default
 
 random_seed: 42
-mode: train  # Or evaluate
+mode: train
 
 hydra:
   run:

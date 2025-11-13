@@ -1,3 +1,5 @@
+# Base cluster environment config (no diffusion or logging pairing)
+
 defaults:
   - _self_
   - environment: isles_cluster
@@ -5,16 +7,16 @@ defaults:
   - dataset: isles24
   - training: train_100Kms_50Ks_9999e
   - optimizer: opt_2e4lr_reducelrs_075f_2p_1e4t_1c_1Ki
-  - diffusion: diffusion_100ts_cosinesch
+  - logging: default  # baseline; wrappers may override
+  - diffusion: openai_ddpm_100ts_debug
   - validation: default
-  # To include eval params: hydra run +training=eval or compose in config
-  - logging: default
 
 random_seed: 42
-mode: train  # Or evaluate
+mode: train  # or evaluate
+
 timestamp: null
 run_name: null
 
 hydra:
   run:
-    dir: '/mnt/outputs/medsegdiff_outputs/'
+    dir: '.'

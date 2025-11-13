@@ -482,15 +482,19 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 num_modalities = sample_imgs.shape[1]
                 # Determine timesteps that sample_with_snapshots will yield
                 snapshots_per_sample = []
+                snapshot_timesteps = []  # Track actual timesteps for labels
                 for i in range(num_samples):
                     snaps = list(diffusion.sample_with_snapshots(sample_imgs[i:i+1], cfg.logging.snapshot_step_interval))
                     # snaps is list of (t, mask); keep order as yielded (descending t) then final 0
+                    if i == 0:  # Extract timesteps from first sample (same for all)
+                        snapshot_timesteps = [int(t) for t, _ in snaps]
                     snapshots_per_sample.append([normalize_to_neg_one_to_one(m[1]) for m in snaps])  # Normalize snapshots to -1/1
                 num_snapshots = len(snapshots_per_sample[0])
                 
                 # Labels per category
                 modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                snapshot_labels = [f"t={cfg.training.timesteps - s*cfg.logging.snapshot_step_interval}" for s in range(num_snapshots-1)] + ["t=0"]
+                # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
+                snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
                 row_len = num_modalities + num_snapshots + 1  # +1 for target
                 
                 for i in range(num_samples):

@@ -44,6 +44,17 @@ Based on OpenAI's improved-diffusion package.
 - Balanced: `openai_ddim_250steps` (250 steps)
 - Best quality: `openai_ddpm_1000ts_cosine` (1000 steps)
 
+### Logging Integration
+
+Each diffusion config automatically includes optimized logging settings:
+- **Snapshot interval** is adjusted to show **10 evenly spaced** snapshots during sampling
+- For DDPM (100 steps): interval=10 → snapshots at t=100, 90, 80, ..., 10, 0
+- For DDPM (1000 steps): interval=100 → snapshots at t=1000, 900, 800, ..., 100, 0
+- For DDIM (50 steps): interval=5 → snapshots at 10 evenly spaced respaced timesteps
+- For DDIM (250 steps): interval=25 → snapshots at 10 evenly spaced respaced timesteps
+
+**Note:** DDIM respacing means the actual sampling happens at fewer discrete timesteps. The logging configs account for this to ensure you see the full denoising progression.
+
 ### Config Parameters
 
 See `openai_base.yaml` for detailed parameter documentation.
