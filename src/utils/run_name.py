@@ -74,8 +74,12 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
                 interval_str = f"{interval}i"
             optimizer_str += f"_{interval_str}"
     
-    # Training steps
-    steps_str = f"s{training['max_steps']}"
+    # Training steps: 100000 -> 100K
+    max_steps = training['max_steps']
+    if max_steps >= 1000 and max_steps % 1000 == 0:
+        steps_str = f"s{max_steps // 1000}K"
+    else:
+        steps_str = f"s{max_steps}"
     
     # Diffusion string: {oai_prefix}_{sampling_mode}_ds{timesteps}_nz{noise_schedule}_tr{timestep_respacing}
     diffusion_parts = []
