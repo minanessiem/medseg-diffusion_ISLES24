@@ -92,7 +92,7 @@ def main(cfg: DictConfig):
     early_log = f"{temp_log_dir}/main.log"
     if os.path.exists(early_log):
         os.makedirs(run_output_dir, exist_ok=True)
-        os.rename(early_log, f"{run_output_dir}/main.log")
+        shutil.move(early_log, f"{run_output_dir}/main.log")
         print(f"Moved main.log to {run_output_dir}")
 
     # Move .hydra/ metadata folder to run_dir
