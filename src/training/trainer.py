@@ -433,12 +433,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 metrics = {}
                 num_modalities = len(cfg.dataset.modalities)
                 for i in range(num_samples):
-                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i]]
+                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
                     all_images.extend(sample_images)
                     
                     modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
                     noisy_label = f"Noise Mask t={t[i].item()}"
-                    base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise"]
+                    base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
                     labels.extend(base_labels)
                     
                     metrics[i] = sample_mses[i].item()

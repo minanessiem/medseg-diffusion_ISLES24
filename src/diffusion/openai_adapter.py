@@ -248,6 +248,7 @@ class GaussianDiffusionAdapter(Diffusion):
                     - 'x_t': noisy mask [B, 1, H, W]
                     - 'noise': ground truth noise [B, 1, H, W]
                     - 'noise_hat': predicted noise [B, 1, H, W]
+                    - 'pred_x0': reconstructed mask from noise prediction [B, 1, H, W] in [-1, 1]
         
         Notes:
             - Masks are automatically normalized from [0, 1] to [-1, 1]
@@ -281,6 +282,14 @@ class GaussianDiffusionAdapter(Diffusion):
         sample_mses = torch.mean((noise_hat - noise) ** 2, dim=[1, 2, 3])
         loss = sample_mses.mean()
         
+        # Compute reconstructed mask for logging/future multi-task loss
+        if return_intermediates:
+            # Reconstruct x_0 from noisy sample and predicted noise
+            # Formula: x_0 = (x_t - sqrt(1-alpha_bar) * eps) / sqrt(alpha_bar)
+            pred_x0 = self.diffusion._predict_xstart_from_eps(x_t=x_t, t=t, eps=noise_hat)
+        else:
+            pred_x0 = None
+        
         if return_intermediates:
             intermediates = {
                 'img': conditioned_image,      # [B, C, H, W] - conditioning
@@ -288,6 +297,7 @@ class GaussianDiffusionAdapter(Diffusion):
                 'x_t': x_t,                    # [B, 1, H, W] - noisy mask
                 'noise': noise,                # [B, 1, H, W] - ground truth noise
                 'noise_hat': noise_hat,        # [B, 1, H, W] - predicted noise
+                'pred_x0': pred_x0,            # [B, 1, H, W] - reconstructed mask from noise prediction
             }
             return loss, sample_mses, t, intermediates
         
