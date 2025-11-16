@@ -2,9 +2,9 @@ import copy
 import torch
 import torch.nn as nn
 from .unet_util import Attention, LinearAttention, Downsample, Upsample, Residual, ResnetBlock, InitWeights_He
-from src.models.components.dynamic_encoding import DynamicFusionLayer
-from src.models.components.time_encoding import TimeSinusoidalPE
-from src.models.components.bottleneck import BottleNeck
+from .dynamic_encoding import DynamicFusionLayer
+from .time_encoding import TimeSinusoidalPE
+from .bottleneck import BottleNeck
 from src.utils.general import device_grad_decorator
 
 class Unet(nn.Module):

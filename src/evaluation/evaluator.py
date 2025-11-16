@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from src.utils.general import device_grad_decorator, visualize_img
-from src.models.architectures.unet_util import unnormalize_to_zero_to_one
+from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one
 from src.diffusion.noise_scheduler import NoiseScheduler
 import pandas as pd  # For dataframe in noise scheduler vis
 

@@ -31,8 +31,8 @@ from ..improved_diffusion import (
     UniformSampler,
     LossSecondMomentResampler,
 )
-from ..models.architectures.conditional_wrapper import ConditionalModelWrapper
-from ..models.architectures.unet_util import (
+from ..models.wrappers.conditional_wrapper import ConditionalModelWrapper
+from ..models.MedSegDiff.unet_util import (
     normalize_to_neg_one_to_one,
     unnormalize_to_zero_to_one,
 )

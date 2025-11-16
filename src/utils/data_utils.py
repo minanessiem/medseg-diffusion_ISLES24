@@ -4,7 +4,7 @@ from matplotlib import pyplot as plt
 from functools import partial
 
 from src.data.processors import get_image_transform, get_mask_transform, get_joint_transform  # Assuming these exist in processors.py; adjust if needed
-from src.models.components.diffusion import unnormalize_to_zero_to_one  # For visualization
+from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one  # For visualization
 
 def test_joint_transform(
     dataset_class,  # e.g., from src.data.loaders import BrainMRIDataset

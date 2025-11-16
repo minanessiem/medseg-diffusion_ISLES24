@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-from src.models.architectures.unet_util import ResnetBlock, Transformer
+from .unet_util import ResnetBlock, Transformer
 
 class BottleNeck(nn.Module):
     def __init__(self, dim, time_embedding_dim, transformer_layers, groups=8, **attention_configs):

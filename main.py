@@ -5,7 +5,7 @@ import random
 import numpy as np
 import shutil
 
-from src.models.architectures.unet import Unet
+from src.models import build_model
 from src.diffusion.diffusion import Diffusion
 from src.data.loaders import get_dataloaders
 from src.training.trainer import get_optimizer_and_scheduler, step_based_train
@@ -124,7 +124,7 @@ def main(cfg: DictConfig):
     logger.print_config(OmegaConf.to_yaml(cfg, resolve=True))
 
     # Build model
-    unet = Unet(cfg).to(device)
+    unet = build_model(cfg).to(device)
 
     # Multi-GPU: Wrap UNet BEFORE building diffusion
     # This ensures gradients flow correctly to all GPUs, especially for OpenAI adapter

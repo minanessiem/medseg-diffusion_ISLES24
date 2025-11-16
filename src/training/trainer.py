@@ -13,7 +13,7 @@ from src.utils.logger import Logger
 from src.utils.train_utils import calc_grad_norm, calc_param_norm
 import torch
 from torch import no_grad
-from src.models.architectures.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
+from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
 from src.metrics.metrics import get_metric
 
 import gc

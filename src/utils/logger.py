@@ -11,7 +11,7 @@ import torch
 from torchvision.utils import make_grid
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-from src.models.architectures.unet_util import unnormalize_to_zero_to_one
+from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one
 from omegaconf import DictConfig
 
 
