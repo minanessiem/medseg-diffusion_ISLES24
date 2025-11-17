@@ -16,19 +16,19 @@ auxiliary_losses:
   # Dice loss - optimizes segmentation overlap metric
   dice:
     enabled: true
-    weight: 0.5
+    weight: 0.1
     smooth: 1.0e-8  # Matches DiceNativeCoefficient for metric alignment
     apply_sigmoid: false  # pred_x0 already in [0, 1]
   
   # BCE loss - pixel-wise boundary refinement
   bce:
     enabled: true
-    weight: 0.5
+    weight: 0.1
     pos_weight: null  # null = balanced; set to (neg/pos) for imbalanced data
     apply_sigmoid: false
   
   # Warmup: auxiliary losses start after this many steps
-  warmup_steps: 2500  # 0 = immediate, 1000-5000 = conservative
+  warmup_steps: 20000  # 0 = immediate, 1000-5000 = conservative
 
 # Example configurations for different scenarios:
 #
