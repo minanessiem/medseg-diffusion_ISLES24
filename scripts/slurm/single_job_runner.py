@@ -24,16 +24,50 @@ def deep_merge(dict1: Dict, dict2: Dict) -> Dict:
     return dict1
 
 def apply_override(cfg: Dict, override: str) -> Dict:
-    """Apply a single key=value override, supporting dotted paths."""
+    """Apply a single key=value override, supporting dotted paths and config group references."""
     if '=' not in override:
         return cfg
     key_path, value = override.split('=', 1)
     keys = key_path.split('.')
+    
+    # Special handling for config group references (e.g., loss=mse_loss_only)
+    # These should load the corresponding config file, not assign as string
+    if len(keys) == 1:  # Simple key (no dots) - might be a config group
+        config_group = keys[0]
+        potential_file = f"configs/{config_group}/{value}.yaml"
+        
+        if os.path.exists(potential_file):
+            # This is a config group reference - load the file
+            with open(potential_file, 'r') as f:
+                group_cfg = yaml.safe_load(f)
+            
+            # Recursively resolve defaults in the loaded config
+            if 'defaults' in group_cfg:
+                # Handle defaults (e.g., if mse_loss_only inherits from another config)
+                for default in group_cfg['defaults']:
+                    if isinstance(default, str) and default != '_self_':
+                        # Load base config from same group
+                        base_path = f"configs/{config_group}/{default}.yaml"
+                        if os.path.exists(base_path):
+                            with open(base_path, 'r') as f:
+                                base_cfg = yaml.safe_load(f)
+                            group_cfg = deep_merge(base_cfg, group_cfg)
+                del group_cfg['defaults']  # Clean up
+            
+            # Resolve any interpolations in the loaded config
+            group_cfg = resolve_interpolations(group_cfg, cfg)
+            
+            # Merge into main config
+            cfg[config_group] = group_cfg
+            return cfg
+    
+    # Standard dotted path override (existing logic)
     current = cfg
     for key in keys[:-1]:
         if key not in current:
             current[key] = {}
         current = current[key]
+    
     # Convert value to int/float if possible
     try:
         value = int(value)
@@ -42,6 +76,7 @@ def apply_override(cfg: Dict, override: str) -> Dict:
             value = float(value)
         except ValueError:
             pass  # Keep as string
+    
     current[keys[-1]] = value
     return cfg
 

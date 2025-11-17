@@ -8,7 +8,7 @@ defaults:
   - training: train_100Kms_50Ks_9999e
   - optimizer: opt_2e4lr_reducelrs_075f_4p_1e4t_3c_1Ki
   - logging: default
-  - loss: mse_only
+  - loss: mse_loss_only
   - diffusion: openai_ddpm_100ts_debug
   - validation: default
 
