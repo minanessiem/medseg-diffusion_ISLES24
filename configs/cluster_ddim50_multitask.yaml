@@ -1,0 +1,9 @@
+# Cluster: DDIM-50 sampler with multi-task loss
+# Combines fast DDIM sampling (20x faster) with Dice + BCE auxiliary losses
+
+defaults:
+  - cluster
+  - override /diffusion: openai_ddim_50steps
+  - override /logging: ddim_50steps
+  - override /loss: multitask
+

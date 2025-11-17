@@ -37,6 +37,9 @@ from ..models.MedSegDiff.unet_util import (
     unnormalize_to_zero_to_one,
 )
 
+# Import auxiliary loss functions
+from ..losses.segmentation_losses import DiceLoss, BCELoss
+
 
 class GaussianDiffusionAdapter(Diffusion):
     """
@@ -111,6 +114,65 @@ class GaussianDiffusionAdapter(Diffusion):
             self.schedule_sampler = LossSecondMomentResampler(self.diffusion)
         else:
             self.schedule_sampler = UniformSampler(self.diffusion)
+        
+        # Parse auxiliary losses config from cfg.loss.auxiliary_losses
+        # Required config structure (see configs/loss/mse_only.yaml or multitask.yaml):
+        # auxiliary_losses:
+        #   enabled: bool
+        #   diffusion_weight: float
+        #   dice: {enabled: bool, weight: float, smooth: float, apply_sigmoid: bool}
+        #   bce: {enabled: bool, weight: float, pos_weight: float|null, apply_sigmoid: bool}
+        #   warmup_steps: int
+        aux_cfg = cfg.loss.auxiliary_losses
+        
+        if not aux_cfg.enabled:
+            # Auxiliary losses explicitly disabled
+            self.aux_losses_enabled = False
+            self.diffusion_weight = None
+            self.dice_loss_fn = None
+            self.dice_weight = 0
+            self.bce_loss_fn = None
+            self.bce_weight = 0
+            self.aux_warmup_steps = 0
+            return
+        
+        # Auxiliary losses enabled - parse all parameters
+        self.aux_losses_enabled = True
+        self.diffusion_weight = aux_cfg.diffusion_weight
+        self.aux_warmup_steps = aux_cfg.warmup_steps
+        
+        # Validate warmup_steps
+        if not isinstance(self.aux_warmup_steps, int) or self.aux_warmup_steps < 0:
+            self.aux_warmup_steps = 0
+        
+        # Initialize Dice loss
+        if aux_cfg.dice.enabled and aux_cfg.dice.weight > 0:
+            self.dice_loss_fn = DiceLoss(
+                smooth=aux_cfg.dice.smooth,
+                apply_sigmoid=aux_cfg.dice.apply_sigmoid
+            )
+            self.dice_weight = aux_cfg.dice.weight
+        else:
+            self.dice_loss_fn = None
+            self.dice_weight = 0
+        
+        # Initialize BCE loss
+        if aux_cfg.bce.enabled and aux_cfg.bce.weight > 0:
+            self.bce_loss_fn = BCELoss(
+                pos_weight=aux_cfg.bce.pos_weight,
+                apply_sigmoid=aux_cfg.bce.apply_sigmoid
+            )
+            self.bce_weight = aux_cfg.bce.weight
+        else:
+            self.bce_loss_fn = None
+            self.bce_weight = 0
+        
+        # Console output
+        print("[OpenAI Adapter] Multi-task loss enabled:")
+        print(f"  Diffusion weight: {self.diffusion_weight}")
+        print(f"  Dice: enabled={self.dice_loss_fn is not None}, weight={self.dice_weight}")
+        print(f"  BCE: enabled={self.bce_loss_fn is not None}, weight={self.bce_weight}")
+        print(f"  Warmup steps: {self.aux_warmup_steps}")
     
     def _validate_config(self):
         """
@@ -220,25 +282,29 @@ class GaussianDiffusionAdapter(Diffusion):
             return t.float() * (1000.0 / self.diffusion.num_timesteps)
         return t
     
-    def forward(self, mask, conditioned_image, return_intermediates=False, *args, **kwargs):
+    def forward(self, mask, conditioned_image, return_intermediates=False, global_step=0, *args, **kwargs):
         """
-        Training forward pass with full intermediates support.
+        Training forward pass with optional multi-task loss support.
         
         This method computes the diffusion loss for a batch of masks and
-        conditioning images. When return_intermediates=True, it also captures
-        all intermediate tensors needed for image logging in the trainer.
+        conditioning images. When auxiliary losses are enabled and past warmup,
+        it also computes Dice and BCE losses on the reconstructed mask pred_x0.
         
         Args:
             mask (torch.Tensor): Target masks [B, 1, H, W] in [0, 1]
             conditioned_image (torch.Tensor): Conditioning images [B, C, H, W]
             return_intermediates (bool): If True, return intermediate tensors
-                                       for image logging (img, mask, x_t, noise, noise_hat)
+                                       for image logging (img, mask, x_t, noise, noise_hat, pred_x0)
+            global_step (int): Current training step (for warmup logic). Default: 0
             
         Returns:
             If return_intermediates=False:
                 loss (torch.Tensor): Scalar loss
                 sample_mses (torch.Tensor): Per-sample MSE losses [B]
                 t (torch.Tensor): Sampled timesteps [B]
+                loss_components (dict or None): Individual loss components if aux losses enabled
+                    Keys: 'mse', 'dice' (optional), 'bce' (optional), 'total'
+                    None if aux losses disabled
             
             If return_intermediates=True:
                 loss, sample_mses, t, intermediates (dict)
@@ -249,9 +315,14 @@ class GaussianDiffusionAdapter(Diffusion):
                     - 'noise': ground truth noise [B, 1, H, W]
                     - 'noise_hat': predicted noise [B, 1, H, W]
                     - 'pred_x0': reconstructed mask from noise prediction [B, 1, H, W] in [-1, 1]
+                    - 'loss_components': dict of individual loss values (if multi-task enabled)
+                      Keys: 'mse', 'dice' (optional), 'bce' (optional), 'total'
         
         Notes:
             - Masks are automatically normalized from [0, 1] to [-1, 1]
+            - When auxiliary losses are enabled and global_step >= warmup_steps,
+              total loss = diffusion_weight * MSE + dice_weight * Dice + bce_weight * BCE
+            - Auxiliary losses operate on pred_x0 denormalized to [0, 1] range
             - This implementation manually computes x_t and noise_hat to
               capture intermediates, then computes loss directly rather than
               calling OpenAI's training_losses() (which doesn't expose intermediates)
@@ -276,21 +347,57 @@ class GaussianDiffusionAdapter(Diffusion):
         model_kwargs = {'conditioned_image': conditioned_image}
         noise_hat = self.wrapped_model(x_t, self._scale_timesteps(t), **model_kwargs)
         
-        # Compute loss (MSE between predicted and true noise)
+        # Compute primary diffusion loss (MSE on noise)
         # Note: This assumes model_mean_type=EPSILON (noise prediction)
         # For START_X or PREVIOUS_X modes, target would be different
         sample_mses = torch.mean((noise_hat - noise) ** 2, dim=[1, 2, 3])
-        loss = sample_mses.mean()
+        mse_loss = sample_mses.mean()
         
-        # Compute reconstructed mask for logging/future multi-task loss
-        if return_intermediates:
-            # Reconstruct x_0 from noisy sample and predicted noise
-            # Formula: x_0 = (x_t - sqrt(1-alpha_bar) * eps) / sqrt(alpha_bar)
-            pred_x0 = self.diffusion._predict_xstart_from_eps(x_t=x_t, t=t, eps=noise_hat)
+        # Initialize total loss and components dict
+        if self.aux_losses_enabled:
+            loss = self.diffusion_weight * mse_loss
+            loss_components = {'mse': mse_loss.item()}
         else:
-            pred_x0 = None
+            loss = mse_loss
+            loss_components = None
         
+        # Compute auxiliary losses if enabled and past warmup
+        pred_x0 = None  # Will be computed if needed
+        if self.aux_losses_enabled and global_step >= self.aux_warmup_steps:
+            # Reconstruct pred_x0 for auxiliary losses
+            # Only computed when needed - zero overhead if disabled
+            pred_x0 = self.diffusion._predict_xstart_from_eps(x_t=x_t, t=t, eps=noise_hat)
+            # Clamp to [-1, 1] range (reconstruction can produce values outside this range)
+            pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
+            
+            # Denormalize pred_x0 from [-1, 1] to [0, 1] for loss computation
+            # (Dice/BCE expect [0, 1] range, not [-1, 1])
+            pred_x0_denorm = unnormalize_to_zero_to_one(pred_x0)
+            mask_denorm = mask  # Already in [0, 1]
+            
+            # Dice loss
+            if self.dice_loss_fn is not None and self.dice_weight > 0:
+                dice_loss = self.dice_loss_fn(pred_x0_denorm, mask_denorm)
+                loss = loss + self.dice_weight * dice_loss
+                loss_components['dice'] = dice_loss.item()
+            
+            # BCE loss
+            if self.bce_loss_fn is not None and self.bce_weight > 0:
+                bce_loss = self.bce_loss_fn(pred_x0_denorm, mask_denorm)
+                loss = loss + self.bce_weight * bce_loss
+                loss_components['bce'] = bce_loss.item()
+            
+            # Add total loss for logging
+            loss_components['total'] = loss.item()
+        
+        # Compute pred_x0 for logging if needed (even if aux losses disabled)
         if return_intermediates:
+            if pred_x0 is None:
+                # Not yet computed (aux losses disabled or in warmup)
+                pred_x0 = self.diffusion._predict_xstart_from_eps(x_t=x_t, t=t, eps=noise_hat)
+                # Clamp to [-1, 1] range (reconstruction can produce values outside this range)
+                pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
+            
             intermediates = {
                 'img': conditioned_image,      # [B, C, H, W] - conditioning
                 'mask': mask_normalized,       # [B, 1, H, W] - target in [-1, 1]
@@ -299,9 +406,15 @@ class GaussianDiffusionAdapter(Diffusion):
                 'noise_hat': noise_hat,        # [B, 1, H, W] - predicted noise
                 'pred_x0': pred_x0,            # [B, 1, H, W] - reconstructed mask from noise prediction
             }
+            
+            # Add loss components for logging
+            if loss_components is not None:
+                intermediates['loss_components'] = loss_components
+            
             return loss, sample_mses, t, intermediates
         
-        return loss, sample_mses, t
+        # Return loss_components even without intermediates for logging
+        return loss, sample_mses, t, loss_components
     
     def sample(self, conditioned_image, disable_tqdm=False):
         """

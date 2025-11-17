@@ -20,12 +20,13 @@ model_mean_type: EPSILON
 # - LEARNED_RANGE: Learn variance in range [SMALL, LARGE]
 model_var_type: FIXED_SMALL
 
-# Loss function
+# Loss function (referenced from loss config via Hydra interpolation)
 # - MSE: Standard L2 loss (recommended)
 # - RESCALED_MSE: Scaled MSE for better gradients
 # - KL: Variational lower bound
 # - RESCALED_KL: Scaled KL divergence
-loss_type: MSE
+# Note: Value comes from configs/loss/*.yaml for single source of truth
+loss_type: ${loss.loss_type}
 
 # Time embedding scaling
 # Recommended: true for timesteps >= 500, false for timesteps < 500
@@ -57,4 +58,3 @@ ddim_eta: 0.0
 # Loss-aware sampling (experimental)
 # Preferentially samples timesteps with higher loss for better learning
 use_loss_aware_sampling: false
-

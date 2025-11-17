@@ -1,0 +1,26 @@
+# Pure MSE diffusion loss (default)
+# No auxiliary segmentation losses
+#
+# This config defines the loss strategy independently of diffusion sampling.
+# The loss_type value is referenced by diffusion configs via interpolation.
+
+# Primary diffusion loss type (passed to GaussianDiffusion)
+# Options: MSE, KL, RESCALED_MSE, RESCALED_KL (from OpenAI library)
+loss_type: MSE
+
+# Auxiliary losses (disabled for pure MSE baseline)
+auxiliary_losses:
+  enabled: false
+  diffusion_weight: 1.0
+  dice:
+    enabled: false
+    weight: 0.0
+    smooth: 1.0e-8
+    apply_sigmoid: false
+  bce:
+    enabled: false
+    weight: 0.0
+    pos_weight: null
+    apply_sigmoid: false
+  warmup_steps: 0
+

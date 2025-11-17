@@ -366,7 +366,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         batch_size = mask.shape[0]  # Define here, after data load
         
         optimizer.zero_grad()
-        loss, sample_mses, ts = diffusion.forward(mask, conditioned_image=img)
+        loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
         
         loss.backward()
         grad_norm = calc_grad_norm(diffusion.parameters())
@@ -426,7 +426,9 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 if num_samples < cfg.logging.num_log_samples:
                     print(f"Warning: Accumulated {num_samples} < num_log_samples {cfg.logging.num_log_samples} for forward.")
                 
-                loss, sample_mses, t, intermediates = diffusion.forward(full_mask, full_img, return_intermediates=True)
+                loss, sample_mses, t, intermediates = diffusion.forward(
+                    full_mask, full_img, return_intermediates=True, global_step=global_step
+                )
                 
                 all_images = []
                 labels = []
@@ -523,6 +525,11 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 )
         
         # Logging (scalars)
+        # Log individual loss components if multi-task loss enabled
+        if loss_components is not None:
+            for component_name, component_value in loss_components.items():
+                logger.logkv_mean(f'loss/{component_name}', component_value, accumulator='train')
+        
         logger.logkv_mean('loss', loss.item(), accumulator='train')
         logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
         logger.logkv_mean('param_norm', param_norm, accumulator='train')
