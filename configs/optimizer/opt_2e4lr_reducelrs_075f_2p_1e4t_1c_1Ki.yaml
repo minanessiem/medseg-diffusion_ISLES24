@@ -1,7 +1,0 @@
-learning_rate: 2e-4
-reduce_lr_factor: 0.75
-reduce_lr_patience: 2
-reduce_lr_threshold: 1e-4
-reduce_lr_cooldown: 1
-scheduler_type: reduce_lr
-scheduler_interval: 1000

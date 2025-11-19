@@ -1,0 +1,10 @@
+# Shorter warmup (5% of steps) + cosine annealing
+# Use for faster initial training or smaller datasets
+# Use with: python main.py scheduler=warmup_cosine_5pct
+
+scheduler_type: warmup_cosine
+warmup_steps: null
+warmup_fraction: 0.05        # 5% warmup
+eta_min: 0
+step_frequency: per_step
+

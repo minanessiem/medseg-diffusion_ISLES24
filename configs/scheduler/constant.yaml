@@ -1,0 +1,6 @@
+# No LR scheduling (constant throughout training)
+# Use for baseline comparison
+# Use with: python main.py scheduler=constant
+
+scheduler_type: constant
+

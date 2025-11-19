@@ -8,3 +8,8 @@ ema_checkpoint_template: 'models/ema_chkpt_step_{:06d}_ema_{rate}.pth'
 opt_checkpoint_template: 'models/opt_chkpt_step_{:06d}.pth'
 ema_rate_precision: 4  # Decimal places for EMA rate in filename
 ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"
+
+# Gradient techniques
+gradient:
+  clip_norm: 1.0  # Max gradient norm (null = disabled)
+  clip_value: null  # Alternative: clip by value

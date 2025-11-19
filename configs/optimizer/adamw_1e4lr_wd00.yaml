@@ -1,0 +1,11 @@
+# AdamW optimizer with 1e-4 learning rate, no weight decay
+# Recommended for diffusion models (DiffSwinTr, DDPM)
+# Use with: python main.py optimizer=adamw_1e4lr_wd00
+
+optimizer_class: adamw
+learning_rate: 1.0e-4
+betas: [0.9, 0.999]
+eps: 1.0e-8
+weight_decay: 0.0
+amsgrad: false
+

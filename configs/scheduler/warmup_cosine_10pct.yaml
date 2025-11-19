@@ -1,0 +1,10 @@
+# Linear warmup (10% of steps) + cosine annealing to 0
+# Standard for DiffSwinTr and modern diffusion models
+# Use with: python main.py scheduler=warmup_cosine_10pct
+
+scheduler_type: warmup_cosine
+warmup_steps: null           # null = auto-compute from warmup_fraction
+warmup_fraction: 0.1         # 10% of max_steps
+eta_min: 0                   # Anneal to 0
+step_frequency: per_step     # Step every iteration
+

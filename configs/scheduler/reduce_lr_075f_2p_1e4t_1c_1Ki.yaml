@@ -1,0 +1,12 @@
+# Adaptive ReduceLROnPlateau (legacy)
+# NOTE: warmup_cosine recommended for diffusion models
+# Use with: python main.py scheduler=reduce_lr_075f_2p
+
+scheduler_type: reduce_lr
+factor: 0.75                 # Multiply LR by 0.75
+patience: 2                  # Wait 2 checks before reducing
+threshold: 1.0e-4            # Min improvement to count
+cooldown: 1                  # Steps to wait after reduction
+step_frequency: per_interval
+step_interval: 1000          # Check every 1000 steps
+

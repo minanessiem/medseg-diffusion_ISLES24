@@ -28,22 +28,10 @@ def _parse_multi_gpu_flag(flag):
 
 @hydra.main(config_path="configs", config_name="default", version_base=None)
 def main(cfg: DictConfig):
-    # Temporary aliases for config transition - remove after full refactor
-    OmegaConf.set_struct(cfg, False)  # Temporarily allow dynamic keys
-    # Optimizer aliases
-    cfg.training.learning_rate = cfg.optimizer.learning_rate
-    cfg.training.reduce_lr_factor = cfg.optimizer.reduce_lr_factor
-    cfg.training.reduce_lr_patience = cfg.optimizer.reduce_lr_patience
-    cfg.training.reduce_lr_threshold = cfg.optimizer.reduce_lr_threshold
-    cfg.training.reduce_lr_cooldown = cfg.optimizer.reduce_lr_cooldown
-    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
-    cfg.training.scheduler_interval = cfg.optimizer.scheduler_interval
+    # Config aliases for compatibility (only what's actually needed)
+    OmegaConf.set_struct(cfg, False)
     
-    # Diffusion aliases
-    cfg.training.timesteps = cfg.diffusion.timesteps
-    cfg.training.noise_schedule = cfg.diffusion.noise_schedule
-    
-    # Environment aliases (training)
+    # Environment aliases (training paths)
     cfg.training.output_root = cfg.environment.training.output_root
     cfg.training.model_save_dir = cfg.environment.training.model_save_dir
     cfg.training.multi_gpu = cfg.environment.training.multi_gpu
@@ -57,7 +45,8 @@ def main(cfg: DictConfig):
     cfg.dataset.num_test_workers = cfg.environment.dataset.num_test_workers
     cfg.dataset.train_batch_size = cfg.environment.dataset.train_batch_size
     cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
-    OmegaConf.set_struct(cfg, True)  # Restore struct mode
+    
+    OmegaConf.set_struct(cfg, True)
 
     # Set seeds for reproducibility (from notebook Cell 4)
     torch.manual_seed(cfg.random_seed)

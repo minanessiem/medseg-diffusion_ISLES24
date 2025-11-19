@@ -1,5 +1,23 @@
 import datetime
 
+def format_learning_rate(lr):
+    """Format learning rate for run name.
+    
+    Args:
+        lr: Float learning rate (e.g., 1e-4, 2e-4)
+        
+    Returns:
+        str: Formatted LR string (e.g., '1e4', '2e4', '5e5')
+    
+    Examples:
+        1e-4 -> '1e4'
+        2e-4 -> '2e4'
+        5e-5 -> '5e5'
+    """
+    lr = float(lr)  # Convert to float in case it's a string
+    lr_str = f"{lr:.0e}".replace('e-0', 'e').replace('e-', 'e')
+    return lr_str
+
 def format_loss_warmup(steps):
     """Format warmup steps following project conventions.
     
@@ -69,6 +87,112 @@ def generate_loss_string(loss_cfg):
     
     return '_'.join(parts)
 
+def generate_optimizer_string(opt_cfg):
+    """Generate optimizer string from separated config.
+    
+    Args:
+        opt_cfg: Optimizer configuration (DictConfig or dict)
+    
+    Returns:
+        str: Compact optimizer string for run name
+    
+    Raises:
+        KeyError: If required config keys are missing (fail-fast, no defaults)
+    
+    Examples:
+        adamw_1e4lr_wd00 → "adamw1e4_wd00"
+        adamw_2e4lr_wd00 → "adamw2e4_wd00"
+        adamw_1e4lr_wd01 → "adamw1e4_wd01"
+        adam_2e4lr → "adam2e4"
+    """
+    # Handle both dict and DictConfig (no defaults - fail fast)
+    if hasattr(opt_cfg, 'optimizer_class'):
+        opt_class = opt_cfg.optimizer_class
+        lr = opt_cfg.learning_rate
+        wd = opt_cfg.weight_decay
+    else:
+        opt_class = opt_cfg['optimizer_class']  # Will raise KeyError if missing
+        lr = opt_cfg['learning_rate']  # Will raise KeyError if missing
+        wd = opt_cfg['weight_decay']  # Will raise KeyError if missing
+    
+    lr_str = format_learning_rate(lr)
+    parts = [f"{opt_class}{lr_str}"]
+    
+    # Add weight decay if non-zero
+    if wd > 0:
+        wd_str = f"wd{int(wd * 100):02d}"  # 0.01 → "wd01", 0.1 → "wd10"
+        parts.append(wd_str)
+    else:
+        # Always show wd00 for clarity (distinguishes from old format)
+        parts.append("wd00")
+    
+    return '_'.join(parts)
+
+def generate_scheduler_string(sched_cfg):
+    """Generate scheduler string from config.
+    
+    Args:
+        sched_cfg: Scheduler configuration (DictConfig or dict)
+    
+    Returns:
+        str: Compact scheduler string for run name
+    
+    Raises:
+        KeyError: If required config keys are missing (fail-fast, no defaults)
+    
+    Examples:
+        warmup_cosine_10pct → "wcos10"
+        warmup_constant_10pct → "wcon10"
+        cosine → "cos"
+        reduce_lr (factor=0.75, patience=2) → "rlr75f_2p"
+        constant → "const"
+    """
+    # Handle both dict and DictConfig (no defaults - fail fast)
+    if hasattr(sched_cfg, 'scheduler_type'):
+        sched_type = sched_cfg.scheduler_type
+    else:
+        sched_type = sched_cfg['scheduler_type']  # Will raise KeyError if missing
+    
+    if sched_type == 'warmup_cosine':
+        # Get warmup fraction (required)
+        if hasattr(sched_cfg, 'warmup_fraction'):
+            warmup_frac = sched_cfg.warmup_fraction
+        else:
+            warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
+        warmup_pct = int(warmup_frac * 100)
+        return f"wcos{warmup_pct}"
+    
+    elif sched_type == 'warmup_constant':
+        # Get warmup fraction (required)
+        if hasattr(sched_cfg, 'warmup_fraction'):
+            warmup_frac = sched_cfg.warmup_fraction
+        else:
+            warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
+        warmup_pct = int(warmup_frac * 100)
+        return f"wcon{warmup_pct}"
+    
+    elif sched_type == 'cosine':
+        return "cos"
+    
+    elif sched_type == 'reduce_lr':
+        # Get factor and patience (required)
+        if hasattr(sched_cfg, 'factor'):
+            factor = sched_cfg.factor
+            patience = sched_cfg.patience
+        else:
+            factor = sched_cfg['factor']  # Will raise KeyError if missing
+            patience = sched_cfg['patience']  # Will raise KeyError if missing
+        
+        factor_str = f"{int(factor * 100):02d}"  # 0.75 → "75", 0.5 → "50"
+        return f"rlr{factor_str}f_{patience}p"
+    
+    elif sched_type == 'constant':
+        return "const"
+    
+    else:
+        # Fallback: first 4 chars
+        return sched_type[:4]
+
 def generate_run_name(cfg, timestamp: str = None) -> str:
     """Generate the run name string based on the resolved config.
 
@@ -87,6 +211,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         model = cfg.get('model', {})
         dataset = cfg.get('dataset', {})
         optimizer = cfg.get('optimizer', {})
+        scheduler = cfg.get('scheduler', {})
         diffusion = cfg.get('diffusion', {})
         loss = cfg.get('loss', {})
     else:  # Assume DictConfig
@@ -94,6 +219,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         model = cfg.model
         dataset = cfg.dataset
         optimizer = cfg.optimizer
+        scheduler = cfg.scheduler
         diffusion = cfg.diffusion
         loss = cfg.loss if hasattr(cfg, 'loss') else {}
     
@@ -105,45 +231,9 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Batch size
     batch_str = f"b{dataset['train_batch_size']}"
     
-    # Optimizer string: {lr_formatted}lr_{scheduler_type}s_{factor}f_{patience}p_{threshold}t_{cooldown}c_{interval}i
-    lr = float(optimizer['learning_rate'])  # Convert to float in case it's a string
-    lr_formatted = f"{lr:.0e}".replace('e-0', 'e').replace('e-', 'e')  # 2e-4 -> 2e4
-    optimizer_str = f"{lr_formatted}lr"
-    
-    if optimizer.get('scheduler_type') == 'reduce_lr':
-        optimizer_str += "_reducelrs"
-        
-        # Factor: 0.75 -> 075
-        factor = optimizer.get('reduce_lr_factor')
-        if factor is not None:
-            factor_str = f"{factor:.2f}".replace('.', '')  # Remove decimal point
-            optimizer_str += f"_{factor_str}f"
-        
-        # Patience
-        patience = optimizer.get('reduce_lr_patience')
-        if patience is not None:
-            optimizer_str += f"_{patience}p"
-        
-        # Threshold: 1e-4 -> 1e4
-        threshold = optimizer.get('reduce_lr_threshold')
-        if threshold is not None:
-            threshold = float(threshold)  # Convert to float in case it's a string
-            threshold_str = f"{threshold:.0e}".replace('e-0', 'e').replace('e-', 'e')
-            optimizer_str += f"_{threshold_str}t"
-        
-        # Cooldown
-        cooldown = optimizer.get('reduce_lr_cooldown')
-        if cooldown is not None:
-            optimizer_str += f"_{cooldown}c"
-        
-        # Interval: 1000 -> 1Ki
-        interval = optimizer.get('scheduler_interval')
-        if interval is not None:
-            if interval >= 1000 and interval % 1000 == 0:
-                interval_str = f"{interval // 1000}Ki"
-            else:
-                interval_str = f"{interval}i"
-            optimizer_str += f"_{interval_str}"
+    # Optimizer and scheduler strings (separated)
+    optimizer_str = generate_optimizer_string(optimizer)
+    scheduler_str = generate_scheduler_string(scheduler)
     
     # Training steps: 100000 -> 100K
     max_steps = training['max_steps']
@@ -180,7 +270,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Loss string: l{loss_type}[_dw{diffusion_weight}_d{dice_weight}_b{bce_weight}_w{warmup}]
     loss_str = generate_loss_string(loss)
     
-    # Combine all parts (loss comes after training steps, before diffusion)
-    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{steps_str}_{loss_str}_{diffusion_str}_{timestamp}"
+    # Combine all parts with separated optimizer and scheduler
+    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{scheduler_str}_{steps_str}_{loss_str}_{diffusion_str}_{timestamp}"
     
     return run_name

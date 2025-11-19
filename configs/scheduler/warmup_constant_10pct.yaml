@@ -1,0 +1,9 @@
+# Warmup then constant (ablation baseline)
+# Use to isolate effect of LR decay
+# Use with: python main.py scheduler=warmup_constant_10pct
+
+scheduler_type: warmup_constant
+warmup_steps: null
+warmup_fraction: 0.1
+step_frequency: per_step
+

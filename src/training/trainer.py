@@ -7,6 +7,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import copy
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+from src.training.optimizer_factory import build_optimizer, build_scheduler
 from src.utils.general import device_grad_decorator
 from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
 from src.utils.logger import Logger
@@ -21,44 +22,26 @@ from omegaconf import OmegaConf
 
 def get_optimizer_and_scheduler(cfg, model):
     """
-    Create optimizer and learning rate scheduler based on configuration.
-
+    Build optimizer and scheduler using factory pattern.
+    
+    Separates concerns:
+    - cfg.optimizer: optimizer class + hyperparams
+    - cfg.scheduler: LR schedule type + params
+    - cfg.training: gradient techniques + checkpointing
+    
     Args:
-        cfg (DictConfig): Hydra configuration object.
-        model (nn.Module): The model to optimize.
-
+        cfg: Hydra config with optimizer, scheduler, training defined
+        model: Model to optimize
+    
     Returns:
-        optimizer, scheduler
+        (optimizer, scheduler) tuple
+    
+    Raises:
+        KeyError: If required config keys missing
+        ValueError: If optimizer/scheduler type unsupported
     """
-    OmegaConf.set_struct(cfg, False)
-    # Temporary aliases for config transition
-    cfg.training.learning_rate = cfg.optimizer.learning_rate
-    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
-    cfg.training.reduce_lr_factor = cfg.optimizer.reduce_lr_factor
-    cfg.training.reduce_lr_patience = cfg.optimizer.reduce_lr_patience
-    cfg.training.reduce_lr_threshold = cfg.optimizer.reduce_lr_threshold
-    cfg.training.reduce_lr_cooldown = cfg.optimizer.reduce_lr_cooldown
-    cfg.training.max_steps = cfg.training.max_steps  # Retained in training
-    OmegaConf.set_struct(cfg, True)
-
-    optimizer = Adam(model.parameters(), lr=cfg.training.learning_rate)
-    
-    if cfg.training.scheduler_type == 'reduce_lr':
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=cfg.training.reduce_lr_factor,
-            patience=cfg.training.reduce_lr_patience,
-            threshold=cfg.training.reduce_lr_threshold,
-            cooldown=cfg.training.reduce_lr_cooldown
-        )
-    elif cfg.training.scheduler_type == 'cosine':
-        if cfg.training.max_steps is None:
-            raise ValueError("max_steps must be specified for cosine scheduler")
-        scheduler = CosineAnnealingLR(optimizer, T_max=cfg.training.max_steps, eta_min=0)
-    else:
-        raise ValueError(f"Unknown scheduler_type: {cfg.training.scheduler_type}")
-    
+    optimizer = build_optimizer(model, cfg)
+    scheduler = build_scheduler(optimizer, cfg)
     return optimizer, scheduler
 
 def train_one_epoch(diffusion, train_dataloader, optimizer, scheduler, cfg, logger, global_step):
@@ -306,42 +289,16 @@ def train_and_evaluate(
     return train_losses, test_losses, best_test_loss_epoch
 
 def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, run_dir=None):
-    OmegaConf.set_struct(cfg, False)
-    # Temporary aliases for config transition
-    # Optimizer/scheduler (some may be set in get_optimizer)
-    cfg.training.scheduler_interval = cfg.optimizer.scheduler_interval
-    cfg.training.scheduler_type = cfg.optimizer.scheduler_type
-    
-    # Diffusion
-    cfg.training.timesteps = cfg.diffusion.timesteps
-    
-    # Training loop
-    cfg.training.max_steps = cfg.training.max_steps
-    cfg.training.checkpoint_save_interval = cfg.training.checkpoint_save_interval
-    cfg.training.ema_rate = cfg.training.ema_rate
-    cfg.training.ema_rate_precision = cfg.training.ema_rate_precision
-    
-    # Validation/logging
-    cfg.validation.validation_interval = cfg.validation.validation_interval
-    
-    # Dataset (for modalities)
-    cfg.dataset.modalities = cfg.dataset.modalities  # Retained or from base
-    
-    # Environment (device from main, but alias if needed)
-    cfg.device = cfg.environment.device
-
     # Access dataloaders
     train_dataloader = dataloaders['train']
     sample_dataloader = dataloaders['sample']  # Formerly test_dataloader
     val_dataloader = dataloaders['val']  # For future validation
 
-    # Use cfg values directly (remove params)
+    # Use cfg values directly
     max_steps = cfg.training.max_steps
     save_interval = cfg.training.checkpoint_save_interval
     log_interval = cfg.logging.interval
     ema_rates = [float(r) for r in cfg.training.ema_rate.split(',') if r.strip()]
-    scheduler_interval = cfg.training.scheduler_interval
-    scheduler_type = cfg.training.scheduler_type
     
     diffusion.train()
     global_step = 0
@@ -369,9 +326,30 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
         
         loss.backward()
+        
+        # Gradient clipping (if configured)
+        grad_cfg = cfg.training.gradient
+        if grad_cfg.clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(
+                diffusion.parameters(),
+                max_norm=grad_cfg.clip_norm
+            )
+        elif grad_cfg.clip_value is not None:
+            torch.nn.utils.clip_grad_value_(
+                diffusion.parameters(),
+                clip_value=grad_cfg.clip_value
+            )
+        
         grad_norm = calc_grad_norm(diffusion.parameters())
         optimizer.step()
         param_norm = calc_param_norm(diffusion.parameters())
+        
+        # Step scheduler (per-step for warmup schedulers)
+        if scheduler is not None:
+            sched_cfg = cfg.scheduler
+            if sched_cfg.step_frequency == 'per_step':
+                if sched_cfg.scheduler_type != 'reduce_lr':
+                    scheduler.step()
         
         # Update EMAs (after optimizer step)
         for rate, params in zip(ema_rates, ema_params):
@@ -546,31 +524,37 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         interval_loss += loss.item()
         interval_count += 1
         
-        if global_step % scheduler_interval == 0:
-            if interval_count > 0:
-                mean_loss = interval_loss / interval_count
-                prev_lr = optimizer.param_groups[0]['lr']
-                prev_best = scheduler.best
-                prev_bad_epochs = scheduler.num_bad_epochs
-                prev_cooldown = scheduler.cooldown_counter
-                
-                scheduler.step(mean_loss) if scheduler_type == 'reduce_lr' else scheduler.step()
-                
-                new_lr = optimizer.param_groups[0]['lr']
-                reduced = new_lr < prev_lr
-                
-                print(f"Scheduler Update at step {global_step}:")
-                print(f"  Configured Threshold: {scheduler.threshold:.6e}")
-                print(f"  Configured Cooldown: {scheduler.cooldown}")
-                print(f"  Mean Loss: {mean_loss:.6f}")
-                print(f"  Previous Best: {prev_best:.6f}")
-                print(f"  New Best: {scheduler.best:.6f}")
-                print(f"  Bad Epochs: {prev_bad_epochs} -> {scheduler.num_bad_epochs}")
-                print(f"  Cooldown: {prev_cooldown} -> {scheduler.cooldown_counter}")
-                print(f"  LR: {prev_lr:.6e} -> {new_lr:.6e} (Reduced: {reduced})")
-                
-            interval_loss = 0.0
-            interval_count = 0
+        # Interval-based scheduler stepping (only for ReduceLROnPlateau)
+        if scheduler is not None:
+            sched_cfg = cfg.scheduler
+            if sched_cfg.step_frequency == 'per_interval':
+                if global_step % sched_cfg.step_interval == 0 and interval_count > 0:
+                    mean_loss = interval_loss / interval_count
+                    prev_lr = optimizer.param_groups[0]['lr']
+                    
+                    # Only ReduceLROnPlateau uses this path
+                    if sched_cfg.scheduler_type == 'reduce_lr':
+                        prev_best = scheduler.best
+                        prev_bad_epochs = scheduler.num_bad_epochs
+                        prev_cooldown = scheduler.cooldown_counter
+                        
+                        scheduler.step(mean_loss)
+                        
+                        new_lr = optimizer.param_groups[0]['lr']
+                        reduced = new_lr < prev_lr
+                        
+                        print(f"Scheduler Update at step {global_step}:")
+                        print(f"  Configured Threshold: {scheduler.threshold:.6e}")
+                        print(f"  Configured Cooldown: {scheduler.cooldown}")
+                        print(f"  Mean Loss: {mean_loss:.6f}")
+                        print(f"  Previous Best: {prev_best:.6f}")
+                        print(f"  New Best: {scheduler.best:.6f}")
+                        print(f"  Bad Epochs: {prev_bad_epochs} → {scheduler.num_bad_epochs}")
+                        print(f"  Cooldown: {prev_cooldown} → {scheduler.cooldown_counter}")
+                        print(f"  LR: {prev_lr:.6e} → {new_lr:.6e} (Reduced: {reduced})")
+                    
+                    interval_loss = 0.0
+                    interval_count = 0
         
         # Periodic saving
         if global_step % save_interval == 0 and global_step > 0:

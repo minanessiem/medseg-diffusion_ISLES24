@@ -5,7 +5,8 @@ defaults:
   - model: medsegdiff_32_1l_8c_2x2a_128t_1btl_debug
   - dataset: isles24
   - training: train_100Kms_50Ks_9999e
-  - optimizer: opt_2e4lr_reducelrs_075f_4p_1e4t_3c_1Ki
+  - optimizer: adamw_2e4lr_wd00
+  - scheduler: warmup_cosine_10pct
   - logging: default
   - loss: mse_loss_only
   - diffusion: openai_ddpm_100ts_debug

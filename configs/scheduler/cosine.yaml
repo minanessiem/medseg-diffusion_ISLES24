@@ -1,0 +1,8 @@
+# Pure cosine annealing (no warmup)
+# Use for ablation to test warmup necessity
+# Use with: python main.py scheduler=cosine
+
+scheduler_type: cosine
+eta_min: 0
+step_frequency: per_step
+
