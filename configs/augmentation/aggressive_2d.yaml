@@ -1,0 +1,49 @@
+# Aggressive 2D augmentation: Stronger transforms for larger datasets
+# Inspired by DiffSwinTr and medical imaging augmentation literature
+
+_name_: aggressive_2d
+
+spatial:
+  enabled: true
+  
+  random_flip:
+    enabled: true
+    prob: 0.5
+    spatial_axis: [0, 1]
+  
+  random_rotate:
+    enabled: true
+    prob: 0.3
+    range_x: [-15, 15]  # ±15 degrees rotation
+    mode: bilinear
+    padding_mode: zeros
+
+intensity:
+  enabled: true
+  
+  random_shift:
+    enabled: true
+    prob: 0.5
+    offsets: 0.1  # ±10% intensity shift
+  
+  random_scale:
+    enabled: true
+    prob: 0.5
+    factors: 0.1  # 0.9-1.1× intensity scaling
+  
+  random_gamma:
+    enabled: true
+    prob: 0.3
+    gamma_range: [0.8, 1.2]
+  
+  random_gaussian_noise:
+    enabled: true
+    prob: 0.2
+    mean: 0.0
+    std: 0.05
+  
+  random_gaussian_blur:
+    enabled: true
+    prob: 0.2
+    sigma_range: [0.5, 1.5]
+

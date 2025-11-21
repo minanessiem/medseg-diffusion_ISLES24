@@ -1,0 +1,42 @@
+# Light 2D augmentation: Conservative transforms for medical imaging
+# Suitable for initial experiments and datasets with limited samples
+
+_name_: light_2d
+
+spatial:
+  enabled: true
+  
+  random_flip:
+    enabled: true
+    prob: 0.5
+    spatial_axis: [0, 1]  # Flip height and width independently
+
+intensity:
+  enabled: true
+  
+  random_shift:
+    enabled: true
+    prob: 0.3
+    offsets: 0.05  # ±5% intensity shift
+  
+  random_scale:
+    enabled: true
+    prob: 0.3
+    factors: 0.05  # 0.95-1.05× intensity scaling
+  
+  random_gamma:
+    enabled: false
+    prob: 0.0
+    gamma_range: [0.9, 1.1]
+  
+  random_gaussian_noise:
+    enabled: false
+    prob: 0.0
+    mean: 0.0
+    std: 0.05
+  
+  random_gaussian_blur:
+    enabled: false
+    prob: 0.0
+    sigma_range: [0.5, 1.5]
+

@@ -156,7 +156,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
     Dataset class for ISLES24 that returns 2D slices from 3D volumes.
     Inspired by BRATSDataset3D and CustomDataset3D.
     """
-    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32, use_caching=False, shared_cache=None, cache_lock=None):
+    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False, image_size=32, use_caching=False, shared_cache=None, cache_lock=None, aug_cfg=None, is_training=False):
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
@@ -170,6 +170,17 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
 
         self.image_size = image_size
         self.use_caching = use_caching
+        
+        # NEW: Initialize augmentation pipeline
+        self.aug_cfg = aug_cfg
+        self.is_training = is_training
+        self.augmentation = None
+        
+        if self.is_training and self.aug_cfg is not None:
+            from src.data.augmentation import AugmentationPipeline2D
+            self.augmentation = AugmentationPipeline2D(self.aug_cfg)
+            print(f"Initialized augmentation pipeline for training dataset")
+        
         print("Pre-calculating dataset size...")
         for case_idx, filedict in tqdm.tqdm(enumerate(self.database), total=len(self.database)):
             # Use the first modality to determine the number of slices
@@ -277,6 +288,13 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         image = resizer(image)
         label = resizer(label)
 
+        # NEW: Apply augmentation if training mode
+        if self.augmentation is not None:
+            data_dict = {'image': image, 'label': label}
+            data_dict = self.augmentation(data_dict)
+            image = data_dict['image']
+            label = data_dict['label']
+
         if self.transform:
             state = torch.get_rng_state()
             image = self.transform(image)
@@ -298,6 +316,18 @@ def get_dataloaders(cfg):
     cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
     OmegaConf.set_struct(cfg, True)
 
+    # NEW: Extract augmentation config from top-level
+    aug_cfg = cfg.augmentation if hasattr(cfg, 'augmentation') else None
+    if aug_cfg is not None:
+        spatial_enabled = aug_cfg.spatial.enabled
+        intensity_enabled = aug_cfg.intensity.enabled
+        if spatial_enabled or intensity_enabled:
+            print(f"Augmentation enabled: spatial={spatial_enabled}, intensity={intensity_enabled}")
+        else:
+            print("Augmentation config present but all transforms disabled")
+    else:
+        print("No augmentation configured (using baseline)")
+
     if cfg.dataset.name == 'isles24':
         shared_cache = {} if cfg.dataset.use_shared_cache else None  # Optional config flag for easy toggling
         cache_lock = threading.Lock() if shared_cache else None
@@ -312,7 +342,9 @@ def get_dataloaders(cfg):
             image_size=cfg.model.image_size,
             use_caching=cfg.dataset.use_caching,
             shared_cache=shared_cache,
-            cache_lock=cache_lock
+            cache_lock=cache_lock,
+            aug_cfg=aug_cfg,      # NEW
+            is_training=True       # NEW
         )
         test_dataset = ISLES24Dataset2D(
             directory=cfg.dataset.dir,
@@ -324,7 +356,9 @@ def get_dataloaders(cfg):
             image_size=cfg.model.image_size,
             use_caching=cfg.dataset.use_caching,
             shared_cache=shared_cache,
-            cache_lock=cache_lock
+            cache_lock=cache_lock,
+            aug_cfg=None,          # NEW: explicitly None for validation
+            is_training=False      # NEW
         )
         train_dataloader = DataLoader(
             train_dataset, 

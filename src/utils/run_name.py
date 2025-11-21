@@ -193,6 +193,59 @@ def generate_scheduler_string(sched_cfg):
         # Fallback: first 4 chars
         return sched_type[:4]
 
+def generate_augmentation_string(aug_cfg):
+    """
+    Generate compact augmentation string for run name.
+    
+    Encodes augmentation strategy into a short identifier that fits naturally
+    into the run name structure. Uses Hydra's _name_ metadata when available
+    to identify preset configs.
+    
+    Args:
+        aug_cfg: OmegaConf config from configs/augmentation/, or None
+    
+    Returns:
+        String encoding of augmentation strategy:
+        - "augNONE" - No augmentation or all transforms disabled
+        - "augLIGHT2D" - Light preset (configs/augmentation/light_2d.yaml)
+        - "augAGG2D" - Aggressive preset (configs/augmentation/aggressive_2d.yaml)
+        - "augCUSTOM" - Custom user-defined config
+    
+    Examples:
+        >>> cfg_none = OmegaConf.create({'spatial': {'enabled': False}, 'intensity': {'enabled': False}})
+        >>> generate_augmentation_string(cfg_none)
+        'augNONE'
+        
+        >>> cfg_none = None
+        >>> generate_augmentation_string(cfg_none)
+        'augNONE'
+    """
+    if aug_cfg is None:
+        return "augNONE"
+    
+    # Handle dict vs DictConfig
+    if isinstance(aug_cfg, dict):
+        spatial_enabled = aug_cfg.get('spatial', {}).get('enabled', False)
+        intensity_enabled = aug_cfg.get('intensity', {}).get('enabled', False)
+        config_name = aug_cfg.get('_name_', '').lower()
+    else:
+        spatial_enabled = aug_cfg.spatial.enabled
+        intensity_enabled = aug_cfg.intensity.enabled
+        config_name = aug_cfg.get('_name_', '').lower()
+    
+    if not spatial_enabled and not intensity_enabled:
+        return "augNONE"
+    
+    if 'light' in config_name:
+        return "augLIGHT2D"
+    elif 'aggressive' in config_name or 'agg' in config_name:
+        return "augAGG2D"
+    elif config_name == 'none':
+        return "augNONE"
+    else:
+        # Custom config or unrecognized preset
+        return "augCUSTOM"
+
 def generate_run_name(cfg, timestamp: str = None) -> str:
     """Generate the run name string based on the resolved config.
 
@@ -270,7 +323,12 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Loss string: l{loss_type}[_dw{diffusion_weight}_d{dice_weight}_b{bce_weight}_w{warmup}]
     loss_str = generate_loss_string(loss)
     
+    # NEW: Add augmentation string
+    aug_cfg = cfg.get('augmentation', None) if isinstance(cfg, dict) else (cfg.augmentation if hasattr(cfg, 'augmentation') else None)
+    aug_str = generate_augmentation_string(aug_cfg)
+    
     # Combine all parts with separated optimizer and scheduler
-    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{scheduler_str}_{steps_str}_{loss_str}_{diffusion_str}_{timestamp}"
+    # Insert aug_str between loss_str and diffusion_str
+    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{scheduler_str}_{steps_str}_{loss_str}_{aug_str}_{diffusion_str}_{timestamp}"
     
     return run_name

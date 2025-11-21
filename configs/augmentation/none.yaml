@@ -1,0 +1,11 @@
+# Baseline configuration: No augmentation
+# Use this as the control condition for ablation studies
+
+_name_: none
+
+spatial:
+  enabled: false
+
+intensity:
+  enabled: false
+
