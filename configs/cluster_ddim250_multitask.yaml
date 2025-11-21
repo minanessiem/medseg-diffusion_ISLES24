@@ -5,5 +5,5 @@ defaults:
   - cluster
   - override /diffusion: openai_ddim_250steps
   - override /logging: ddim_250steps
-  - override /loss: multitask
+  - override /loss: multitask_loss_lMSE_dw10_d01_b01_w20K
   - override /augmentation: aggressive_2d
