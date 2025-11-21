@@ -67,8 +67,109 @@ Run the project with Hydra, overriding groups as needed:
 
 Interpolation is used (e.g., ${environment.training.output_root} in training templates).
 
+## Checkpoint Configuration
+
+The training system supports two independent checkpoint strategies:
+
+### Interval Checkpoints
+Periodic safety backups for training resumption. Configured in `training/checkpoint_interval`:
+
+- `enabled`: Enable/disable interval checkpointing (boolean)
+- `save_interval`: Steps between saves (e.g., 5000, 10000)
+- `keep_last_n`: Retain only N most recent checkpoints via FIFO policy (null = keep all)
+- `model_template`: Filename template for model checkpoint
+- `opt_template`: Filename template for optimizer state
+
+**Use case**: Fault recovery, training resumption after interruptions
+
+**Saved artifacts**: Model state dict + optimizer state dict
+
+### Best Model Checkpoints
+Quality-gated saves based on validation metrics. Configured in `training/checkpoint_best`:
+
+- `enabled`: Enable/disable metric-based checkpointing (boolean)
+- `metric_name`: Validation metric to track (e.g., "dice_2d_fg", "f1_2d")
+  - **Important**: Use the metric key from validation results (no "val_" prefix)
+- `metric_mode`: "max" (higher is better) or "min" (lower is better)
+- `keep_last_n`: Retain only top N checkpoints by metric value (null = keep all)
+- `model_template`: Filename template for model checkpoint (includes metric value)
+- `ema_template`: Filename template for EMA checkpoint (includes metric value)
+
+**Use case**: Inference, model selection, experiment comparison
+
+**Saved artifacts**: Model state dict + all configured EMA state dicts
+
+### Configuration Examples
+
+**Minimal (interval only)**:
+```yaml
+checkpoint_interval:
+  enabled: true
+  save_interval: 10000
+  keep_last_n: 2
+checkpoint_best:
+  enabled: false
+```
+
+**Quality-focused (best models)**:
+```yaml
+checkpoint_interval:
+  enabled: true
+  save_interval: 10000
+  keep_last_n: 3
+checkpoint_best:
+  enabled: true
+  metric_name: "dice_2d_fg"
+  metric_mode: "max"
+  keep_last_n: 5
+```
+
+**Track loss instead**:
+```yaml
+checkpoint_best:
+  enabled: true
+  metric_name: "test_loss"
+  metric_mode: "min"
+  keep_last_n: 3
+```
+
+### File Organization
+
+Checkpoints are saved to subdirectories under the run output directory:
+```
+outputs/run_name_timestamp/
+├── models/
+│   ├── checkpoint/          # Interval checkpoints (FIFO retention)
+│   │   ├── diffusion_chkpt_step_095000.pth
+│   │   ├── opt_chkpt_step_095000.pth
+│   │   └── ...
+│   └── best/                # Best model checkpoints (quality-based retention)
+│       ├── best_model_step_052000_dice_2d_fg_0.8456.pth
+│       ├── best_model_step_052000_dice_2d_fg_0.8456_ema_0.9999.pth
+│       └── ...
+```
+
+### Checkpoint Logging
+
+The system provides clear logging for all checkpoint decisions:
+- `✓ Saving interval checkpoint at step X`
+- `✓ Saving best model: dice_2d_fg improved 0.8234 → 0.8456`
+- `✗ Skipping best model save: dice_2d_fg did not improve (current: 0.8234, best: 0.8456)`
+- `🗑️ Removed old interval checkpoint: diffusion_chkpt_step_005000.pth`
+- `🗑️ Removed worse best checkpoint: best_model_step_010000_dice_0.8001.pth`
+
+### Error Handling
+
+If `metric_name` doesn't exist in validation results, training will crash with a clear error message:
+```
+❌ ERROR: Checkpoint metric 'dice_2d' not found in validation results.
+   Validation returned metrics: ['dice_2d_fg', 'f1_2d', 'precision_2d', ...]
+   Check your checkpoint_best.metric_name config!
+```
+
 ## Deprecations
 - Old dataset files (isles24_local.yaml, isles24_cluster.yaml) are deprecated. Use `dataset: base_isles24` with the appropriate environment instead.
 - Removed keys (e.g., learning_rate from training/) are now in optimizer/ or diffusion/.
+- **As of 2025-11-21**: `checkpoint_save_interval`, `main_checkpoint_template`, `ema_checkpoint_template`, `opt_checkpoint_template` are deprecated. Use `checkpoint_interval` and `checkpoint_best` config groups instead.
 
 For more on Hydra: https://hydra.cc/docs/intro/
