@@ -6,4 +6,5 @@ defaults:
   - override /diffusion: openai_ddim_50steps
   - override /logging: ddim_50steps
   - override /loss: multitask
+  - override /augmentation: aggressive_2d
 
