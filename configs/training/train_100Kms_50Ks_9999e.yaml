@@ -28,5 +28,7 @@ checkpoint_best:
   metric_name: "dice_2d_fg"  # Must match validation metric key (without "val_" prefix)
   metric_mode: "max"  # "max" (higher is better) or "min" (lower is better)
   keep_last_n: 3  # Keep only top 3 best models by metric value (null = keep all)
+  save_metrics_csv: true  # Save CSV file with all validation metrics
   model_template: 'models/best/best_model_step_{step:06d}_{metric_name}_{metric_value:.4f}.pth'
   ema_template: 'models/best/best_model_step_{step:06d}_{metric_name}_{metric_value:.4f}_ema_{rate}.pth'
+  metrics_template: 'models/best/best_model_step_{step:06d}_{metric_name}_{metric_value:.4f}_metrics.csv'

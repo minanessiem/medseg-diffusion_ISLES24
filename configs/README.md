@@ -92,12 +92,14 @@ Quality-gated saves based on validation metrics. Configured in `training/checkpo
   - **Important**: Use the metric key from validation results (no "val_" prefix)
 - `metric_mode`: "max" (higher is better) or "min" (lower is better)
 - `keep_last_n`: Retain only top N checkpoints by metric value (null = keep all)
+- `save_metrics_csv`: Save CSV file with all validation metrics alongside checkpoint (boolean, default: true)
 - `model_template`: Filename template for model checkpoint (includes metric value)
 - `ema_template`: Filename template for EMA checkpoint (includes metric value)
+- `metrics_template`: Filename template for metrics CSV file (includes metric value)
 
 **Use case**: Inference, model selection, experiment comparison
 
-**Saved artifacts**: Model state dict + all configured EMA state dicts
+**Saved artifacts**: Model state dict + all configured EMA state dicts + metrics CSV (optional)
 
 ### Configuration Examples
 
@@ -122,6 +124,7 @@ checkpoint_best:
   metric_name: "dice_2d_fg"
   metric_mode: "max"
   keep_last_n: 5
+  save_metrics_csv: true  # Save CSV with all metrics
 ```
 
 **Track loss instead**:
@@ -146,8 +149,19 @@ outputs/run_name_timestamp/
 │   └── best/                # Best model checkpoints (quality-based retention)
 │       ├── best_model_step_052000_dice_2d_fg_0.8456.pth
 │       ├── best_model_step_052000_dice_2d_fg_0.8456_ema_0.9999.pth
+│       ├── best_model_step_052000_dice_2d_fg_0.8456_metrics.csv
 │       └── ...
 ```
+
+**Metrics CSV Format**: When `save_metrics_csv: true`, a CSV file is saved with all validation metrics:
+```csv
+metric_key,metric_value
+dice_2d_fg,0.845632
+f1_2d,0.823451
+precision_2d,0.891234
+recall_2d,0.778901
+```
+Metric values are formatted with 6 decimal places for consistency.
 
 ### Checkpoint Logging
 

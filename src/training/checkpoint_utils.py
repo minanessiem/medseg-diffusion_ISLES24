@@ -6,6 +6,7 @@ based on validation metrics or training intervals. It does not perform file I/O.
 
 import math
 import os
+import csv
 import torch
 from typing import Dict, List, Tuple
 
@@ -143,7 +144,7 @@ def save_best_checkpoint(
     val_results: Dict[str, float]
 ) -> List[str]:
     """
-    Save best model checkpoint (model + EMAs) for inference.
+    Save best model checkpoint (model + EMAs + metrics CSV) for inference.
     
     Args:
         diffusion: Diffusion model (with state_dict method)
@@ -198,6 +199,13 @@ def save_best_checkpoint(
             torch.save(ema_state, ema_path)
             saved_files.append(ema_path)
             print(f"  ├─ EMA ({rate}): {ema_path}")
+    
+    # Save metrics CSV (if enabled)
+    if config.get('save_metrics_csv', False):
+        csv_path = f"{run_dir}{config.metrics_template.format(**format_kwargs)}"
+        write_metrics_csv(csv_path, val_results, precision=6)
+        saved_files.append(csv_path)
+        print(f"  ├─ Metrics CSV: {csv_path}")
     
     if saved_files:
         # Update last line to use └─ for final entry
@@ -304,4 +312,40 @@ def cleanup_best_checkpoints(
     
     # Return only kept checkpoints (top N)
     return checkpoint_list[:keep_last_n]
+
+
+def write_metrics_csv(
+    file_path: str,
+    metrics_dict: Dict[str, float],
+    precision: int = 6
+) -> None:
+    """
+    Write validation metrics to a CSV file with header row.
+    
+    Args:
+        file_path: Path to save CSV file
+        metrics_dict: Dictionary of metric_name -> metric_value
+        precision: Number of decimal places for floating point values
+    
+    Raises:
+        OSError: If file write fails
+    
+    Example output:
+        metric_key,metric_value
+        dice_2d_fg,0.845632
+        f1_2d,0.823451
+        precision_2d,0.891234
+    """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    
+    with open(file_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        # Write header
+        writer.writerow(['metric_key', 'metric_value'])
+        # Write metrics (sorted for consistency)
+        for key in sorted(metrics_dict.keys()):
+            value = float(metrics_dict[key])  # Convert tensor to float if needed
+            formatted_value = f"{value:.{precision}f}"
+            writer.writerow([key, formatted_value])
+
 
