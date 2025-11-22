@@ -320,6 +320,19 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     # EMA setup (inspired by MedSegDiff)
     ema_params = [copy.deepcopy(list(diffusion.parameters())) for _ in ema_rates] if ema_rates else []
     
+    # Gradient accumulation setup
+    accumulation_steps = cfg.training.gradient.accumulation_steps
+    if accumulation_steps is None:
+        accumulation_steps = 1
+    physical_batch_size = cfg.environment.dataset.train_batch_size
+    effective_batch_size = physical_batch_size * accumulation_steps
+    accumulation_counter = 0
+    
+    print(f"\nGradient Accumulation Configuration:")
+    print(f"  Physical batch size: {physical_batch_size}")
+    print(f"  Accumulation steps: {accumulation_steps}")
+    print(f"  Effective batch size: {effective_batch_size}")
+    
     # Checkpoint tracking
     best_metric_value = (
         float('-inf') if cfg.training.checkpoint_best.enabled and cfg.training.checkpoint_best.metric_mode == 'max'
@@ -334,6 +347,9 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     interval_loss = 0.0
     interval_count = 0
     
+    # Initialize gradients once before training loop
+    optimizer.zero_grad()
+    
     while max_steps is None or global_step < max_steps:
         try:
             img, mask, *_ = next(train_iterator)
@@ -345,12 +361,43 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         img, mask = img.to(cfg.device), mask.to(cfg.device)
         batch_size = mask.shape[0]  # Define here, after data load
         
-        optimizer.zero_grad()
         loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
         
-        loss.backward()
+        # Scale loss for gradient accumulation (normalized to integer, always safe to divide)
+        scaled_loss = loss / accumulation_steps
+        scaled_loss.backward()
         
-        # Gradient clipping (if configured)
+        # Log micro-batch metrics (accumulated across micro-batches)
+        # Log unscaled loss (primary metric for model performance)
+        logger.logkv_mean('loss', loss.item(), accumulator='train')
+        # Log scaled loss (for verifying accumulation math)
+        logger.logkv_mean('loss/scaled', scaled_loss.item(), accumulator='train')
+        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
+        
+        # Log loss components if multi-task
+        if loss_components is not None:
+            for component_name, component_value in loss_components.items():
+                # Log both scaled and unscaled for each component
+                logger.logkv_mean(f'loss/{component_name}', component_value, accumulator='train')
+                logger.logkv_mean(f'loss/{component_name}_scaled', component_value / accumulation_steps, accumulator='train')
+        
+        # Increment accumulation counter
+        accumulation_counter += 1
+        
+        # Accumulate loss for interval-based scheduler (if used)
+        interval_loss += loss.item()
+        interval_count += 1
+        
+        # Early exit if not yet time for optimizer update (skip macro-batch operations)
+        if accumulation_counter < accumulation_steps:
+            continue  # Skip to next micro-batch
+        
+        # ===== Macro-batch operations (only after N micro-batches) =====
+        accumulation_counter = 0  # Reset counter
+        
+        # Gradient clipping (applied to accumulated gradients - correct behavior)
+        # Note: clip_norm threshold applies to accumulated gradient, matching large-batch training
+        # Do NOT scale clip_norm by accumulation_steps - that would defeat the purpose of clipping
         grad_cfg = cfg.training.gradient
         if grad_cfg.clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(
@@ -365,6 +412,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         grad_norm = calc_grad_norm(diffusion.parameters())
         optimizer.step()
+        optimizer.zero_grad()  # Zero gradients for next accumulation cycle
         param_norm = calc_param_norm(diffusion.parameters())
         
         # Step scheduler (per-step for warmup schedulers)
@@ -381,7 +429,14 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         # Increment global_step here, after training but before logging
         global_step += 1
-        samples = global_step * batch_size
+        samples = global_step * effective_batch_size  # Use effective batch size
+        
+        # Log macro-batch metrics (once per optimizer update)
+        logger.logkv('step', global_step, accumulator='train')
+        logger.logkv('samples', samples, accumulator='train')
+        logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
+        logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
+        logger.logkv_mean('param_norm', param_norm, accumulator='train')
         
         # Validation check
         if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
@@ -561,20 +616,6 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     labels=labels,
                     per_sample_ncol=row_len,
                 )
-        
-        # Logging (scalars)
-        # Log individual loss components if multi-task loss enabled
-        if loss_components is not None:
-            for component_name, component_value in loss_components.items():
-                logger.logkv_mean(f'loss/{component_name}', component_value, accumulator='train')
-        
-        logger.logkv_mean('loss', loss.item(), accumulator='train')
-        logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
-        logger.logkv_mean('param_norm', param_norm, accumulator='train')
-        logger.logkv('step', global_step, accumulator='train')
-        logger.logkv('samples', samples, accumulator='train')
-        logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
-        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
         
         # Training-metric-based checkpoint (if check_interval is set and not using validation)
         # Must check BEFORE logger clears accumulators

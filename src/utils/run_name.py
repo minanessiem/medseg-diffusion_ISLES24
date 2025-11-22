@@ -246,6 +246,45 @@ def generate_augmentation_string(aug_cfg):
         # Custom config or unrecognized preset
         return "augCUSTOM"
 
+def generate_batch_string(cfg):
+    """Generate batch string with optional accumulation encoding.
+    
+    Encodes both physical batch size and accumulation steps into run name.
+    This provides transparency about memory requirements (physical batch)
+    and training strategy (accumulation).
+    
+    Args:
+        cfg: Configuration object (dict or DictConfig)
+    
+    Returns:
+        str: Batch string for run name
+        
+    Examples:
+        accumulation_steps=None → "b4" (no accumulation)
+        accumulation_steps=1 → "b4" (no accumulation, explicit)
+        accumulation_steps=4 → "b4x4" (physical=4, effective=16)
+        accumulation_steps=8 → "b4x8" (physical=4, effective=32)
+        
+    Rationale:
+        - b{physical} alone: No accumulation (clean format)
+        - b{physical}x{accumulation}: Shows both memory footprint and training strategy
+        - Makes accumulation visible in run names for debugging and comparison
+        - Distinguishes b4x4 (with accumulation) from b16x1 (without) even though both are effective batch 16
+    """
+    # Access config (fail-fast, no defaults)
+    if isinstance(cfg, dict):
+        batch_size = cfg['environment']['dataset']['train_batch_size']
+        accum = cfg['training']['gradient']['accumulation_steps']
+    else:
+        batch_size = cfg.environment.dataset.train_batch_size
+        accum = cfg.training.gradient.accumulation_steps
+    
+    # None or 1 means no accumulation (show clean format)
+    if accum is None or accum == 1:
+        return f"b{batch_size}"
+    else:
+        return f"b{batch_size}x{accum}"
+
 def generate_run_name(cfg, timestamp: str = None) -> str:
     """Generate the run name string based on the resolved config.
 
@@ -281,8 +320,8 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
                  f"{model['att_heads']}x{model['att_head_dim']}a_{model['time_embedding_dim']}t_"
                  f"{model['bottleneck_transformer_layers']}btl")
     
-    # Batch size
-    batch_str = f"b{dataset['train_batch_size']}"
+    # Batch string (with accumulation encoding if enabled)
+    batch_str = generate_batch_string(cfg)
     
     # Optimizer and scheduler strings (separated)
     optimizer_str = generate_optimizer_string(optimizer)

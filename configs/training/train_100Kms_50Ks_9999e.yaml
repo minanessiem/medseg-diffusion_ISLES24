@@ -11,6 +11,13 @@ ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"
 gradient:
   clip_norm: 1.0  # Max gradient norm (null = disabled)
   clip_value: null  # Alternative: clip by value
+  accumulation_steps: null  # Gradient accumulation: null or 1 = no accumulation (one optimizer update per forward pass)
+                            # N > 1 = accumulate gradients over N micro-batches before optimizer update (e.g., 4 → 4 micro-batches per update)
+                            # Effective batch size = physical_batch_size * N
+                            # Example: batch_size=4, accumulation_steps=4 → effective_batch_size=16
+                            # Use to simulate larger batch sizes without GPU OOM
+                            # Note: clip_norm applies to accumulated gradients (correct behavior matching large-batch training)
+                            # Note: All intervals (validation, checkpointing, logging) measured in optimizer updates, not forward passes
 
 # Interval-based checkpoints (for training resumption)
 # Saves model + optimizer state at fixed step intervals for fault recovery
