@@ -167,6 +167,16 @@ def main():
     parser.add_argument('--job-name', type=str, default=None,
                         help='Custom job name prefix (otherwise auto-generated)')
     
+    # SLURM resource arguments
+    parser.add_argument('--gpus', type=int, default=None,
+                        help='Number of GPUs to request (overrides BASE_CONFIG)')
+    parser.add_argument('--partition', type=str, default=None,
+                        help='SLURM partition to use (overrides BASE_CONFIG)')
+    parser.add_argument('--cpus-per-task', type=int, default=None,
+                        help='CPUs per task (overrides BASE_CONFIG)')
+    parser.add_argument('--mem', type=str, default=None,
+                        help='Memory allocation (e.g., "256G", overrides BASE_CONFIG)')
+    
     # Add configuration override arguments from BASE_CONFIG
     add_config_arguments(parser, BASE_CONFIG)
     
@@ -174,6 +184,16 @@ def main():
     
     # Update BASE_CONFIG with command line arguments
     config = update_config_from_args(BASE_CONFIG.copy(), args, update_logdir_paths)
+    
+    # Override SLURM resource parameters if specified
+    if args.gpus is not None:
+        config["gpus"] = args.gpus
+    if args.partition is not None:
+        config["partition"] = args.partition
+    if args.cpus_per_task is not None:
+        config["cpus_per_task"] = args.cpus_per_task
+    if args.mem is not None:
+        config["mem"] = args.mem
     
     # Parse overrides
     overrides = args.overrides
