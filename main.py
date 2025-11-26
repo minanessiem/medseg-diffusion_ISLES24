@@ -1,5 +1,5 @@
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, ListConfig
 import torch
 import random
 import numpy as np
@@ -22,7 +22,8 @@ def _parse_multi_gpu_flag(flag):
     """Return list of GPU ids or None."""
     if not flag or str(flag).lower() in {"false", "none", ""}:
         return None
-    if isinstance(flag, (list, tuple)):
+    # Handle OmegaConf ListConfig, plain list, or tuple
+    if isinstance(flag, (list, tuple, ListConfig)):
         return [int(x) for x in flag]
     return [int(x.strip()) for x in str(flag).split(',') if x.strip()]
 
