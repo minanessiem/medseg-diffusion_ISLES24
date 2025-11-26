@@ -3,6 +3,12 @@ import torch.nn as nn
 from abc import ABC, abstractmethod
 from omegaconf import OmegaConf
 
+def _unwrap_model(model):
+    """Unwrap model if wrapped in DataParallel or DistributedDataParallel."""
+    if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+        return model.module
+    return model
+
 class Diffusion(nn.Module, ABC):
     """
     Abstract base class for diffusion models, defining interfaces used in training.
@@ -11,9 +17,11 @@ class Diffusion(nn.Module, ABC):
     def __init__(self, model, cfg, device=None):
         super().__init__()
         self.model = model
-        self.image_channels = model.image_channels
-        self.mask_channels = model.mask_channels
-        self.image_size = model.image_size
+        # Access attributes from unwrapped model (handles DataParallel)
+        unwrapped = _unwrap_model(model)
+        self.image_channels = unwrapped.image_channels
+        self.mask_channels = unwrapped.mask_channels
+        self.image_size = unwrapped.image_size
         self.device = torch.device(cfg.environment.device) if device is None else device
 
     @abstractmethod

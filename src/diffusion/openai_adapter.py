@@ -188,7 +188,9 @@ class GaussianDiffusionAdapter(Diffusion):
         # Check learned variance mode
         if self.model_var_type_str in ['LEARNED', 'LEARNED_RANGE']:
             expected_output = self.mask_channels * 2
-            actual_output = self.model.output_channels
+            # Unwrap model if wrapped in DataParallel
+            unwrapped = self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+            actual_output = unwrapped.output_channels
             if actual_output != expected_output:
                 raise ValueError(
                     f"Configuration error: model_var_type={self.model_var_type_str} "
