@@ -62,8 +62,8 @@ def main(cfg: DictConfig):
     # visualize_noise_schedulers(cfg)
 
     # Use overridden timestamp/run_name if provided
-    timestamp = cfg.get("timestamp", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-    run_name = cfg.get("run_name", generate_run_name(cfg, timestamp))
+    timestamp = cfg.get("timestamp") or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = cfg.get("run_name") or generate_run_name(cfg, timestamp)
     
     # Compute and create run_dir
     run_output_dir = f"{cfg.environment.training.output_root}{run_name}/"
@@ -82,13 +82,20 @@ def main(cfg: DictConfig):
     early_log = f"{temp_log_dir}/main.log"
     if os.path.exists(early_log):
         os.makedirs(run_output_dir, exist_ok=True)
-        shutil.move(early_log, f"{run_output_dir}/main.log")
+        target_log = f"{run_output_dir}/main.log"
+        # Remove target if it exists to avoid conflict
+        if os.path.exists(target_log):
+            os.remove(target_log)
+        shutil.move(early_log, target_log)
         print(f"Moved main.log to {run_output_dir}")
 
     # Move .hydra/ metadata folder to run_dir
     hydra_dir = f"{temp_log_dir}/.hydra"
     if os.path.exists(hydra_dir):
         target_hydra = f"{run_output_dir}/.hydra"
+        # Remove target if it exists to avoid nested directories
+        if os.path.exists(target_hydra):
+            shutil.rmtree(target_hydra)
         shutil.move(hydra_dir, target_hydra)
         print(f"Moved .hydra/ to {target_hydra}")
 
