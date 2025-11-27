@@ -68,14 +68,43 @@ def apply_override(cfg: Dict, override: str) -> Dict:
             current[key] = {}
         current = current[key]
     
-    # Convert value to int/float if possible
-    try:
-        value = int(value)
-    except ValueError:
+    # Parse value: handle Hydra list syntax [val1,val2,...] and primitives
+    if value.startswith('[') and value.endswith(']'):
+        # Hydra list syntax: [0,1,2,3] or [true,false]
+        list_content = value[1:-1].strip()
+        if list_content:
+            items = [item.strip() for item in list_content.split(',')]
+            parsed_items = []
+            for item in items:
+                # Try to parse each item as int/float/bool
+                try:
+                    parsed_items.append(int(item))
+                except ValueError:
+                    try:
+                        parsed_items.append(float(item))
+                    except ValueError:
+                        if item.lower() == 'true':
+                            parsed_items.append(True)
+                        elif item.lower() == 'false':
+                            parsed_items.append(False)
+                        else:
+                            parsed_items.append(item)  # Keep as string
+            value = parsed_items
+        else:
+            value = []  # Empty list
+    else:
+        # Try to convert single value to int/float/bool
         try:
-            value = float(value)
+            value = int(value)
         except ValueError:
-            pass  # Keep as string
+            try:
+                value = float(value)
+            except ValueError:
+                if value.lower() == 'true':
+                    value = True
+                elif value.lower() == 'false':
+                    value = False
+                # else: Keep as string
     
     current[keys[-1]] = value
     return cfg
@@ -177,8 +206,10 @@ def main():
     parser.add_argument('--mem', type=str, default=None,
                         help='Memory allocation (e.g., "256G", overrides BASE_CONFIG)')
     
-    # Add configuration override arguments from BASE_CONFIG
-    add_config_arguments(parser, BASE_CONFIG)
+    # Add configuration override arguments from BASE_CONFIG (exclude already-added params)
+    excluded_params = {'gpus', 'partition', 'cpus_per_task', 'mem'}
+    filtered_config = {k: v for k, v in BASE_CONFIG.items() if k not in excluded_params}
+    add_config_arguments(parser, filtered_config)
     
     args = parser.parse_args()
     
