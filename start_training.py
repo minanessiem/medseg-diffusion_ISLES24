@@ -24,6 +24,19 @@ Examples:
     python start_training.py --config-name local debug=true
 """
 
+# ============================================================================
+# CRITICAL: Import MONAI FIRST, before any other imports
+# MONAI must be imported before CUDA context is created or any library that
+# might initialize CUDA (like TensorBoard/TensorFlow). This mirrors the
+# original main.py behavior where loaders.py was imported at module level.
+# ============================================================================
+try:
+    from monai.transforms import Resize, ScaleIntensityRange
+    from monai.metrics import compute_hausdorff_distance, compute_surface_dice
+    from monai.networks.utils import one_hot
+except ImportError:
+    pass  # MONAI not installed, that's OK for some configs
+
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import shutil

@@ -37,6 +37,18 @@ Notes:
     - CLI overrides take precedence over original overrides
 """
 
+# ============================================================================
+# CRITICAL: Import MONAI FIRST, before any other imports
+# MONAI must be imported before CUDA context is created or any library that
+# might initialize CUDA (like TensorBoard/TensorFlow).
+# ============================================================================
+try:
+    from monai.transforms import Resize, ScaleIntensityRange
+    from monai.metrics import compute_hausdorff_distance, compute_surface_dice
+    from monai.networks.utils import one_hot
+except ImportError:
+    pass  # MONAI not installed, that's OK for some configs
+
 import argparse
 import os
 import sys
