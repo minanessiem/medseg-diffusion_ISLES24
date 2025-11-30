@@ -240,10 +240,11 @@ def main():
     # Parse overrides
     overrides = list(args.overrides)  # Make a copy to avoid modifying original
     
-    # Debug mode: add debug=true to overrides for training script
+    # Debug mode: add +debug=true to overrides for training script
+    # Note: '+' prefix tells Hydra to add a new key (not override existing)
     if args.debug:
-        overrides.append("debug=true")
-        print(f"[DEBUG] Debug mode enabled - added debug=true to overrides")
+        overrides.append("+debug=true")
+        print(f"[DEBUG] Debug mode enabled - added +debug=true to overrides")
     
     def _debug(msg):
         if args.debug:
