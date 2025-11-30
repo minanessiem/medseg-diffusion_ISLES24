@@ -31,14 +31,43 @@ print("[DEBUG:loaders.py] omegaconf done", flush=True)
 from src.data.processors import get_image_transform, get_mask_transform, get_joint_transform
 print("[DEBUG:loaders.py] processors done", flush=True)
 
-from src.data.modalities import get_modality_params
-from src.data.modalities import process_cbf
-from src.data.modalities import process_cbv
-from src.data.modalities import process_cta
-from src.data.modalities import process_mtt
-from src.data.modalities import process_ncct
-from src.data.modalities import process_tmax
-print("[DEBUG:loaders.py] modalities done", flush=True)
+# Modality imports - these also import MONAI, so we make them lazy too
+# from src.data.modalities import get_modality_params
+# from src.data.modalities import process_cbf
+# from src.data.modalities import process_cbv
+# from src.data.modalities import process_cta
+# from src.data.modalities import process_mtt
+# from src.data.modalities import process_ncct
+# from src.data.modalities import process_tmax
+print("[DEBUG:loaders.py] modalities SKIPPED (lazy import)", flush=True)
+
+def _get_modality_imports():
+    """Lazy import of modality functions to defer MONAI initialization."""
+    from src.data.modalities import get_modality_params
+    from src.data.modalities import process_cbf
+    from src.data.modalities import process_cbv
+    from src.data.modalities import process_cta
+    from src.data.modalities import process_mtt
+    from src.data.modalities import process_ncct
+    from src.data.modalities import process_tmax
+    return {
+        'get_modality_params': get_modality_params,
+        'process_cbf': process_cbf,
+        'process_cbv': process_cbv,
+        'process_cta': process_cta,
+        'process_mtt': process_mtt,
+        'process_ncct': process_ncct,
+        'process_tmax': process_tmax,
+    }
+
+# Lazy-loaded modality functions
+_MODALITY_FUNCS = None
+
+def get_modality_params(modality_config, data_stats):
+    global _MODALITY_FUNCS
+    if _MODALITY_FUNCS is None:
+        _MODALITY_FUNCS = _get_modality_imports()
+    return _MODALITY_FUNCS['get_modality_params'](modality_config, data_stats)
 
 import logging
 
@@ -50,14 +79,14 @@ print("[DEBUG:loaders.py] All imports complete!", flush=True)
 logging.getLogger('nibabel').setLevel(logging.WARNING)
 
 # A dictionary to map modality names to their processing functions
-MODALITY_PROCESSORS = {
-    'NCCT': process_ncct,
-    'CTA': process_cta,
-    'CBF': process_cbf,
-    'CBV': process_cbv,
-    'MTT': process_mtt,
-    'TMAX': process_tmax
-}
+# Now uses lazy loading to defer MONAI initialization
+def _get_modality_processor(name):
+    """Get modality processor with lazy import."""
+    global _MODALITY_FUNCS
+    if _MODALITY_FUNCS is None:
+        _MODALITY_FUNCS = _get_modality_imports()
+    key = f'process_{name.lower()}'
+    return _MODALITY_FUNCS.get(key)
 
 
 def datafold_read(datalist, basedir, fold=0, key="training"):
@@ -123,7 +152,7 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
             
             _base_modality, params = get_modality_params(modality_config, data_stats)
             
-            processor = MODALITY_PROCESSORS.get(base_modality)
+            processor = _get_modality_processor(base_modality)
             if not processor:
                 raise ValueError(f"Unknown base modality: {base_modality}")
                 
@@ -243,7 +272,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
 
             _base_modality, params = get_modality_params(modality_config, data_stats)
             
-            processor = MODALITY_PROCESSORS.get(base_modality)
+            processor = _get_modality_processor(base_modality)
             if not processor:
                 raise ValueError(f"Unknown base modality: {base_modality}")
             
