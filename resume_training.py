@@ -7,22 +7,23 @@ then applies user overrides on top. This ensures reproducibility while allowing
 modifications like extended training or adjusted learning rates.
 
 Usage:
-    python resume_training.py <run_dir> [--step STEP] [overrides...]
+    python resume_training.py <run_dir> [--step STEP] [--config-name NAME] [overrides...]
     
 Arguments:
-    run_dir     Path to run directory containing .hydra/ and checkpoints
-    --step      Checkpoint step to resume from (int or "latest", default: latest)
-    overrides   Config overrides (e.g., training.max_steps=200000)
+    run_dir         Path to run directory containing checkpoints
+    --step          Checkpoint step to resume from (int or "latest", default: latest)
+    --config-name   Config name for legacy runs without .hydra/ (e.g., cluster_ddim250)
+    overrides       Config overrides (e.g., training.max_steps=200000)
 
 Examples:
-    # Resume with same settings (latest checkpoint)
+    # Resume with same settings (latest checkpoint, requires .hydra/)
     python resume_training.py outputs/my_run_2024-01-01/
     
     # Resume with extended training
     python resume_training.py outputs/my_run_2024-01-01/ training.max_steps=200000
     
-    # Resume with different learning rate
-    python resume_training.py outputs/my_run_2024-01-01/ optimizer.learning_rate=5e-5
+    # Resume legacy run without .hydra/ (provide config explicitly)
+    python resume_training.py outputs/legacy_run/ --config-name cluster_ddim250_multitask
     
     # Resume from specific checkpoint step
     python resume_training.py outputs/my_run_2024-01-01/ --step 50000
@@ -31,9 +32,9 @@ Examples:
     python resume_training.py outputs/my_run_2024-01-01/ --step 50000 training.max_steps=200000
 
 Notes:
-    - Requires .hydra/ directory in run_dir (created by start_training.py)
-    - For runs without .hydra/, use start_training.py with explicit config
-    - Original overrides from .hydra/overrides.yaml are applied first
+    - For runs with .hydra/: config is loaded from .hydra/config.yaml
+    - For legacy runs without .hydra/: use --config-name to specify config
+    - Original overrides from .hydra/overrides.yaml are applied first (if present)
     - CLI overrides take precedence over original overrides
 """
 
@@ -53,7 +54,8 @@ import argparse
 import os
 import sys
 
-from hydra import compose, initialize_config_dir
+import hydra
+from hydra import compose, initialize_config_dir, initialize
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
@@ -66,13 +68,19 @@ def main():
     )
     parser.add_argument(
         'run_dir', 
-        help='Path to run directory containing .hydra/ and checkpoints'
+        help='Path to run directory containing checkpoints'
     )
     parser.add_argument(
         '--step', 
         type=str, 
         default='latest',
         help='Checkpoint step to resume from (int or "latest", default: latest)'
+    )
+    parser.add_argument(
+        '--config-name',
+        type=str,
+        default=None,
+        help='Config name for legacy runs without .hydra/ (e.g., cluster_ddim250_multitask)'
     )
     parser.add_argument(
         'overrides', 
@@ -89,57 +97,129 @@ def main():
         run_dir = run_dir + '/'
     
     hydra_dir = os.path.join(run_dir, '.hydra')
+    has_hydra_dir = os.path.exists(hydra_dir)
     
     if not os.path.exists(run_dir):
         print(f"[ERROR] Run directory not found: {run_dir}")
         sys.exit(1)
     
-    if not os.path.exists(hydra_dir):
-        print(f"[ERROR] {hydra_dir} not found.")
-        print("   Cannot resume without .hydra/ config directory.")
-        print("   For runs without .hydra/, use start_training.py with explicit config.")
-        sys.exit(1)
-    
-    # Load original overrides (if any)
-    overrides_file = os.path.join(hydra_dir, 'overrides.yaml')
-    if os.path.exists(overrides_file):
-        original_overrides = OmegaConf.load(overrides_file)
-        if original_overrides is None:
-            original_overrides = []
+    # Determine mode: standard (with .hydra/) or legacy (with --config-name)
+    legacy_mode = False
+    if not has_hydra_dir:
+        if args.config_name:
+            legacy_mode = True
+            print(f"\n[LEGACY MODE] No .hydra/ found, using --config-name {args.config_name}")
         else:
-            # Convert to list if it's a ListConfig
-            original_overrides = list(original_overrides)
-    else:
-        original_overrides = []
+            print(f"[ERROR] {hydra_dir} not found.")
+            print("   Cannot resume without .hydra/ config directory.")
+            print("   For legacy runs, use --config-name to specify the config:")
+            print(f"   python resume_training.py {args.run_dir} --config-name <config>")
+            sys.exit(1)
     
     # Sanitize overrides: convert '+key=' to '++key=' since we're re-applying
-    # to an already-composed config (where the keys may already exist)
     def sanitize_override(override: str) -> str:
         if override.startswith('+') and not override.startswith('++'):
             return '+' + override  # Convert +key= to ++key=
         return override
     
-    original_overrides = [sanitize_override(o) for o in original_overrides]
     cli_overrides = [sanitize_override(o) for o in args.overrides]
     
-    # Combine overrides: original + CLI (CLI takes precedence)
-    all_overrides = original_overrides + cli_overrides
-    
-    print(f"[Resuming from: {run_dir}]")
-    print(f"   Config: {hydra_dir}/config.yaml")
-    print(f"   Checkpoint step: {args.step}")
-    if original_overrides:
-        print(f"   Original overrides: {original_overrides}")
-    if cli_overrides:
-        print(f"   CLI overrides: {cli_overrides}")
-    
-    # Initialize Hydra with the checkpoint's config directory
-    # Clear any existing Hydra instance first
+    # Clear any existing Hydra instance
     GlobalHydra.instance().clear()
     
-    # Use context manager for proper cleanup
-    with initialize_config_dir(version_base=None, config_dir=hydra_dir, job_name="resume"):
-        cfg = compose(config_name="config", overrides=all_overrides)
+    if legacy_mode:
+        # ====================================================================
+        # LEGACY MODE: Load config from --config-name (like start_training.py)
+        # ====================================================================
+        print(f"\n[Resuming LEGACY run from: {run_dir}]")
+        print(f"   Config: {args.config_name}")
+        print(f"   Checkpoint step: {args.step}")
+        if cli_overrides:
+            print(f"   CLI overrides: {cli_overrides}")
+        print(f"   Note: EMA will be initialized fresh, best metrics reset")
+        
+        # Use Hydra's normal initialization with config path
+        config_path = os.path.abspath("configs")
+        with initialize(version_base=None, config_path=os.path.relpath(config_path)):
+            cfg = compose(config_name=args.config_name, overrides=cli_overrides)
+        
+    else:
+        # ====================================================================
+        # STANDARD MODE: Load config from .hydra/config.yaml
+        # ====================================================================
+        
+        def is_config_group_reference(override: str) -> tuple:
+            """
+            Check if override is a config group reference like 'augmentation=aggressive_2d'.
+            Returns (is_config_group, key, value) or (False, None, None).
+            """
+            if '=' not in override:
+                return False, None, None
+            
+            # Strip any Hydra prefixes (+, ++, ~)
+            clean = override.lstrip('+~')
+            key, value = clean.split('=', 1)
+            
+            # Skip special keys that aren't config groups
+            special_keys = {'timestamp', 'run_name', 'debug'}
+            if key in special_keys:
+                return False, None, None
+            
+            # If key contains a dot, it's a dotted path override, not a config group
+            if '.' in key:
+                return False, None, None
+            
+            # Check if there's a config directory for this key
+            config_group_dir = os.path.join('configs', key)
+            if os.path.isdir(config_group_dir):
+                return True, key, value
+            return False, None, None
+        
+        def load_config_group(group: str, name: str) -> dict:
+            """Load a config group file and return as dict."""
+            import yaml
+            config_path = os.path.join('configs', group, f'{name}.yaml')
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    return yaml.safe_load(f) or {}
+            else:
+                raise FileNotFoundError(f"Config group file not found: {config_path}")
+        
+        # Separate CLI overrides into config groups and regular overrides
+        cli_config_groups = []  # [(key, value), ...]
+        cli_regular_overrides = []
+        
+        for override in cli_overrides:
+            is_group, key, value = is_config_group_reference(override)
+            if is_group:
+                cli_config_groups.append((key, value))
+            else:
+                cli_regular_overrides.append(override)
+        
+        print(f"\n[Resuming from: {run_dir}]")
+        print(f"   Config: {hydra_dir}/config.yaml")
+        print(f"   Checkpoint step: {args.step}")
+        if cli_config_groups:
+            print(f"   CLI config groups: {cli_config_groups}")
+        if cli_regular_overrides:
+            print(f"   CLI overrides: {cli_regular_overrides}")
+        
+        # Load base config from .hydra/config.yaml (already has all original overrides resolved)
+        # Only apply CLI regular overrides via Hydra
+        with initialize_config_dir(version_base=None, config_dir=hydra_dir, job_name="resume"):
+            cfg = compose(config_name="config", overrides=cli_regular_overrides)
+        
+        # Apply CLI config group overrides by loading and merging the config files
+        for key, value in cli_config_groups:
+            try:
+                group_config = load_config_group(key, value)
+                print(f"   Applying config group: {key}={value}")
+                # Merge the loaded config into cfg[key]
+                cfg[key] = OmegaConf.merge(cfg.get(key, {}), OmegaConf.create(group_config))
+            except FileNotFoundError as e:
+                print(f"   [WARNING] {e}")
+                print(f"   Setting {key}={value} as string value")
+                cfg[key] = value
     
     # Import and run training
     # Import here to avoid circular imports and ensure Hydra is initialized first
@@ -151,8 +231,8 @@ def main():
     # Set seeds for reproducibility
     setup_seeds(cfg)
     
-    # Run resumed training
-    setup_and_resume_training(cfg, run_dir=run_dir, resume_step=args.step)
+    # Run resumed training (pass legacy_mode flag)
+    setup_and_resume_training(cfg, run_dir=run_dir, resume_step=args.step, legacy_mode=legacy_mode)
     
     print(f"\n✓ Training resumed and completed successfully")
 
