@@ -112,16 +112,26 @@ def main():
     else:
         original_overrides = []
     
+    # Sanitize overrides: convert '+key=' to '++key=' since we're re-applying
+    # to an already-composed config (where the keys may already exist)
+    def sanitize_override(override: str) -> str:
+        if override.startswith('+') and not override.startswith('++'):
+            return '+' + override  # Convert +key= to ++key=
+        return override
+    
+    original_overrides = [sanitize_override(o) for o in original_overrides]
+    cli_overrides = [sanitize_override(o) for o in args.overrides]
+    
     # Combine overrides: original + CLI (CLI takes precedence)
-    all_overrides = original_overrides + args.overrides
+    all_overrides = original_overrides + cli_overrides
     
     print(f"[Resuming from: {run_dir}]")
     print(f"   Config: {hydra_dir}/config.yaml")
     print(f"   Checkpoint step: {args.step}")
     if original_overrides:
         print(f"   Original overrides: {original_overrides}")
-    if args.overrides:
-        print(f"   CLI overrides: {args.overrides}")
+    if cli_overrides:
+        print(f"   CLI overrides: {cli_overrides}")
     
     # Initialize Hydra with the checkpoint's config directory
     # Clear any existing Hydra instance first
