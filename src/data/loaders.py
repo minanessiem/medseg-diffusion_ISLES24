@@ -21,8 +21,9 @@ import json
 import nibabel
 print("[DEBUG:loaders.py] json, nibabel done", flush=True)
 
-from monai.transforms import Resize
-print("[DEBUG:loaders.py] monai done", flush=True)
+# MONAI import moved to function level to avoid import-time CUDA initialization issues
+# from monai.transforms import Resize
+print("[DEBUG:loaders.py] monai SKIPPED (lazy import)", flush=True)
 
 from omegaconf import OmegaConf
 print("[DEBUG:loaders.py] omegaconf done", flush=True)
@@ -300,6 +301,8 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
             label = label.unsqueeze(0)
 
         # Resize to match model input size
+        # Lazy import to avoid MONAI's import-time CUDA initialization
+        from monai.transforms import Resize
         resizer = Resize(spatial_size=(self.image_size, self.image_size))
         image = resizer(image)
         label = resizer(label)
