@@ -265,25 +265,49 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
         cfg: Hydra config (with aliases already set up)
         run_dir: Path to run output directory (with trailing slash)
     """
+    import sys
+    debug = cfg.get("debug", False)
+    
+    def _debug(msg):
+        if debug:
+            print(f"[DEBUG:setup_and_start_training] {msg}", flush=True)
+            sys.stdout.flush()
+    
+    _debug("ENTER: setup_and_start_training()")
+    
+    _debug("Importing modules...")
     from src.data.loaders import get_dataloaders
     from src.training.trainer import get_optimizer_and_scheduler, step_based_train
+    _debug("Imports done")
     
+    _debug("Setting up device...")
     device = setup_device(cfg)
+    _debug(f"Device: {device}")
     
+    _debug("Setting up logger...")
     logger, writer = setup_logger(cfg, run_dir, mode='train')
+    _debug("Logger done")
+    
+    _debug("Building model and diffusion...")
     diffusion = build_model_and_diffusion(cfg, device)
+    _debug("Model and diffusion built")
     
     # Get dataloaders
+    _debug("Getting dataloaders...")
     dataloaders = get_dataloaders(cfg)
+    _debug(f"Dataloaders ready: {list(dataloaders.keys())}")
     
     # Dataset-specific validation
     if cfg.dataset.name == 'isles24':
         assert cfg.model.image_channels == len(cfg.dataset.modalities), \
             "Model image_channels must match number of modalities"
     
+    _debug("Getting optimizer and scheduler...")
     optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
+    _debug("Optimizer and scheduler ready")
     
     # Run step-based training
+    _debug("Starting step_based_train()...")
     step_based_train(
         cfg,
         diffusion,
@@ -294,8 +318,10 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
         run_dir=run_dir,
         resume_state=None  # Fresh run
     )
+    _debug("step_based_train() complete")
     
     logger.close()
+    _debug("EXIT: setup_and_start_training()")
 
 
 def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 'latest'):

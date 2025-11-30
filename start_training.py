@@ -19,12 +19,16 @@ Examples:
     
     # Override specific settings
     python start_training.py --config-name local training.max_steps=50000
+    
+    # Enable debug logging
+    python start_training.py --config-name local debug=true
 """
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import shutil
 import os
+import sys
 from datetime import datetime
 
 from src.utils.run_name import generate_run_name
@@ -37,6 +41,16 @@ from src.utils.train_utils import (
     setup_logger,
     build_model_and_diffusion,
 )
+
+# Debug flag - set via config override: debug=true
+DEBUG = False
+
+def debug_print(msg: str):
+    """Print debug message if DEBUG is enabled."""
+    if DEBUG:
+        print(f"[DEBUG] {msg}", flush=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 @hydra.main(config_path="configs", config_name="default", version_base=None)
@@ -51,38 +65,65 @@ def main(cfg: DictConfig):
     - Moving Hydra logs to run directory
     - Training or evaluation based on cfg.mode
     """
+    global DEBUG
+    DEBUG = cfg.get("debug", False)
+    
+    debug_print("="*60)
+    debug_print("START: main() entered")
+    debug_print("="*60)
+    
     # Set up config aliases for compatibility
+    debug_print("STEP 1: Setting up config aliases...")
     cfg = setup_config_aliases(cfg)
+    debug_print("STEP 1: Config aliases done")
     
     # Set seeds for reproducibility
+    debug_print("STEP 2: Setting up seeds...")
     setup_seeds(cfg)
+    debug_print("STEP 2: Seeds done")
     
     # Use overridden timestamp/run_name if provided
+    debug_print("STEP 3: Generating timestamp and run_name...")
     timestamp = cfg.get("timestamp") or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = cfg.get("run_name") or generate_run_name(cfg, timestamp)
+    debug_print(f"STEP 3: run_name = {run_name}")
     
     # Create run directory structure
+    debug_print("STEP 4: Creating output directory structure...")
     run_output_dir = setup_output_directory(cfg, run_name)
+    debug_print(f"STEP 4: run_output_dir = {run_output_dir}")
     
     # Capture original Hydra run.dir BEFORE updating (needed for artifact moving)
+    debug_print("STEP 5: Capturing original Hydra run.dir...")
     from hydra.core.hydra_config import HydraConfig
     original_hydra_dir = HydraConfig.get().run.dir
+    debug_print(f"STEP 5: original_hydra_dir = {original_hydra_dir}")
     
     # Update Hydra run.dir to point to our run directory
+    debug_print("STEP 6: Updating Hydra run.dir in config...")
     OmegaConf.set_struct(cfg, False)
     OmegaConf.update(cfg, "hydra.run.dir", run_output_dir)
     OmegaConf.set_struct(cfg, True)
+    debug_print("STEP 6: Hydra run.dir updated")
     
     # Move early Hydra logs (e.g., main.log) from original location to run_dir
+    debug_print("STEP 7: Moving Hydra artifacts...")
     _move_hydra_artifacts(original_hydra_dir, run_output_dir)
+    debug_print("STEP 7: Hydra artifacts moved")
+    
+    debug_print(f"STEP 8: Mode = {cfg.mode}")
     
     if cfg.mode == "train":
         # Run training using shared utility
+        debug_print("STEP 9: Entering setup_and_start_training()...")
         setup_and_start_training(cfg, run_output_dir)
+        debug_print("STEP 9: Training complete")
         
     elif cfg.mode == "evaluate":
         # Evaluation mode: Load model and visualize
+        debug_print("STEP 9: Entering _run_evaluation()...")
         _run_evaluation(cfg, run_output_dir, timestamp)
+        debug_print("STEP 9: Evaluation complete")
 
 
 def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
