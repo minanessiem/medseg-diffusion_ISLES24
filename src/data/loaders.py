@@ -1,20 +1,34 @@
+import sys
+print("[DEBUG:loaders.py] Starting imports...", flush=True)
+
 import os
 import glob
+print("[DEBUG:loaders.py] os, glob done", flush=True)
+
 # import cv2
 import numpy as np
 import pandas as pd
+print("[DEBUG:loaders.py] numpy, pandas done", flush=True)
+
 from sklearn.model_selection import train_test_split
+print("[DEBUG:loaders.py] sklearn done", flush=True)
+
 import torch
 from torch.utils.data import Dataset, DataLoader
+print("[DEBUG:loaders.py] torch done", flush=True)
 
 import json
-import os
-import torch
-import numpy as np
 import nibabel
+print("[DEBUG:loaders.py] json, nibabel done", flush=True)
+
 from monai.transforms import Resize
+print("[DEBUG:loaders.py] monai done", flush=True)
+
 from omegaconf import OmegaConf
+print("[DEBUG:loaders.py] omegaconf done", flush=True)
+
 from src.data.processors import get_image_transform, get_mask_transform, get_joint_transform
+print("[DEBUG:loaders.py] processors done", flush=True)
 
 from src.data.modalities import get_modality_params
 from src.data.modalities import process_cbf
@@ -23,12 +37,14 @@ from src.data.modalities import process_cta
 from src.data.modalities import process_mtt
 from src.data.modalities import process_ncct
 from src.data.modalities import process_tmax
+print("[DEBUG:loaders.py] modalities done", flush=True)
 
 import logging
 
 import tqdm
 
 import threading
+print("[DEBUG:loaders.py] All imports complete!", flush=True)
 
 logging.getLogger('nibabel').setLevel(logging.WARNING)
 
