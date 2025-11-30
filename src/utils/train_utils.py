@@ -339,7 +339,7 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     _debug("EXIT: setup_and_start_training()")
 
 
-def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 'latest'):
+def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 'latest', legacy_mode: bool = False):
     """
     Complete setup and training for a resumed run.
     
@@ -350,6 +350,8 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
         cfg: Hydra config (with aliases already set up)
         run_dir: Path to run directory to resume from (with trailing slash)
         resume_step: Step to resume from (int as string or 'latest')
+        legacy_mode: If True, this is a legacy run without .hydra/ or training_state.
+                     EMA will be initialized fresh, best metrics reset, scheduler reconstructed.
     """
     from src.data.loaders import get_dataloaders
     from src.training.trainer import get_optimizer_and_scheduler, step_based_train
@@ -382,12 +384,44 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     if resume_state.get('optimizer_state_dict'):
         optimizer.load_state_dict(resume_state['optimizer_state_dict'])
         print(f"  ├─ Optimizer state loaded")
+    else:
+        print(f"  ├─ Optimizer state not found (starting fresh)")
     
-    # Load scheduler state (if available)
+    # Handle training state (EMA, best metrics, scheduler)
     training_state = resume_state.get('training_state', {})
-    if scheduler and training_state.get('scheduler_state_dict'):
-        scheduler.load_state_dict(training_state['scheduler_state_dict'])
-        print(f"  ├─ Scheduler state loaded")
+    
+    if legacy_mode or not training_state:
+        # Legacy mode: no training_state file, initialize everything fresh
+        print(f"  ├─ [LEGACY] No training state found - initializing fresh:")
+        print(f"  │   ├─ EMA: will initialize from current model weights")
+        
+        # Set best metric based on metric mode
+        if cfg.training.checkpoint_best.enabled:
+            metric_mode = cfg.training.checkpoint_best.get('metric_mode', 'max')
+            if metric_mode == 'max':
+                print(f"  │   ├─ Best metric: -inf (mode=max, first validation will be saved)")
+            else:
+                print(f"  │   ├─ Best metric: inf (mode=min, first validation will be saved)")
+        
+        # Reconstruct scheduler to resume step
+        if scheduler:
+            global_step = resume_state['global_step']
+            sched_cfg = cfg.scheduler
+            if sched_cfg.get('step_frequency', 'per_step') == 'per_step':
+                print(f"  │   └─ Scheduler: fast-forwarding {global_step} steps...")
+                for _ in range(global_step):
+                    scheduler.step()
+                print(f"  │       └─ Scheduler reconstructed to step {global_step}")
+            else:
+                print(f"  │   └─ Scheduler: per-interval mode, will adjust naturally")
+        
+        # Clear training_state so trainer initializes fresh
+        resume_state['training_state'] = {}
+    else:
+        # Standard mode: load scheduler state if available
+        if scheduler and training_state.get('scheduler_state_dict'):
+            scheduler.load_state_dict(training_state['scheduler_state_dict'])
+            print(f"  ├─ Scheduler state loaded")
     
     print(f"  └─ Resuming training from step {resume_state['global_step']}")
     
