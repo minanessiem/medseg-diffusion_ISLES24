@@ -198,6 +198,8 @@ def main():
     # Other args
     parser.add_argument('--dry-run', action='store_true',
                         help='Print job that would be submitted without submitting')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug logging (adds debug=true to training overrides)')
     parser.add_argument('--job-name', type=str, default=None,
                         help='Custom job name prefix (otherwise auto-generated)')
     
@@ -210,9 +212,11 @@ def main():
                         help='CPUs per task (overrides BASE_CONFIG)')
     parser.add_argument('--mem', type=str, default=None,
                         help='Memory allocation (e.g., "256G", overrides BASE_CONFIG)')
+    parser.add_argument('--time', type=str, default=None,
+                        help='Time limit (e.g., "00:30:00" for 30 min, overrides BASE_CONFIG)')
     
     # Add configuration override arguments from BASE_CONFIG (exclude already-added params)
-    excluded_params = {'gpus', 'partition', 'cpus_per_task', 'mem'}
+    excluded_params = {'gpus', 'partition', 'cpus_per_task', 'mem', 'time'}
     filtered_config = {k: v for k, v in BASE_CONFIG.items() if k not in excluded_params}
     add_config_arguments(parser, filtered_config)
     
@@ -230,12 +234,32 @@ def main():
         config["cpus_per_task"] = args.cpus_per_task
     if args.mem is not None:
         config["mem"] = args.mem
+    if args.time is not None:
+        config["time"] = args.time
     
     # Parse overrides
-    overrides = args.overrides
+    overrides = list(args.overrides)  # Make a copy to avoid modifying original
+    
+    # Debug mode: add debug=true to overrides for training script
+    if args.debug:
+        overrides.append("debug=true")
+        print(f"[DEBUG] Debug mode enabled - added debug=true to overrides")
+    
+    def _debug(msg):
+        if args.debug:
+            print(f"[DEBUG:single_job_runner] {msg}")
+    
+    _debug("="*60)
+    _debug("single_job_runner.py started")
+    _debug("="*60)
+    _debug(f"config-name: {args.config_name}")
+    _debug(f"resume-dir: {args.resume_dir}")
+    _debug(f"overrides: {overrides}")
+    _debug(f"dry-run: {args.dry_run}")
     
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    _debug(f"timestamp: {timestamp}")
     
     # ==========================================================================
     # Branch: Resume mode vs Fresh training mode
@@ -244,13 +268,17 @@ def main():
         # ======================================================================
         # RESUME MODE: Use resume_training.py with existing run directory
         # ======================================================================
+        _debug("Entering RESUME MODE branch")
         resume_dir = args.resume_dir.rstrip('/')
+        _debug(f"resume_dir (stripped): {resume_dir}")
         
         # Extract run_name from the resume directory path
         run_name = os.path.basename(resume_dir)
+        _debug(f"run_name extracted: {run_name}")
         
         # Set job_name (same as original run)
         job_name = args.job_name or run_name
+        _debug(f"job_name: {job_name}")
         
         print(f"\n{'='*60}")
         print(f"RESUME MODE")
@@ -265,37 +293,49 @@ def main():
         # Update config for resume
         config["job_name"] = job_name
         config["logdir_name"] = run_name
+        _debug(f"config[job_name]: {config['job_name']}")
+        _debug(f"config[logdir_name]: {config['logdir_name']}")
         
         # Build python command for resume_training.py
         overrides_str = ' '.join(overrides) if overrides else ''
         config["python_command"] = f"python3 resume_training.py {resume_dir} {overrides_str}".strip()
+        _debug(f"python_command: {config['python_command']}")
         
         # Set container logdir to the resume directory
         config["container_logdir"] = resume_dir
+        _debug(f"container_logdir: {config['container_logdir']}")
         
         # Derive host logdir from container path
         # resume_dir format: /mnt/outputs/run_name or similar
         if resume_dir.startswith(config["container_outputs_base"].rstrip('/')):
             relative_path = resume_dir[len(config["container_outputs_base"].rstrip('/')):]
             config["host_logdir"] = os.path.join(config["host_outputs_dir"], relative_path.lstrip('/'))
+            _debug(f"host_logdir (derived): {config['host_logdir']}")
         else:
             # Fallback: use the run_name under host_outputs_dir
             config["host_logdir"] = os.path.join(config["host_outputs_dir"], run_name)
+            _debug(f"host_logdir (fallback): {config['host_logdir']}")
         
     else:
         # ======================================================================
         # FRESH TRAINING MODE: Use start_training.py with new run directory
         # ======================================================================
+        _debug("Entering FRESH TRAINING MODE branch")
         
         # Load custom config
+        _debug(f"Loading config: {args.config_name}")
         cfg = load_config(args.config_name, overrides)
         pprint.pprint(cfg)  # Debug print of final config
+        _debug("Config loaded successfully")
         
         # Generate run_name using utility
+        _debug("Generating run_name...")
         run_name = generate_run_name(cfg, timestamp)
+        _debug(f"run_name: {run_name}")
         
         # Set job_name
         job_name = args.job_name or run_name
+        _debug(f"job_name: {job_name}")
         
         print(f"\n{'='*60}")
         print(f"FRESH TRAINING MODE")
@@ -311,35 +351,53 @@ def main():
         config["job_name"] = job_name
         config["logdir_name"] = run_name  # For outputs
         config["hydra_config_name"] = args.config_name
+        _debug(f"config[job_name]: {config['job_name']}")
+        _debug(f"config[logdir_name]: {config['logdir_name']}")
         
         # Add timestamp and run_name to overrides for start_training.py
         all_overrides = overrides + [f"timestamp={timestamp}", f"run_name={run_name}"]
+        _debug(f"all_overrides: {all_overrides}")
         
         # Build python command for start_training.py
         overrides_str = ' '.join(all_overrides) if all_overrides else ''
         config["python_command"] = f"python3 start_training.py --config-name {args.config_name} {overrides_str}".strip()
+        _debug(f"python_command: {config['python_command']}")
         
         # Update config with resolved output_root
         config["container_outputs_dir"] = cfg["environment"]["training"]["output_root"]
+        _debug(f"container_outputs_dir: {config['container_outputs_dir']}")
+        
         # Derive relative part (strip container's /mnt/)
         if config["container_outputs_dir"].startswith(config["container_prefix"]):
             relative_out = config["container_outputs_dir"][len(config["container_prefix"]):]
             config["host_outputs_dir"] = config["host_base"] + relative_out
+            _debug(f"host_outputs_dir: {config['host_outputs_dir']}")
         else:
             raise ValueError(f"output_root '{{config[\"container_outputs_dir\"]}}' does not start with expected container_prefix '{{config[\"container_prefix\"]}}'")
 
         # Update logdir paths with new logdir_name
         config = update_logdir_paths(config)
+        _debug(f"host_logdir: {config.get('host_logdir')}")
+        _debug(f"container_logdir: {config.get('container_logdir')}")
     
     # ==========================================================================
     # Common: Submit the job
     # ==========================================================================
+    _debug("="*60)
+    _debug("Preparing to submit job")
+    _debug("="*60)
+    _debug(f"Final python_command: {config.get('python_command')}")
+    _debug(f"Final host_logdir: {config.get('host_logdir')}")
+    _debug(f"Final container_logdir: {config.get('container_logdir')}")
     
     # Initialize runner
     runner = SlurmJobRunner(config)
+    _debug("SlurmJobRunner initialized")
     
     # Submit
+    _debug(f"Calling submit_job (dry_run={args.dry_run})...")
     runner.submit_job(config, SLURM_TEMPLATE, dry_run=args.dry_run)
+    _debug("submit_job complete")
 
 if __name__ == "__main__":
     main()
