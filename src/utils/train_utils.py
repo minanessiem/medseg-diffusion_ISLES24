@@ -309,6 +309,17 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     _debug("Model and diffusion built")
     
     # Get dataloaders
+    # IMPORTANT: Force MONAI imports BEFORE creating DataLoader workers
+    # fork() + lazy imports = segfault. Import everything in main process first.
+    _debug("Pre-loading MONAI before DataLoader fork()...")
+    try:
+        from monai.transforms import Resize, ScaleIntensityRange
+        from monai.metrics import compute_hausdorff_distance, compute_surface_dice
+        from monai.networks.utils import one_hot
+        _debug("MONAI pre-loaded successfully")
+    except ImportError as e:
+        _debug(f"MONAI pre-load failed (may not be needed): {e}")
+    
     _debug("Getting dataloaders...")
     dataloaders = get_dataloaders(cfg)
     _debug(f"Dataloaders ready: {list(dataloaders.keys())}")
@@ -368,6 +379,15 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     # Load model weights
     diffusion.load_state_dict(resume_state['model_state_dict'])
     print(f"  ├─ Model weights loaded")
+    
+    # IMPORTANT: Force MONAI imports BEFORE creating DataLoader workers
+    # fork() + lazy imports = segfault. Import everything in main process first.
+    try:
+        from monai.transforms import Resize, ScaleIntensityRange
+        from monai.metrics import compute_hausdorff_distance, compute_surface_dice
+        from monai.networks.utils import one_hot
+    except ImportError:
+        pass  # May not be needed for all configs
     
     # Get dataloaders
     dataloaders = get_dataloaders(cfg)
