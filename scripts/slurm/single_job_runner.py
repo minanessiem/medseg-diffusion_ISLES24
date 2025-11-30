@@ -190,6 +190,11 @@ def main():
     parser.add_argument('--overrides', nargs='*', default=[],
                         help='Overrides as key=value pairs (e.g., model.image_size=64)')
     
+    # Resume support
+    parser.add_argument('--resume-dir', type=str, default=None,
+                        help='Container path to run directory to resume (e.g., /mnt/outputs/my_run/). '
+                             'When set, uses resume_training.py instead of start_training.py.')
+    
     # Other args
     parser.add_argument('--dry-run', action='store_true',
                         help='Print job that would be submitted without submitting')
@@ -232,37 +237,103 @@ def main():
     # Generate timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
-    # Load custom config
-    cfg = load_config(args.config_name, overrides)
-    pprint.pprint(cfg)  # Debug print of final config
-    
-    # Generate run_name using utility
-    run_name = generate_run_name(cfg, timestamp)
-    
-    # Set job_name
-    job_name = args.job_name or run_name
-    
-    # Update config
-    config["job_name"] = job_name
-    config["logdir_name"] = run_name  # For outputs
-    config["hydra_config_name"] = args.config_name
-    
-    # Add timestamp and run_name to overrides for main.py
-    overrides.append(f"timestamp={timestamp}")
-    overrides.append(f"run_name={run_name}")
-    config["hydra_overrides"] = overrides
-    
-    # Update config with resolved output_root
-    config["container_outputs_dir"] = cfg["environment"]["training"]["output_root"]
-    # Derive relative part (strip container's /mnt/)
-    if config["container_outputs_dir"].startswith(config["container_prefix"]):
-        relative_out = config["container_outputs_dir"][len(config["container_prefix"]):]
-        config["host_outputs_dir"] = config["host_base"] + relative_out
+    # ==========================================================================
+    # Branch: Resume mode vs Fresh training mode
+    # ==========================================================================
+    if args.resume_dir:
+        # ======================================================================
+        # RESUME MODE: Use resume_training.py with existing run directory
+        # ======================================================================
+        resume_dir = args.resume_dir.rstrip('/')
+        
+        # Extract run_name from the resume directory path
+        run_name = os.path.basename(resume_dir)
+        
+        # Set job_name (same as original run)
+        job_name = args.job_name or run_name
+        
+        print(f"\n{'='*60}")
+        print(f"RESUME MODE")
+        print(f"{'='*60}")
+        print(f"  Resume directory: {resume_dir}")
+        print(f"  Run name: {run_name}")
+        print(f"  Job name: {job_name}")
+        if overrides:
+            print(f"  Overrides: {overrides}")
+        print(f"{'='*60}\n")
+        
+        # Update config for resume
+        config["job_name"] = job_name
+        config["logdir_name"] = run_name
+        
+        # Build python command for resume_training.py
+        overrides_str = ' '.join(overrides) if overrides else ''
+        config["python_command"] = f"python3 resume_training.py {resume_dir} {overrides_str}".strip()
+        
+        # Set container logdir to the resume directory
+        config["container_logdir"] = resume_dir
+        
+        # Derive host logdir from container path
+        # resume_dir format: /mnt/outputs/run_name or similar
+        if resume_dir.startswith(config["container_outputs_base"].rstrip('/')):
+            relative_path = resume_dir[len(config["container_outputs_base"].rstrip('/')):]
+            config["host_logdir"] = os.path.join(config["host_outputs_dir"], relative_path.lstrip('/'))
+        else:
+            # Fallback: use the run_name under host_outputs_dir
+            config["host_logdir"] = os.path.join(config["host_outputs_dir"], run_name)
+        
     else:
-        raise ValueError(f"output_root '{{config[\"container_outputs_dir\"]}}' does not start with expected container_prefix '{{config[\"container_prefix\"]}}'")
+        # ======================================================================
+        # FRESH TRAINING MODE: Use start_training.py with new run directory
+        # ======================================================================
+        
+        # Load custom config
+        cfg = load_config(args.config_name, overrides)
+        pprint.pprint(cfg)  # Debug print of final config
+        
+        # Generate run_name using utility
+        run_name = generate_run_name(cfg, timestamp)
+        
+        # Set job_name
+        job_name = args.job_name or run_name
+        
+        print(f"\n{'='*60}")
+        print(f"FRESH TRAINING MODE")
+        print(f"{'='*60}")
+        print(f"  Config: {args.config_name}")
+        print(f"  Run name: {run_name}")
+        print(f"  Job name: {job_name}")
+        if overrides:
+            print(f"  Overrides: {overrides}")
+        print(f"{'='*60}\n")
+        
+        # Update config
+        config["job_name"] = job_name
+        config["logdir_name"] = run_name  # For outputs
+        config["hydra_config_name"] = args.config_name
+        
+        # Add timestamp and run_name to overrides for start_training.py
+        all_overrides = overrides + [f"timestamp={timestamp}", f"run_name={run_name}"]
+        
+        # Build python command for start_training.py
+        overrides_str = ' '.join(all_overrides) if all_overrides else ''
+        config["python_command"] = f"python3 start_training.py --config-name {args.config_name} {overrides_str}".strip()
+        
+        # Update config with resolved output_root
+        config["container_outputs_dir"] = cfg["environment"]["training"]["output_root"]
+        # Derive relative part (strip container's /mnt/)
+        if config["container_outputs_dir"].startswith(config["container_prefix"]):
+            relative_out = config["container_outputs_dir"][len(config["container_prefix"]):]
+            config["host_outputs_dir"] = config["host_base"] + relative_out
+        else:
+            raise ValueError(f"output_root '{{config[\"container_outputs_dir\"]}}' does not start with expected container_prefix '{{config[\"container_prefix\"]}}'")
 
-    # Update logdir paths with new logdir_name
-    config = update_logdir_paths(config)
+        # Update logdir paths with new logdir_name
+        config = update_logdir_paths(config)
+    
+    # ==========================================================================
+    # Common: Submit the job
+    # ==========================================================================
     
     # Initialize runner
     runner = SlurmJobRunner(config)

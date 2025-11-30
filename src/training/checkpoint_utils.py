@@ -1,12 +1,15 @@
-"""Checkpoint decision logic for training.
+"""Checkpoint utilities for training.
 
-This module contains pure functions for determining when to save checkpoints
-based on validation metrics or training intervals. It does not perform file I/O.
+This module contains functions for:
+- Determining when to save checkpoints based on validation metrics or training intervals
+- Saving and loading complete training state (model, optimizer, EMA, scheduler)
+- Managing checkpoint retention policies
 """
 
 import math
 import os
 import csv
+import re
 import torch
 from typing import Dict, List, Tuple
 
@@ -96,10 +99,16 @@ def save_interval_checkpoint(
     optimizer,
     step: int,
     cfg,
-    run_dir: str
+    run_dir: str,
+    # Parameters for complete training state
+    ema_params: List = None,
+    ema_rates: List[float] = None,
+    scheduler = None,
+    best_metric_value: float = None,
+    best_metric_step: int = None,
 ) -> List[str]:
     """
-    Save interval checkpoint (model + optimizer) for training resumption.
+    Save interval checkpoint (model + optimizer + training state) for training resumption.
     
     Args:
         diffusion: Diffusion model (with state_dict method)
@@ -107,6 +116,11 @@ def save_interval_checkpoint(
         step: Current training step
         cfg: Hydra config (must have cfg.training.checkpoint_interval)
         run_dir: Root directory for saving (e.g., "outputs/run_name/")
+        ema_params: List of EMA parameter copies (one per rate), optional
+        ema_rates: List of EMA decay rates, optional
+        scheduler: Learning rate scheduler (with state_dict method), optional
+        best_metric_value: Current best validation metric value, optional
+        best_metric_step: Step at which best metric was achieved, optional
     
     Returns:
         List of saved file paths (for tracking/cleanup)
@@ -129,8 +143,31 @@ def save_interval_checkpoint(
     os.makedirs(os.path.dirname(opt_path), exist_ok=True)
     torch.save(optimizer.state_dict(), opt_path)
     saved_files.append(opt_path)
-    print(f"  └─ Optimizer: {opt_path}")
+    print(f"  ├─ Optimizer: {opt_path}")
     
+    # Save training state (if state_template is configured)
+    state_template = config.get('state_template')
+    if state_template:
+        state_path = f"{run_dir}{state_template.format(step)}"
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        
+        training_state = {
+            'global_step': step,
+            'ema_rates': ema_rates or [],
+            # Convert EMA params to CPU tensors for storage
+            'ema_params': [
+                [p.data.cpu().clone() for p in params] 
+                for params in (ema_params or [])
+            ],
+            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+            'best_metric_value': best_metric_value,
+            'best_metric_step': best_metric_step,
+        }
+        torch.save(training_state, state_path)
+        saved_files.append(state_path)
+        print(f"  ├─ Training state: {state_path}")
+    
+    print(f"  └─ Total files: {len(saved_files)}")
     return saved_files
 
 
@@ -253,9 +290,9 @@ def cleanup_interval_checkpoints(
             if os.path.exists(fpath):
                 try:
                     os.remove(fpath)
-                    print(f"🗑️  Removed old interval checkpoint: {os.path.basename(fpath)}")
+                    print(f"   [CLEANUP] Removed old interval checkpoint: {os.path.basename(fpath)}")
                 except OSError as e:
-                    print(f"⚠️  Warning: Could not remove {fpath}: {e}")
+                    print(f"   [WARN] Could not remove {fpath}: {e}")
     
     # Return only kept checkpoints
     return checkpoint_list[-keep_last_n:]
@@ -306,9 +343,9 @@ def cleanup_best_checkpoints(
             if os.path.exists(fpath):
                 try:
                     os.remove(fpath)
-                    print(f"🗑️  Removed worse best checkpoint: {os.path.basename(fpath)}")
+                    print(f"   [CLEANUP] Removed worse best checkpoint: {os.path.basename(fpath)}")
                 except OSError as e:
-                    print(f"⚠️  Warning: Could not remove {fpath}: {e}")
+                    print(f"   [WARN] Could not remove {fpath}: {e}")
     
     # Return only kept checkpoints (top N)
     return checkpoint_list[:keep_last_n]
@@ -347,5 +384,125 @@ def write_metrics_csv(
             value = float(metrics_dict[key])  # Convert tensor to float if needed
             formatted_value = f"{value:.{precision}f}"
             writer.writerow([key, formatted_value])
+
+
+def find_latest_checkpoint_step(checkpoint_dir: str, template: str) -> int:
+    """
+    Find the highest step number in checkpoint directory.
+    
+    Args:
+        checkpoint_dir: Directory containing checkpoint files
+        template: Template string used for checkpoint filenames 
+                  (e.g., 'diffusion_chkpt_step_{:06d}.pth')
+    
+    Returns:
+        Highest step number found, or None if no checkpoints exist
+    
+    Examples:
+        >>> find_latest_checkpoint_step('/path/to/checkpoints', 'model_step_{:06d}.pth')
+        50000
+    """
+    if not os.path.exists(checkpoint_dir):
+        return None
+    
+    # Extract pattern from template (e.g., "diffusion_chkpt_step_{:06d}.pth")
+    # Convert to regex pattern: replace {:06d} or {} with regex group
+    basename = os.path.basename(template)
+    # Handle both {:06d} and {:d} format specifiers
+    pattern = re.sub(r'\{:?\d*d\}', r'(\\d+)', basename)
+    
+    max_step = None
+    for fname in os.listdir(checkpoint_dir):
+        match = re.match(pattern, fname)
+        if match:
+            step = int(match.group(1))
+            if max_step is None or step > max_step:
+                max_step = step
+    
+    return max_step
+
+
+def load_checkpoint(
+    run_dir: str,
+    step: str,
+    cfg,
+    device,
+) -> dict:
+    """
+    Load checkpoint for training resumption.
+    
+    Args:
+        run_dir: Path to run directory containing checkpoints
+        step: Step number (int as string) or "latest"
+        cfg: Config (for template paths from cfg.training.checkpoint_interval)
+        device: Target device for loading tensors
+    
+    Returns:
+        dict with keys:
+            - model_state_dict: Model weights
+            - optimizer_state_dict: Optimizer state (None if not found)
+            - training_state: Dict with global_step, ema_params, scheduler_state_dict, etc.
+            - global_step: Convenience accessor for training_state['global_step']
+    
+    Raises:
+        FileNotFoundError: If checkpoint directory or model file not found
+    
+    Examples:
+        >>> state = load_checkpoint('/path/to/run/', 'latest', cfg, device)
+        >>> model.load_state_dict(state['model_state_dict'])
+        >>> optimizer.load_state_dict(state['optimizer_state_dict'])
+    """
+    config = cfg.training.checkpoint_interval
+    
+    # Determine checkpoint directory from template
+    checkpoint_subdir = os.path.dirname(config.model_template)
+    checkpoint_dir = os.path.join(run_dir, checkpoint_subdir)
+    
+    # Find step to load
+    if step == 'latest':
+        found_step = find_latest_checkpoint_step(checkpoint_dir, config.model_template)
+        if found_step is None:
+            raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
+        step = found_step
+    else:
+        step = int(step)
+    
+    print(f"[Loading checkpoint from step {step}]")
+    
+    # Load model
+    model_path = os.path.join(run_dir, config.model_template.format(step))
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+    model_state = torch.load(model_path, map_location=device)
+    print(f"  ├─ Model: {model_path}")
+    
+    # Load optimizer (optional - may not exist for old checkpoints)
+    opt_path = os.path.join(run_dir, config.opt_template.format(step))
+    opt_state = None
+    if os.path.exists(opt_path):
+        opt_state = torch.load(opt_path, map_location=device)
+        print(f"  ├─ Optimizer: {opt_path}")
+    else:
+        print(f"  ├─ Optimizer: not found (will use fresh optimizer)")
+    
+    # Load training state (optional - may not exist for old checkpoints)
+    training_state = {'global_step': step}
+    state_template = config.get('state_template')
+    if state_template:
+        state_path = os.path.join(run_dir, state_template.format(step))
+        if os.path.exists(state_path):
+            training_state = torch.load(state_path, map_location=device)
+            print(f"  ├─ Training state: {state_path}")
+        else:
+            print(f"  ├─ Training state: not found (using defaults)")
+    
+    print(f"  └─ Resuming from step {training_state.get('global_step', step)}")
+    
+    return {
+        'model_state_dict': model_state,
+        'optimizer_state_dict': opt_state,
+        'training_state': training_state,
+        'global_step': training_state.get('global_step', step),
+    }
 
 

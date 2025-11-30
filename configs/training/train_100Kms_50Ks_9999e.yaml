@@ -20,13 +20,14 @@ gradient:
                             # Note: All intervals (validation, checkpointing, logging) measured in optimizer updates, not forward passes
 
 # Interval-based checkpoints (for training resumption)
-# Saves model + optimizer state at fixed step intervals for fault recovery
+# Saves model + optimizer + training state at fixed step intervals for fault recovery
 checkpoint_interval:
   enabled: true
   save_interval: 10000
   keep_last_n: 3  # Keep only last 3 interval checkpoints (null = keep all)
   model_template: 'models/checkpoint/diffusion_chkpt_step_{:06d}.pth'
   opt_template: 'models/checkpoint/opt_chkpt_step_{:06d}.pth'
+  state_template: 'models/checkpoint/training_state_step_{:06d}.pth'  # Complete training state (EMA, scheduler, metrics)
 
 # Metric-based best model checkpoints (for inference)
 # Saves model + EMA when validation metric improves
