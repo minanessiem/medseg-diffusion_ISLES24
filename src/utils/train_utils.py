@@ -275,10 +275,26 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     
     _debug("ENTER: setup_and_start_training()")
     
-    _debug("Importing modules...")
-    from src.data.loaders import get_dataloaders
-    from src.training.trainer import get_optimizer_and_scheduler, step_based_train
-    _debug("Imports done")
+    # Ultra-granular import debugging
+    _debug("Step A: About to import src.data.loaders...")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        from src.data.loaders import get_dataloaders
+        _debug("Step A: src.data.loaders imported successfully")
+    except Exception as e:
+        _debug(f"Step A: FAILED to import src.data.loaders: {e}")
+        raise
+    
+    _debug("Step B: About to import src.training.trainer...")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        from src.training.trainer import get_optimizer_and_scheduler, step_based_train
+        _debug("Step B: src.training.trainer imported successfully")
+    except Exception as e:
+        _debug(f"Step B: FAILED to import src.training.trainer: {e}")
+        raise
     
     _debug("Setting up device...")
     device = setup_device(cfg)
