@@ -1,21 +1,40 @@
+import sys
+print("[DEBUG:trainer.py] Starting imports...", flush=True)
+
 import os
 import torch
 import torch.nn as nn
+print("[DEBUG:trainer.py] os, torch, nn done", flush=True)
+
 from tqdm import tqdm
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import copy
 from torch.optim.lr_scheduler import CosineAnnealingLR
+print("[DEBUG:trainer.py] tqdm, optimizers done", flush=True)
 
 from src.training.optimizer_factory import build_optimizer, build_scheduler
+print("[DEBUG:trainer.py] optimizer_factory done", flush=True)
+
 from src.utils.general import device_grad_decorator
+print("[DEBUG:trainer.py] general done", flush=True)
+
 from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
+print("[DEBUG:trainer.py] evaluator done", flush=True)
+
 from src.utils.logger import Logger
+print("[DEBUG:trainer.py] logger done", flush=True)
+
 from src.utils.train_utils import calc_grad_norm, calc_param_norm
-import torch
+print("[DEBUG:trainer.py] train_utils done", flush=True)
+
 from torch import no_grad
 from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
+print("[DEBUG:trainer.py] unet_util done", flush=True)
+
 from src.metrics.metrics import get_metric
+print("[DEBUG:trainer.py] metrics done", flush=True)
+
 from src.training.checkpoint_utils import (
     should_save_best_checkpoint,
     save_interval_checkpoint,
@@ -23,9 +42,11 @@ from src.training.checkpoint_utils import (
     cleanup_interval_checkpoints,
     cleanup_best_checkpoints,
 )
+print("[DEBUG:trainer.py] checkpoint_utils done", flush=True)
 
 import gc
 from omegaconf import OmegaConf
+print("[DEBUG:trainer.py] All imports complete!", flush=True)
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -295,7 +316,21 @@ def train_and_evaluate(
         logger.writer.close()
     return train_losses, test_losses, best_test_loss_epoch
 
-def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, run_dir=None):
+def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, run_dir=None, resume_state=None):
+    """
+    Step-based training loop with optional resume support.
+    
+    Args:
+        cfg: Hydra config
+        diffusion: Diffusion model
+        dataloaders: Dict with 'train', 'val', 'sample' dataloaders
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler (or None)
+        logger: Logger instance
+        run_dir: Path to run output directory (with trailing slash)
+        resume_state: Optional dict from load_checkpoint() for resuming training.
+                      Contains: model_state_dict, optimizer_state_dict, training_state, global_step
+    """
     # Access dataloaders
     train_dataloader = dataloaders['train']
     sample_dataloader = dataloaders['sample']  # Formerly test_dataloader
@@ -303,10 +338,10 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
 
     # Startup validation
     if not cfg.training.checkpoint_interval.enabled and not cfg.training.checkpoint_best.enabled:
-        print("⚠️  Warning: Both checkpoint systems are disabled. No checkpoints will be saved!")
+        print("[WARN] Both checkpoint systems are disabled. No checkpoints will be saved!")
     
     if cfg.training.checkpoint_best.enabled and not cfg.validation.get('validation_interval'):
-        print("⚠️  Warning: checkpoint_best enabled but validation_interval not set!")
+        print("[WARN] checkpoint_best enabled but validation_interval not set!")
 
     # Use cfg values directly
     max_steps = cfg.training.max_steps
@@ -314,11 +349,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     ema_rates = [float(r) for r in cfg.training.ema_rate.split(',') if r.strip()]
     
     diffusion.train()
-    global_step = 0
     train_iterator = iter(train_dataloader)
-    
-    # EMA setup (inspired by MedSegDiff)
-    ema_params = [copy.deepcopy(list(diffusion.parameters())) for _ in ema_rates] if ema_rates else []
     
     # Gradient accumulation setup
     accumulation_steps = cfg.training.gradient.accumulation_steps
@@ -333,13 +364,66 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     print(f"  Accumulation steps: {accumulation_steps}")
     print(f"  Effective batch size: {effective_batch_size}")
     
-    # Checkpoint tracking
+    # ==========================================================================
+    # Initialize training state (fresh or from resume_state)
+    # ==========================================================================
+    if resume_state is not None:
+        # Resuming from checkpoint
+        training_state = resume_state.get('training_state', {})
+        global_step = resume_state['global_step']
+        
+        # Restore EMA params
+        saved_ema_params = training_state.get('ema_params', [])
+        saved_ema_rates = training_state.get('ema_rates', [])
+        
+        if saved_ema_params and saved_ema_rates == ema_rates:
+            # Restore EMA params from checkpoint (move to same device as model)
+            device = next(diffusion.parameters()).device
+            ema_params = [
+                [p.to(device) for p in rate_params]
+                for rate_params in saved_ema_params
+            ]
+            print(f"  ├─ EMA params restored for rates: {ema_rates}")
+        else:
+            # EMA rates changed or not saved - reinitialize from current model
+            ema_params = [copy.deepcopy(list(diffusion.parameters())) for _ in ema_rates] if ema_rates else []
+            if saved_ema_rates and saved_ema_rates != ema_rates:
+                print(f"  ├─ EMA rates changed ({saved_ema_rates} → {ema_rates}), reinitializing EMA")
+            else:
+                print(f"  ├─ EMA params initialized fresh")
+        
+        # Restore best metric tracking
+        best_metric_value = training_state.get('best_metric_value')
+        best_metric_step = training_state.get('best_metric_step')
+        
+        # If best_metric_value is None, initialize based on metric mode
+        if best_metric_value is None and cfg.training.checkpoint_best.enabled:
+            best_metric_value = (
+                float('-inf') if cfg.training.checkpoint_best.metric_mode == 'max'
+                else float('inf')
+            )
+        
+        print(f"\n✓ Resumed training state:")
+        print(f"  ├─ Global step: {global_step}")
+        print(f"  ├─ Best metric: {best_metric_value} (step {best_metric_step})")
+        print(f"  └─ Continuing to max_steps: {max_steps}")
+        
+    else:
+        # Fresh training run
+        global_step = 0
+        
+        # EMA setup (inspired by MedSegDiff)
+        ema_params = [copy.deepcopy(list(diffusion.parameters())) for _ in ema_rates] if ema_rates else []
+        
+        # Checkpoint tracking - initialize based on metric mode
     best_metric_value = (
         float('-inf') if cfg.training.checkpoint_best.enabled and cfg.training.checkpoint_best.metric_mode == 'max'
         else float('inf') if cfg.training.checkpoint_best.enabled and cfg.training.checkpoint_best.metric_mode == 'min'
         else None
     )
     best_metric_step = None
+    
+    # Checkpoint tracking lists (always start fresh - we don't track old files)
     interval_checkpoints = []  # List of (step, [file_paths])
     best_checkpoints = []  # List of (metric_value, step, [file_paths])
     
@@ -482,7 +566,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 
                 except KeyError as e:
                     # Metric not found - crash with clear message
-                    print(f"❌ ERROR: {e}")
+                    print(f"[ERROR] {e}")
                     print(f"   Validation returned metrics: {list(val_results.keys())}")
                     print(f"   Check your checkpoint_best.metric_name config!")
                     raise
@@ -656,7 +740,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     
                     except KeyError as e:
                         # Metric not found - crash with clear message
-                        print(f"❌ ERROR: {e}")
+                        print(f"[ERROR] {e}")
                         print(f"   Training metrics available: {list(train_metrics.keys())}")
                         print(f"   Check your checkpoint_best.metric_name config!")
                         raise
@@ -706,7 +790,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             if global_step % cfg.training.checkpoint_interval.save_interval == 0 and global_step > 0:
                 print(f"✓ Saving interval checkpoint at step {global_step}")
                 saved_files = save_interval_checkpoint(
-                    diffusion, optimizer, global_step, cfg, run_dir
+                    diffusion, optimizer, global_step, cfg, run_dir,
+                    ema_params=ema_params,
+                    ema_rates=ema_rates,
+                    scheduler=scheduler,
+                    best_metric_value=best_metric_value,
+                    best_metric_step=best_metric_step,
                 )
                 interval_checkpoints.append((global_step, saved_files))
                 
@@ -724,7 +813,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     if cfg.training.checkpoint_interval.enabled:
         print(f"✓ Saving final interval checkpoint at step {global_step}")
         saved_files = save_interval_checkpoint(
-            diffusion, optimizer, global_step, cfg, run_dir
+            diffusion, optimizer, global_step, cfg, run_dir,
+            ema_params=ema_params,
+            ema_rates=ema_rates,
+            scheduler=scheduler,
+            best_metric_value=best_metric_value,
+            best_metric_step=best_metric_step,
         )
         # No cleanup on final save
     
