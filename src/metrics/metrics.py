@@ -4,21 +4,8 @@ from medpy import metric
 import numpy as np
 import cc3d
 from scipy.ndimage import distance_transform_edt, binary_erosion
-# MONAI imports deferred to avoid import-time CUDA initialization issues
-_MONAI_FUNCS = None
-
-def _get_monai_funcs():
-    """Lazy import of MONAI metric functions."""
-    global _MONAI_FUNCS
-    if _MONAI_FUNCS is None:
-        from monai.metrics import compute_hausdorff_distance, compute_surface_dice
-        from monai.networks.utils import one_hot
-        _MONAI_FUNCS = {
-            'compute_hausdorff_distance': compute_hausdorff_distance,
-            'compute_surface_dice': compute_surface_dice,
-            'one_hot': one_hot,
-        }
-    return _MONAI_FUNCS
+from monai.metrics import compute_hausdorff_distance, compute_surface_dice
+from monai.networks.utils import one_hot
 
 
 class DiceMedpyCoefficient(nn.Module):
@@ -581,11 +568,10 @@ class HausdorffDistance95MonaiMm(nn.Module):
                 true_i_batch = true_i.unsqueeze(0)
 
                 # Convert to one-hot format [B, C, H, W, D] where C=2 (bg, fg)
-                monai = _get_monai_funcs()
-                pred_one_hot = monai['one_hot'](pred_i_batch, num_classes=2)
-                true_one_hot = monai['one_hot'](true_i_batch, num_classes=2)
+                pred_one_hot = one_hot(pred_i_batch, num_classes=2)
+                true_one_hot = one_hot(true_i_batch, num_classes=2)
 
-                hd_val = monai['compute_hausdorff_distance'](
+                hd_val = compute_hausdorff_distance(
                     y_pred=pred_one_hot,
                     y=true_one_hot,
                     include_background=False,
@@ -677,13 +663,12 @@ class SurfaceDiceMonai(nn.Module):
                 true_i_batch = true_i.unsqueeze(0)
 
                 # Convert to one-hot format [B, C, H, W, D] where C=2 (bg, fg)
-                monai = _get_monai_funcs()
-                pred_one_hot = monai['one_hot'](pred_i_batch, num_classes=2)
-                true_one_hot = monai['one_hot'](true_i_batch, num_classes=2)
+                pred_one_hot = one_hot(pred_i_batch, num_classes=2)
+                true_one_hot = one_hot(true_i_batch, num_classes=2)
 
                 # MONAI's class_thresholds expects a list of thresholds, one per class.
                 # Since we exclude the background, we only need one for our foreground class.
-                sd_val = monai['compute_surface_dice'](
+                sd_val = compute_surface_dice(
                     y_pred=pred_one_hot,
                     y=true_one_hot,
                     class_thresholds=[self.tolerance_mm],
