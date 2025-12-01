@@ -22,5 +22,11 @@ auxiliary_losses:
     weight: 0.0
     pos_weight: null
     apply_sigmoid: false
+  # Calibration loss (for ORGMedSegDiff highway network)
+  # Disabled by default - enable when using org_medsegdiff architecture
+  calibration:
+    enabled: false
+    weight: 0.0
+    apply_sigmoid: false  # Model applies sigmoid internally
   warmup_steps: 0
 

@@ -87,6 +87,38 @@ def build_medsegdiff(cfg: DictConfig) -> nn.Module:
     return Unet(cfg)
 
 
+@register_architecture('org_medsegdiff')
+def build_org_medsegdiff(cfg: DictConfig) -> nn.Module:
+    """
+    Build Official MedSegDiff architecture.
+    
+    Uses thin adapter around untouched official code.
+    Supports both 'new' (UNetModel_newpreview) and 'v1' (UNetModel_v1preview) versions.
+    
+    Key features:
+        - Highway network produces calibration output (auxiliary segmentation)
+        - Calibration output has sigmoid applied internally
+        - Returns tuple: (noise_prediction, calibration_output)
+    
+    Required config keys:
+        cfg.model.architecture: "org_medsegdiff"
+        cfg.model.version: "new" or "v1" (default: "new")
+        cfg.model.image_size: int
+        cfg.model.in_channels: int (image_channels + mask_channels)
+        cfg.model.model_channels: int
+        cfg.model.out_channels: int
+    
+    Optional config keys:
+        cfg.model.channel_mult: str (comma-separated, e.g., "1,2,4,8")
+        cfg.model.attention_resolutions: str (comma-separated resolutions)
+        cfg.model.num_res_blocks: int (default: 2)
+        cfg.model.num_heads: int (default: 4)
+        cfg.model.highway.enabled: bool (default: True)
+    """
+    from .ORGMedSegDiff import ORGMedSegDiffAdapter
+    return ORGMedSegDiffAdapter(cfg)
+
+
 # Future architectures can be registered here:
 # 
 # @register_architecture('diffswintr')
@@ -94,10 +126,4 @@ def build_medsegdiff(cfg: DictConfig) -> nn.Module:
 #     """Build DiffSwinTr (3D Swin Transformer) architecture."""
 #     from .DiffSwinTr import SwinUNet
 #     return SwinUNet(cfg)
-# 
-# @register_architecture('medsegdiff_highway')
-# def build_medsegdiff_highway(cfg: DictConfig) -> nn.Module:
-#     """Build MedSegDiff with highway network (original repo variant)."""
-#     from .MedSegDiff_Highway import UNetModel_v1preview
-#     return UNetModel_v1preview(cfg)
 

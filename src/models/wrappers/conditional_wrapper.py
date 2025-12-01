@@ -36,6 +36,8 @@ class ConditionalModelWrapper(nn.Module):
         - The wrapper preserves important properties from base_model (image_channels, etc.)
         - Works correctly when base_model is already wrapped in DataParallel
         - Provides helpful error messages when conditioning is missing
+        - Preserves tuple output structure (e.g., ORGMedSegDiff returns (noise_pred, cal))
+        - Exposes produces_calibration flag from base model if present
     """
     
     def __init__(self, base_model, condition_key='conditioned_image'):
@@ -48,6 +50,10 @@ class ConditionalModelWrapper(nn.Module):
         self.mask_channels = self._get_attr('mask_channels')
         self.output_channels = self._get_attr('output_channels')
         self.image_size = self._get_attr('image_size')
+        
+        # Flag for models that return tuple (noise_pred, calibration)
+        # e.g., ORGMedSegDiff with highway network
+        self.produces_calibration = self._get_attr('produces_calibration') or False
     
     def _get_attr(self, name):
         """Helper to get attribute from potentially wrapped model."""
@@ -68,8 +74,11 @@ class ConditionalModelWrapper(nn.Module):
             **model_kwargs: Must contain key specified by self.condition_key
             
         Returns:
-            torch.Tensor: Predicted noise [B, C, H, W]
-                         (or [B, 2*C, H, W] if model predicts variance)
+            torch.Tensor or Tuple[torch.Tensor, torch.Tensor]:
+                - Standard models: Predicted noise [B, C, H, W]
+                  (or [B, 2*C, H, W] if model predicts variance)
+                - ORGMedSegDiff: Tuple of (noise_pred, calibration)
+                  where calibration is [B, 1, H, W] with sigmoid applied
         
         Raises:
             ValueError: If conditioning key is missing from model_kwargs

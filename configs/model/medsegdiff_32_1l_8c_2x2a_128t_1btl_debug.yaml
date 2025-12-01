@@ -1,4 +1,4 @@
-image_size: 32  # Reduced from 256 to fix OOM
+image_size: 128  # Reduced from 256 to fix OOM
 num_layers: 1
 weight_initializer: InitWeights_He  # From unet_util
 linear_attn_layers: null  # Or list like [true, true, true, false]

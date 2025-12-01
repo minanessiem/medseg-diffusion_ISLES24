@@ -1,6 +1,7 @@
 name: isles24
 fold: 0
 modalities: ['CBF_min_0_max_70', 'TMAX_min_4_max_30']
+num_modalities: 2  # Must match len(modalities) - used for model in_channels
 train_batch_size: ${environment.dataset.train_batch_size}
 test_batch_size: ${environment.dataset.test_batch_size}
 num_train_workers: ${environment.dataset.num_train_workers}

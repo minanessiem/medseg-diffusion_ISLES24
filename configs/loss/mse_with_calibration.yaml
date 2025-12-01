@@ -1,0 +1,35 @@
+# MSE diffusion loss with calibration auxiliary loss
+# Use with: architecture: org_medsegdiff
+#
+# Calibration loss supervises the highway network's segmentation output.
+# Official MedSegDiff uses weight=10.0 for calibration loss.
+
+# Primary diffusion loss type (passed to GaussianDiffusion)
+loss_type: MSE
+
+# Auxiliary losses
+auxiliary_losses:
+  enabled: true
+  diffusion_weight: 1.0
+  
+  dice:
+    enabled: false
+    weight: 0.0
+    smooth: 1.0e-8
+    apply_sigmoid: false
+  
+  bce:
+    enabled: false
+    weight: 0.0
+    pos_weight: null
+    apply_sigmoid: false
+  
+  # Calibration loss from highway network
+  # Sigmoid already applied by model (final_nonlin=sigmoid_helper)
+  calibration:
+    enabled: true
+    weight: 10.0
+    apply_sigmoid: false
+  
+  warmup_steps: 0  # Calibration should start immediately
+

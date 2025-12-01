@@ -315,10 +315,24 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         diffusion = cfg.diffusion
         loss = cfg.loss if hasattr(cfg, 'loss') else {}
     
-    # Model string: {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
-    model_str = (f"{model['architecture']}_{model['image_size']}_{model['num_layers']}l_{model['first_conv_channels']}c_"
-                 f"{model['att_heads']}x{model['att_head_dim']}a_{model['time_embedding_dim']}t_"
-                 f"{model['bottleneck_transformer_layers']}btl")
+    # Model string - architecture specific
+    architecture = model['architecture']
+    
+    if architecture == 'org_medsegdiff':
+        # ORGMedSegDiff: {arch}_{version}_{size}_{channels}c_{channel_mult}_{res_blocks}rb_{heads}h
+        # Example: org_medsegdiff_new_256_128c_1-2-4-8_2rb_4h (S variant)
+        #          org_medsegdiff_new_256_128c_1-2-4-4-8_2rb_4h (B variant)
+        #          org_medsegdiff_new_256_128c_1-1-2-2-4-4_2rb_4h (L variant)
+        version = model.get('version', 'new')
+        channel_mult = model.get('channel_mult', '').replace(',', '-')
+        model_str = (f"{architecture}_{version}_{model['image_size']}_"
+                     f"{model['model_channels']}c_{channel_mult}_"
+                     f"{model.get('num_res_blocks', 2)}rb_{model.get('num_heads', 4)}h")
+    else:
+        # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
+        model_str = (f"{architecture}_{model['image_size']}_{model['num_layers']}l_{model['first_conv_channels']}c_"
+                     f"{model['att_heads']}x{model['att_head_dim']}a_{model['time_embedding_dim']}t_"
+                     f"{model['bottleneck_transformer_layers']}btl")
     
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)

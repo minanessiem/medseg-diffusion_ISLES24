@@ -263,6 +263,78 @@ class BCELoss(nn.Module):
             return F.binary_cross_entropy(y_pred, y_true, reduction='mean')
 
 
+class CalibrationLoss(nn.Module):
+    """
+    Calibration loss for highway network auxiliary output.
+    
+    The MedSegDiff highway network produces a direct segmentation prediction
+    ('cal' output) with sigmoid already applied internally (via sigmoid_helper).
+    This loss supervises that auxiliary prediction using Binary Cross Entropy.
+    
+    Mathematical Formula:
+        L_cal = BCE(cal, mask)
+    
+    The official MedSegDiff uses weight=10.0 for this loss, making it a strong
+    auxiliary signal that helps the highway network learn useful features
+    for modulating the main UNet.
+    
+    Design Rationale:
+        - Highway network acts as a conditioning branch for the main diffusion UNet
+        - Calibration loss ensures the highway network learns meaningful features
+        - Strong supervision (high weight) encourages direct segmentation ability
+        - This auxiliary task improves the quality of conditioning features
+    
+    Args:
+        apply_sigmoid (bool): Whether cal output needs sigmoid activation.
+                             Default should be False for official MedSegDiff
+                             (sigmoid already applied by model via sigmoid_helper).
+                             Set to True only if using a modified model that
+                             outputs raw logits.
+    
+    Example:
+        >>> # Standard usage with official MedSegDiff (sigmoid already applied)
+        >>> cal_loss = CalibrationLoss(apply_sigmoid=False)
+        >>> loss = cal_loss(cal, mask)  # Both in [0, 1]
+        
+        >>> # With raw logits (custom model)
+        >>> cal_loss = CalibrationLoss(apply_sigmoid=True)
+        >>> loss = cal_loss(logits, mask)
+    
+    Notes:
+        - Only computed when model returns calibration output (tuple)
+        - Gracefully skipped for architectures without highway network
+        - Official weight: 10.0 (high relative to diffusion MSE ~0.01-0.1)
+        - Cal output shape: [B, 1, H, W] matching mask shape
+    """
+    
+    def __init__(self, apply_sigmoid):
+        super().__init__()
+        self.apply_sigmoid = apply_sigmoid
+    
+    def forward(self, cal, target):
+        """
+        Compute calibration loss (BCE between highway output and ground truth).
+        
+        Args:
+            cal (torch.Tensor): Calibration output from highway network [B, 1, H, W]
+                               Already in [0, 1] if apply_sigmoid=False
+            target (torch.Tensor): Ground truth mask [B, 1, H, W] in [0, 1]
+        
+        Returns:
+            torch.Tensor: Scalar BCE loss
+        """
+        cal = cal.to(target.device)
+        
+        if self.apply_sigmoid:
+            # Use BCEWithLogits for numerical stability with raw logits
+            return F.binary_cross_entropy_with_logits(cal, target, reduction='mean')
+        else:
+            # Cal already has sigmoid applied - use regular BCE
+            # Clamp to avoid log(0) numerical issues
+            cal_clamped = torch.clamp(cal, min=1e-7, max=1 - 1e-7)
+            return F.binary_cross_entropy(cal_clamped, target, reduction='mean')
+
+
 class CombinedSegmentationLoss(nn.Module):
     """
     Combined loss for multi-task learning with configurable weighting.

@@ -37,8 +37,28 @@ from ..models.MedSegDiff.unet_util import (
     unnormalize_to_zero_to_one,
 )
 
+
+class _SamplingModelWrapper(nn.Module):
+    """
+    Thin wrapper for sampling that extracts noise prediction from tuple outputs.
+    
+    Some models (e.g., ORGMedSegDiff) return (noise_pred, calibration) tuples.
+    OpenAI's sampling code expects a single tensor, so this wrapper extracts
+    only the noise prediction for use during sampling.
+    """
+    
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+    
+    def forward(self, *args, **kwargs):
+        output = self.model(*args, **kwargs)
+        if isinstance(output, tuple):
+            return output[0]  # Return only noise prediction
+        return output
+
 # Import auxiliary loss functions
-from ..losses.segmentation_losses import DiceLoss, BCELoss
+from ..losses.segmentation_losses import DiceLoss, BCELoss, CalibrationLoss
 
 
 class GaussianDiffusionAdapter(Diffusion):
@@ -133,6 +153,8 @@ class GaussianDiffusionAdapter(Diffusion):
             self.dice_weight = 0
             self.bce_loss_fn = None
             self.bce_weight = 0
+            self.cal_loss_fn = None
+            self.cal_weight = 0
             self.aux_warmup_steps = 0
             return
         
@@ -167,11 +189,23 @@ class GaussianDiffusionAdapter(Diffusion):
             self.bce_loss_fn = None
             self.bce_weight = 0
         
+        # Initialize Calibration loss (for highway network output, e.g., ORGMedSegDiff)
+        # Only used if model produces calibration output (tuple return)
+        if aux_cfg.calibration.enabled and aux_cfg.calibration.weight > 0:
+            self.cal_loss_fn = CalibrationLoss(
+                apply_sigmoid=aux_cfg.calibration.apply_sigmoid
+            )
+            self.cal_weight = aux_cfg.calibration.weight
+        else:
+            self.cal_loss_fn = None
+            self.cal_weight = 0
+        
         # Console output
         print("[OpenAI Adapter] Multi-task loss enabled:")
         print(f"  Diffusion weight: {self.diffusion_weight}")
         print(f"  Dice: enabled={self.dice_loss_fn is not None}, weight={self.dice_weight}")
         print(f"  BCE: enabled={self.bce_loss_fn is not None}, weight={self.bce_weight}")
+        print(f"  Calibration: enabled={self.cal_loss_fn is not None}, weight={self.cal_weight}")
         print(f"  Warmup steps: {self.aux_warmup_steps}")
     
     def _validate_config(self):
@@ -345,9 +379,19 @@ class GaussianDiffusionAdapter(Diffusion):
         # Compute x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise
         x_t = self.diffusion.q_sample(mask_normalized, t, noise=noise)
         
-        # Prepare model kwargs and predict noise
+        # Prepare model kwargs and call model
         model_kwargs = {'conditioned_image': conditioned_image}
-        noise_hat = self.wrapped_model(x_t, self._scale_timesteps(t), **model_kwargs)
+        model_output = self.wrapped_model(x_t, self._scale_timesteps(t), **model_kwargs)
+        
+        # Handle both single-output and tuple-output architectures
+        # ORGMedSegDiff returns (noise_pred, calibration), standard models return noise_pred only
+        if isinstance(model_output, tuple):
+            noise_hat, cal = model_output
+            has_calibration_output = True
+        else:
+            noise_hat = model_output
+            cal = None
+            has_calibration_output = False
         
         # Compute primary diffusion loss (MSE on noise)
         # Note: This assumes model_mean_type=EPSILON (noise prediction)
@@ -388,6 +432,15 @@ class GaussianDiffusionAdapter(Diffusion):
                 bce_loss = self.bce_loss_fn(pred_x0_denorm, mask_denorm)
                 loss = loss + self.bce_weight * bce_loss
                 loss_components['bce'] = bce_loss.item()
+            
+            # Calibration loss (only if model provides calibration output)
+            # Calibration is the highway network's direct segmentation prediction
+            if self.cal_loss_fn is not None and self.cal_weight > 0:
+                if has_calibration_output and cal is not None:
+                    cal_loss = self.cal_loss_fn(cal, mask_denorm)
+                    loss = loss + self.cal_weight * cal_loss
+                    loss_components['cal'] = cal_loss.item()
+                # If model doesn't support calibration, silently skip
             
             # Add total loss for logging
             loss_components['total'] = loss.item()
@@ -442,11 +495,14 @@ class GaussianDiffusionAdapter(Diffusion):
         shape = (batch_size, self.mask_channels, self.image_size, self.image_size)
         model_kwargs = {'conditioned_image': conditioned_image}
         
+        # Wrap model for sampling (handles tuple outputs from ORGMedSegDiff)
+        sampling_model = _SamplingModelWrapper(self.wrapped_model)
+        
         with torch.no_grad():
             if self.sampling_mode == 'ddim':
                 # DDIM sampling (fast)
                 samples = self.diffusion.ddim_sample_loop(
-                    model=self.wrapped_model,
+                    model=sampling_model,
                     shape=shape,
                     noise=None,
                     clip_denoised=True,
@@ -458,7 +514,7 @@ class GaussianDiffusionAdapter(Diffusion):
             else:
                 # DDPM sampling (default)
                 samples = self.diffusion.p_sample_loop(
-                    model=self.wrapped_model,
+                    model=sampling_model,
                     shape=shape,
                     noise=None,
                     clip_denoised=True,
@@ -502,10 +558,13 @@ class GaussianDiffusionAdapter(Diffusion):
         shape = (batch_size, self.mask_channels, self.image_size, self.image_size)
         model_kwargs = {'conditioned_image': conditioned_image}
         
+        # Wrap model for sampling (handles tuple outputs from ORGMedSegDiff)
+        sampling_model = _SamplingModelWrapper(self.wrapped_model)
+        
         with torch.no_grad():
             step_count = 0
             for sample_dict in self.diffusion.p_sample_loop_progressive(
-                model=self.wrapped_model,
+                model=sampling_model,
                 shape=shape,
                 noise=None,
                 clip_denoised=True,
