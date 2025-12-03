@@ -119,11 +119,41 @@ def build_org_medsegdiff(cfg: DictConfig) -> nn.Module:
     return ORGMedSegDiffAdapter(cfg)
 
 
-# Future architectures can be registered here:
-# 
-# @register_architecture('diffswintr')
-# def build_diffswintr(cfg: DictConfig) -> nn.Module:
-#     """Build DiffSwinTr (3D Swin Transformer) architecture."""
-#     from .DiffSwinTr import SwinUNet
-#     return SwinUNet(cfg)
+@register_architecture('diffswintr')
+def build_diffswintr(cfg: DictConfig) -> nn.Module:
+    """
+    Build DiffSwinTr (Swin Transformer U-Net) architecture.
+    
+    Paper: "DiffSwinTr: A Diffusion Model with Swin Transformer 
+           for Brain Tumor Segmentation"
+    
+    Key features:
+        - Swin Transformer backbone with window attention
+        - Conditional Encoder Module (CEM) for MRI conditioning
+        - AdaLN-style time conditioning
+        - U-Net encoder-decoder with skip connections
+    
+    Required config keys:
+        cfg.model.architecture: "diffswintr"
+        cfg.model.image_size: int
+        cfg.model.patch_size: int
+        cfg.model.embed_dim: int
+        cfg.model.depths: list[int] or comma-separated string
+        cfg.model.num_heads: list[int] or comma-separated string
+        cfg.model.window_size: int
+        cfg.model.mask_channels: int
+        cfg.model.image_channels: int
+        cfg.model.out_channels: int
+    
+    Optional config keys:
+        cfg.model.mlp_ratio: float (default: 4.0)
+        cfg.model.time_embed_dim: int (default: 256)
+        cfg.model.cem_enabled: bool (default: True)
+        cfg.model.cem_fusion_mode: str (default: "add")
+        cfg.model.drop_rate: float (default: 0.0)
+        cfg.model.attn_drop_rate: float (default: 0.0)
+        cfg.model.drop_path_rate: float (default: 0.1)
+    """
+    from .DiffSwinTr import DiffSwinTrAdapter
+    return DiffSwinTrAdapter(cfg)
 

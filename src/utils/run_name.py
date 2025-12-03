@@ -328,6 +328,32 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         model_str = (f"{architecture}_{version}_{model['image_size']}_"
                      f"{model['model_channels']}c_{channel_mult}_"
                      f"{model.get('num_res_blocks', 2)}rb_{model.get('num_heads', 4)}h")
+    elif architecture == 'diffswintr':
+        # DiffSwinTr: diffswintr_{size}_{embed_dim}d_{depths}_{num_heads}h_{window_size}w[_cem]
+        # Example: diffswintr_256_64d_2-2-2-2_2-4-8-16h_8w_cem (Small with CEM)
+        #          diffswintr_256_96d_2-2-6-2_3-6-12-24h_8w_cem (Base with CEM)
+        #          diffswintr_256_128d_2-2-18-2_4-8-16-32h_8w (Large without CEM)
+        
+        # Format depths as dash-separated string
+        depths = model.get('depths', [])
+        if isinstance(depths, (list, tuple)):
+            depths_str = '-'.join(str(d) for d in depths)
+        else:
+            depths_str = str(depths).replace(',', '-')
+        
+        # Format num_heads as dash-separated string
+        num_heads = model.get('num_heads', [])
+        if isinstance(num_heads, (list, tuple)):
+            heads_str = '-'.join(str(h) for h in num_heads)
+        else:
+            heads_str = str(num_heads).replace(',', '-')
+        
+        model_str = (f"{architecture}_{model['image_size']}_"
+                     f"{model['embed_dim']}d_{depths_str}_{heads_str}h_{model['window_size']}w")
+        
+        # Add CEM suffix if enabled
+        if model.get('cem_enabled', True):
+            model_str += "_cem"
     else:
         # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
         model_str = (f"{architecture}_{model['image_size']}_{model['num_layers']}l_{model['first_conv_channels']}c_"
