@@ -249,18 +249,28 @@ class BCELoss(nn.Module):
         """
         y_pred = y_pred.to(y_true.device)
         
-        if self.apply_sigmoid:
-            y_pred = torch.sigmoid(y_pred)
-        
+        # Handle pos_weight tensor
+        pos_weight_tensor = None
         if self.pos_weight is not None:
             pos_weight_tensor = torch.tensor([self.pos_weight], 
                                             device=y_pred.device, 
-                                            dtype=y_pred.dtype)
-            return F.binary_cross_entropy(y_pred, y_true, 
-                                         weight=pos_weight_tensor, 
-                                         reduction='mean')
+                                            dtype=torch.float32)
+        
+        if self.apply_sigmoid:
+            # Use BCEWithLogitsLoss - more numerically stable and AMP-safe
+            return F.binary_cross_entropy_with_logits(
+                y_pred, y_true, 
+                pos_weight=pos_weight_tensor,
+                reduction='mean'
+            )
         else:
-            return F.binary_cross_entropy(y_pred, y_true, reduction='mean')
+            # Cast to float32 for BCE - binary_cross_entropy is unsafe under AMP autocast
+            # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
+            return F.binary_cross_entropy(
+                y_pred.float(), y_true.float(), 
+                weight=pos_weight_tensor,
+                reduction='mean'
+            )
 
 
 class CalibrationLoss(nn.Module):
@@ -327,12 +337,17 @@ class CalibrationLoss(nn.Module):
         
         if self.apply_sigmoid:
             # Use BCEWithLogits for numerical stability with raw logits
+            # BCEWithLogitsLoss is AMP-safe
             return F.binary_cross_entropy_with_logits(cal, target, reduction='mean')
         else:
             # Cal already has sigmoid applied - use regular BCE
             # Clamp to avoid log(0) numerical issues
             cal_clamped = torch.clamp(cal, min=1e-7, max=1 - 1e-7)
-            return F.binary_cross_entropy(cal_clamped, target, reduction='mean')
+            # Cast to float32 for BCE - binary_cross_entropy is unsafe under AMP autocast
+            # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
+            return F.binary_cross_entropy(
+                cal_clamped.float(), target.float(), reduction='mean'
+            )
 
 
 class CombinedSegmentationLoss(nn.Module):
