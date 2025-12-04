@@ -18,6 +18,7 @@ References:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.amp import autocast
 
 
 class DiceLoss(nn.Module):
@@ -264,13 +265,14 @@ class BCELoss(nn.Module):
                 reduction='mean'
             )
         else:
-            # Cast to float32 for BCE - binary_cross_entropy is unsafe under AMP autocast
+            # Disable autocast for BCE - binary_cross_entropy is unsafe under AMP
             # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
-            return F.binary_cross_entropy(
-                y_pred.float(), y_true.float(), 
-                weight=pos_weight_tensor,
-                reduction='mean'
-            )
+            with autocast(device_type='cuda', enabled=False):
+                return F.binary_cross_entropy(
+                    y_pred.float(), y_true.float(), 
+                    weight=pos_weight_tensor,
+                    reduction='mean'
+                )
 
 
 class CalibrationLoss(nn.Module):
@@ -343,11 +345,12 @@ class CalibrationLoss(nn.Module):
             # Cal already has sigmoid applied - use regular BCE
             # Clamp to avoid log(0) numerical issues
             cal_clamped = torch.clamp(cal, min=1e-7, max=1 - 1e-7)
-            # Cast to float32 for BCE - binary_cross_entropy is unsafe under AMP autocast
+            # Disable autocast for BCE - binary_cross_entropy is unsafe under AMP
             # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
-            return F.binary_cross_entropy(
-                cal_clamped.float(), target.float(), reduction='mean'
-            )
+            with autocast(device_type='cuda', enabled=False):
+                return F.binary_cross_entropy(
+                    cal_clamped.float(), target.float(), reduction='mean'
+                )
 
 
 class CombinedSegmentationLoss(nn.Module):
