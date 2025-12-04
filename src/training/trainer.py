@@ -46,6 +46,9 @@ print("[DEBUG:trainer.py] checkpoint_utils done", flush=True)
 
 import gc
 from omegaconf import OmegaConf
+
+# AMP (Automatic Mixed Precision) support
+from torch.amp import autocast, GradScaler
 print("[DEBUG:trainer.py] All imports complete!", flush=True)
 
 def get_optimizer_and_scheduler(cfg, model):
@@ -365,6 +368,30 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     print(f"  Effective batch size: {effective_batch_size}")
     
     # ==========================================================================
+    # AMP (Automatic Mixed Precision) setup
+    # ==========================================================================
+    amp_cfg = cfg.training.get('amp', {})
+    amp_enabled = amp_cfg.get('enabled', False)
+    amp_dtype_str = amp_cfg.get('dtype', 'float32')
+    
+    # Map string to torch dtype
+    amp_dtype_map = {
+        'float32': None,  # No autocast (explicit FP32)
+        'float16': torch.float16,
+        'bfloat16': torch.bfloat16,
+    }
+    amp_dtype = amp_dtype_map.get(amp_dtype_str, None)
+    
+    # GradScaler is required for float16, but NOT for bfloat16
+    use_scaler = amp_enabled and amp_dtype == torch.float16
+    scaler = GradScaler('cuda') if use_scaler else None
+    
+    print(f"\nAutomatic Mixed Precision (AMP) Configuration:")
+    print(f"  Enabled: {amp_enabled}")
+    print(f"  Dtype: {amp_dtype_str}")
+    print(f"  GradScaler: {'enabled' if use_scaler else 'disabled'}")
+    
+    # ==========================================================================
     # Initialize training state (fresh or from resume_state)
     # ==========================================================================
     if resume_state is not None:
@@ -402,6 +429,15 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 float('-inf') if cfg.training.checkpoint_best.metric_mode == 'max'
                 else float('inf')
             )
+        
+        # Restore scaler state if using AMP with FP16
+        if scaler is not None:
+            scaler_state = training_state.get('scaler_state_dict')
+            if scaler_state is not None:
+                scaler.load_state_dict(scaler_state)
+                print(f"  ├─ GradScaler state restored (scale: {scaler.get_scale():.0f})")
+            else:
+                print(f"  ├─ GradScaler state not found in checkpoint, using defaults")
         
         print(f"\n✓ Resumed training state:")
         print(f"  ├─ Global step: {global_step}")
@@ -445,11 +481,18 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         img, mask = img.to(cfg.device), mask.to(cfg.device)
         batch_size = mask.shape[0]  # Define here, after data load
         
-        loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
+        # Forward pass with optional AMP autocast
+        with autocast(device_type='cuda', enabled=amp_enabled, dtype=amp_dtype):
+            loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
         
         # Scale loss for gradient accumulation (normalized to integer, always safe to divide)
         scaled_loss = loss / accumulation_steps
-        scaled_loss.backward()
+        
+        # Backward pass with optional gradient scaling (for FP16 stability)
+        if scaler is not None:
+            scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
         
         # Log micro-batch metrics (accumulated across micro-batches)
         # Log unscaled loss (primary metric for model performance)
@@ -479,6 +522,11 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         # ===== Macro-batch operations (only after N micro-batches) =====
         accumulation_counter = 0  # Reset counter
         
+        # Unscale gradients BEFORE clipping (required for correct gradient magnitudes)
+        # This converts scaled FP16 gradients back to FP32 for proper clipping thresholds
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        
         # Gradient clipping (applied to accumulated gradients - correct behavior)
         # Note: clip_norm threshold applies to accumulated gradient, matching large-batch training
         # Do NOT scale clip_norm by accumulation_steps - that would defeat the purpose of clipping
@@ -495,7 +543,14 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             )
         
         grad_norm = calc_grad_norm(diffusion.parameters())
-        optimizer.step()
+        
+        # Optimizer step (scaler handles inf/nan checking for FP16)
+        if scaler is not None:
+            scaler.step(optimizer)  # Skips step if gradients contain inf/nan
+            scaler.update()         # Adjust scale factor for next iteration
+        else:
+            optimizer.step()
+        
         optimizer.zero_grad()  # Zero gradients for next accumulation cycle
         param_norm = calc_param_norm(diffusion.parameters())
         
@@ -796,6 +851,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     scheduler=scheduler,
                     best_metric_value=best_metric_value,
                     best_metric_step=best_metric_step,
+                    scaler=scaler,
                 )
                 interval_checkpoints.append((global_step, saved_files))
                 
@@ -819,6 +875,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             scheduler=scheduler,
             best_metric_value=best_metric_value,
             best_metric_step=best_metric_step,
+            scaler=scaler,
         )
         # No cleanup on final save
     

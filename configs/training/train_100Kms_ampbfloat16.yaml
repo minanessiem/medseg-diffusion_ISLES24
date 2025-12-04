@@ -1,0 +1,17 @@
+# AMP BFloat16 training config
+# Uses bfloat16 precision - more stable than float16, no GradScaler needed
+#
+# Usage: training=train_100Kms_ampbfloat16
+# Recommended for: A100, H100, RTX 40xx (Ampere/Hopper/Ada architecture)
+# Memory: ~40% reduction vs FP32
+# Notes: BF16 has same dynamic range as FP32 (8 exponent bits), so no gradient scaling needed
+#        More numerically stable than FP16 for training
+
+defaults:
+  - train_100Kms_50Ks_9999e
+
+# BFloat16 - recommended for A100/H100 (more stable, no GradScaler needed)
+amp:
+  enabled: true
+  dtype: bfloat16
+

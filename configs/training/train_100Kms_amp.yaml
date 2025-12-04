@@ -1,0 +1,15 @@
+# AMP-enabled training config (FP16 by default)
+# Inherits all settings from base config, enables mixed precision
+#
+# Usage: training=train_100Kms_amp
+# Memory: ~40% reduction vs FP32
+# Throughput: ~1.5-2x improvement on V100/A100/H100
+
+defaults:
+  - train_100Kms_50Ks_9999e
+
+# Override AMP settings from base
+amp:
+  enabled: true
+  dtype: float16  # FP16 with GradScaler (compatible with all CUDA GPUs)
+

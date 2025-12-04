@@ -106,6 +106,8 @@ def save_interval_checkpoint(
     scheduler = None,
     best_metric_value: float = None,
     best_metric_step: int = None,
+    # AMP scaler state (for FP16 training resume)
+    scaler = None,  # torch.cuda.amp.GradScaler or None
 ) -> List[str]:
     """
     Save interval checkpoint (model + optimizer + training state) for training resumption.
@@ -121,6 +123,7 @@ def save_interval_checkpoint(
         scheduler: Learning rate scheduler (with state_dict method), optional
         best_metric_value: Current best validation metric value, optional
         best_metric_step: Step at which best metric was achieved, optional
+        scaler: torch.cuda.amp.GradScaler for AMP FP16 training, optional
     
     Returns:
         List of saved file paths (for tracking/cleanup)
@@ -162,6 +165,8 @@ def save_interval_checkpoint(
             'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
             'best_metric_value': best_metric_value,
             'best_metric_step': best_metric_step,
+            # AMP GradScaler state for FP16 training resume
+            'scaler_state_dict': scaler.state_dict() if scaler is not None else None,
         }
         torch.save(training_state, state_path)
         saved_files.append(state_path)

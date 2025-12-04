@@ -246,6 +246,45 @@ def generate_augmentation_string(aug_cfg):
         # Custom config or unrecognized preset
         return "augCUSTOM"
 
+def generate_amp_string(cfg):
+    """Generate AMP string for run name.
+    
+    Only adds to run name when AMP is enabled with FP16/BF16.
+    Returns empty string for FP32 (default) to keep run names clean.
+    
+    Args:
+        cfg: Configuration object (dict or DictConfig)
+    
+    Returns:
+        str: AMP string for run name, or empty string if disabled/FP32
+        
+    Examples:
+        amp.enabled=false → "" (no string added)
+        amp.enabled=true, dtype=float32 → "" (effectively disabled)
+        amp.enabled=true, dtype=float16 → "ampFP16"
+        amp.enabled=true, dtype=bfloat16 → "ampBF16"
+    """
+    # Access AMP config
+    if isinstance(cfg, dict):
+        amp_cfg = cfg.get('training', {}).get('amp', {})
+    else:
+        amp_cfg = cfg.training.get('amp', {}) if hasattr(cfg, 'training') else {}
+    
+    enabled = amp_cfg.get('enabled', False)
+    dtype = amp_cfg.get('dtype', 'float32')
+    
+    # No AMP string when disabled or using FP32 (keeps backward compat)
+    if not enabled or dtype == 'float32':
+        return ""
+    
+    # Map dtype to compact string
+    dtype_map = {
+        'float16': 'ampFP16',
+        'bfloat16': 'ampBF16',
+    }
+    return dtype_map.get(dtype, "")
+
+
 def generate_batch_string(cfg):
     """Generate batch string with optional accumulation encoding.
     
@@ -363,6 +402,9 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)
     
+    # AMP string (only added if enabled with FP16/BF16)
+    amp_str = generate_amp_string(cfg)
+    
     # Optimizer and scheduler strings (separated)
     optimizer_str = generate_optimizer_string(optimizer)
     scheduler_str = generate_scheduler_string(scheduler)
@@ -408,6 +450,12 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
-    run_name = f"{model_str}_{batch_str}_{optimizer_str}_{scheduler_str}_{steps_str}_{loss_str}_{aug_str}_{diffusion_str}_{timestamp}"
+    # Insert amp_str after batch_str (only if non-empty)
+    parts = [model_str, batch_str]
+    if amp_str:  # Only add AMP string if enabled (FP16/BF16)
+        parts.append(amp_str)
+    parts.extend([optimizer_str, scheduler_str, steps_str, loss_str, aug_str, diffusion_str, timestamp])
+    
+    run_name = '_'.join(parts)
     
     return run_name

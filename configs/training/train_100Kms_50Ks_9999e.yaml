@@ -3,6 +3,13 @@
 
 max_steps: 100000  # Maximum training steps
 
+# Automatic Mixed Precision (AMP)
+# Reduces memory usage and improves throughput on modern GPUs (V100, A100, H100)
+amp:
+  enabled: false  # Default: disabled (FP32 training for backward compatibility)
+  dtype: float32  # Options: float32 (no autocast), float16 (with GradScaler), bfloat16 (no scaler needed)
+                  # float16: Use for V100 and older GPUs - requires GradScaler for stability
+                  # bfloat16: Use for A100/H100 - more stable, no GradScaler needed
 
 ema_rate_precision: 4  # Decimal places for EMA rate in filename
 ema_rate: "0.9999"  # Comma-separated for multiple, e.g. "0.999,0.9999"

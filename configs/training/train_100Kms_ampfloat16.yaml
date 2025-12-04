@@ -1,0 +1,16 @@
+# AMP FP16 training config (explicit)
+# Uses float16 precision with GradScaler for gradient stability
+#
+# Usage: training=train_100Kms_ampfloat16
+# Recommended for: V100, RTX 20xx/30xx, older CUDA GPUs
+# Memory: ~40% reduction vs FP32
+# Notes: GradScaler automatically handles gradient overflow/underflow
+
+defaults:
+  - train_100Kms_50Ks_9999e
+
+# Explicit FP16 - use for V100 and older GPUs
+amp:
+  enabled: true
+  dtype: float16
+
