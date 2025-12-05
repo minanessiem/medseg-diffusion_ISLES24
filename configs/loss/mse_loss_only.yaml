@@ -27,6 +27,6 @@ auxiliary_losses:
   calibration:
     enabled: false
     weight: 0.0
-    apply_sigmoid: false  # Model applies sigmoid internally
+    apply_sigmoid: true  # Model outputs logits, use BCE with logits
   warmup_steps: 0
 

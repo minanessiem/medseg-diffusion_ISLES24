@@ -731,7 +731,7 @@ class UNetModel_v1preview(nn.Module):
 
         if high_way:
             features = 32
-            self.hwm = Generic_UNet(self.in_channels - 1, features, 1, 5, highway=True)
+            self.hwm = Generic_UNet(self.in_channels - 1, features, 1, 5, highway=True, final_nonlin=lambda x: x)
 
     def convert_to_fp16(self):
         """
@@ -1040,7 +1040,7 @@ class UNetModel_newpreview(nn.Module):
 
         if high_way:
             features = 32
-            self.hwm = Generic_UNet(self.in_channels - 1, features, 1, 5, anchor_out=True, upscale_logits=True)
+            self.hwm = Generic_UNet(self.in_channels - 1, features, 1, 5, anchor_out=True, upscale_logits=True, final_nonlin=lambda x: x)
 
     def convert_to_fp16(self):
         """

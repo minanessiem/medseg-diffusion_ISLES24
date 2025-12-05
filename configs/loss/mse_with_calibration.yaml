@@ -25,11 +25,12 @@ auxiliary_losses:
     apply_sigmoid: false
   
   # Calibration loss from highway network
-  # Sigmoid already applied by model (final_nonlin=sigmoid_helper)
+  # Model now outputs logits (final_nonlin=lambda x: x)
+  # Use BCE with logits (AMP-safe)
   calibration:
     enabled: true
     weight: 10.0
-    apply_sigmoid: false
+    apply_sigmoid: true
   
   warmup_steps: 0  # Calibration should start immediately
 
