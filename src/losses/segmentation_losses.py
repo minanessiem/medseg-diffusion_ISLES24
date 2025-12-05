@@ -268,8 +268,14 @@ class BCELoss(nn.Module):
             # Disable autocast for BCE - binary_cross_entropy is unsafe under AMP
             # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
             with autocast(device_type='cuda', enabled=False):
+                # Convert to float32 FIRST, then clamp to ensure precision
+                y_pred_fp32 = y_pred.float()
+                y_true_fp32 = y_true.float()
+                # Clamp to strict [0, 1] range (BCE requires this)
+                y_pred_clamped = torch.clamp(y_pred_fp32, min=0.0, max=1.0)
+                y_true_clamped = torch.clamp(y_true_fp32, min=0.0, max=1.0)
                 return F.binary_cross_entropy(
-                    y_pred.float(), y_true.float(), 
+                    y_pred_clamped, y_true_clamped, 
                     weight=pos_weight_tensor,
                     reduction='mean'
                 )
@@ -343,13 +349,17 @@ class CalibrationLoss(nn.Module):
             return F.binary_cross_entropy_with_logits(cal, target, reduction='mean')
         else:
             # Cal already has sigmoid applied - use regular BCE
-            # Clamp to avoid log(0) numerical issues
-            cal_clamped = torch.clamp(cal, min=1e-7, max=1 - 1e-7)
             # Disable autocast for BCE - binary_cross_entropy is unsafe under AMP
             # See: https://pytorch.org/docs/stable/amp.html#ops-that-can-autocast-to-float32
             with autocast(device_type='cuda', enabled=False):
+                # Convert to float32 FIRST, then clamp to ensure precision
+                cal_fp32 = cal.float()
+                target_fp32 = target.float()
+                # Clamp to strict [0, 1] range (BCE requires this)
+                cal_clamped = torch.clamp(cal_fp32, min=0.0, max=1.0)
+                target_clamped = torch.clamp(target_fp32, min=0.0, max=1.0)
                 return F.binary_cross_entropy(
-                    cal_clamped.float(), target.float(), reduction='mean'
+                    cal_clamped, target_clamped, reduction='mean'
                 )
 
 
