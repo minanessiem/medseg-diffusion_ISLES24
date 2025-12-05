@@ -240,6 +240,17 @@ def main():
     # Parse overrides
     overrides = list(args.overrides)  # Make a copy to avoid modifying original
     
+    # Auto-set multi_gpu when --gpus > 1
+    # SLURM allocates GPUs, but training code needs explicit multi_gpu config
+    if args.gpus is not None and args.gpus > 1:
+        # Check if user already manually set multi_gpu
+        has_multi_gpu_override = any('environment.training.multi_gpu' in o for o in overrides)
+        if not has_multi_gpu_override:
+            # Auto-generate GPU list: [0, 1, 2, ..., n-1]
+            gpu_list = list(range(args.gpus))
+            overrides.append(f"environment.training.multi_gpu=[{','.join(map(str, gpu_list))}]")
+            print(f"[AUTO] Detected --gpus {args.gpus}, adding environment.training.multi_gpu={gpu_list}")
+    
     # Debug mode: add +debug=true to overrides for training script
     # Note: '+' prefix tells Hydra to add a new key (not override existing)
     if args.debug:
