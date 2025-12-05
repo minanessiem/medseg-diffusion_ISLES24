@@ -259,8 +259,11 @@ class BCELoss(nn.Module):
         
         if self.apply_sigmoid:
             # Use BCEWithLogitsLoss - more numerically stable and AMP-safe
+            # Clamp logits to prevent overflow: exp(88) is near FP32 max
+            # Clamping to [-80, 80] is safe and doesn't affect learning
+            y_pred_clamped = torch.clamp(y_pred, min=-80.0, max=80.0)
             return F.binary_cross_entropy_with_logits(
-                y_pred, y_true, 
+                y_pred_clamped, y_true, 
                 pos_weight=pos_weight_tensor,
                 reduction='mean'
             )
@@ -336,6 +339,7 @@ class CalibrationLoss(nn.Module):
         Args:
             cal (torch.Tensor): Calibration output from highway network [B, 1, H, W]
                                Already in [0, 1] if apply_sigmoid=False
+                               Raw logits if apply_sigmoid=True
             target (torch.Tensor): Ground truth mask [B, 1, H, W] in [0, 1]
         
         Returns:
@@ -346,7 +350,10 @@ class CalibrationLoss(nn.Module):
         if self.apply_sigmoid:
             # Use BCEWithLogits for numerical stability with raw logits
             # BCEWithLogitsLoss is AMP-safe
-            return F.binary_cross_entropy_with_logits(cal, target, reduction='mean')
+            # Clamp logits to prevent overflow: exp(88) is near FP32 max
+            # Clamping to [-80, 80] is safe and doesn't affect learning (sigmoid(-80) ≈ 0, sigmoid(80) ≈ 1)
+            cal_clamped = torch.clamp(cal, min=-80.0, max=80.0)
+            return F.binary_cross_entropy_with_logits(cal_clamped, target, reduction='mean')
         else:
             # Cal already has sigmoid applied - use regular BCE
             # Disable autocast for BCE - binary_cross_entropy is unsafe under AMP

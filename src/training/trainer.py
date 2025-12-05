@@ -485,6 +485,17 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         with autocast(device_type='cuda', enabled=amp_enabled, dtype=amp_dtype):
             loss, sample_mses, ts, loss_components = diffusion.forward(mask, conditioned_image=img, global_step=global_step)
         
+        # NaN/Inf detection (Layer 1: Catch immediately after forward)
+        if not torch.isfinite(loss):
+            print(f"\n[ERROR] NaN/Inf detected in loss at step {global_step}!")
+            print(f"  Loss value: {loss.item()}")
+            if loss_components is not None:
+                print(f"  Loss components: {loss_components}")
+            # Skip this batch but continue training
+            print(f"  Skipping batch and resetting gradients...")
+            optimizer.zero_grad()
+            continue
+        
         # Scale loss for gradient accumulation (normalized to integer, always safe to divide)
         scaled_loss = loss / accumulation_steps
         
@@ -527,6 +538,18 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         if scaler is not None:
             scaler.unscale_(optimizer)
         
+        # NaN/Inf detection (Layer 2: Check gradients before clipping)
+        grad_norm = calc_grad_norm(diffusion.parameters())
+        if not torch.isfinite(torch.tensor(grad_norm)):
+            print(f"\n[ERROR] NaN/Inf detected in gradients at step {global_step}!")
+            print(f"  Gradient norm: {grad_norm}")
+            print(f"  Skipping optimizer step and resetting gradients...")
+            optimizer.zero_grad()
+            accumulation_counter = 0  # Reset accumulation
+            if scaler is not None:
+                scaler.update()  # Update scaler to potentially reduce scale
+            continue
+        
         # Gradient clipping (applied to accumulated gradients - correct behavior)
         # Note: clip_norm threshold applies to accumulated gradient, matching large-batch training
         # Do NOT scale clip_norm by accumulation_steps - that would defeat the purpose of clipping
@@ -541,8 +564,6 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 diffusion.parameters(),
                 clip_value=grad_cfg.clip_value
             )
-        
-        grad_norm = calc_grad_norm(diffusion.parameters())
         
         # Optimizer step (scaler handles inf/nan checking for FP16)
         if scaler is not None:
