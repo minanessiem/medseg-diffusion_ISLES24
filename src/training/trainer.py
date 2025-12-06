@@ -539,10 +539,10 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             scaler.unscale_(optimizer)
         
         # NaN/Inf detection (Layer 2: Check gradients before clipping)
-        grad_norm = calc_grad_norm(diffusion.parameters())
-        if not torch.isfinite(torch.tensor(grad_norm)):
+        grad_norm_pre_clip = calc_grad_norm(diffusion.parameters())
+        if not torch.isfinite(torch.tensor(grad_norm_pre_clip)):
             print(f"\n[ERROR] NaN/Inf detected in gradients at step {global_step}!")
-            print(f"  Gradient norm: {grad_norm}")
+            print(f"  Gradient norm: {grad_norm_pre_clip}")
             print(f"  Skipping optimizer step and resetting gradients...")
             optimizer.zero_grad()
             accumulation_counter = 0  # Reset accumulation
@@ -564,6 +564,9 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 diffusion.parameters(),
                 clip_value=grad_cfg.clip_value
             )
+        
+        # Calculate gradient norm AFTER clipping for logging
+        grad_norm = calc_grad_norm(diffusion.parameters())
         
         # Optimizer step (scaler handles inf/nan checking for FP16)
         if scaler is not None:
@@ -597,6 +600,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
         logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
         logger.logkv_mean('param_norm', param_norm, accumulator='train')
+        
+        # Log clipping diagnostics (only when clipping occurs)
+        if grad_cfg.clip_norm is not None and grad_norm_pre_clip > grad_cfg.clip_norm:
+            clip_ratio = grad_norm_pre_clip / grad_cfg.clip_norm
+            logger.logkv_mean('grad_norm_pre_clip', grad_norm_pre_clip, accumulator='train')
+            logger.logkv_mean('grad_clip_ratio', clip_ratio, accumulator='train')
         
         # Validation check
         if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
