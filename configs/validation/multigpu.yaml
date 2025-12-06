@@ -1,0 +1,7 @@
+defaults:
+  - default
+
+# Override for multi-GPU validation
+multi_gpu_validation: true
+val_batch_size: 16  # Can use larger batch with multi-GPU
+

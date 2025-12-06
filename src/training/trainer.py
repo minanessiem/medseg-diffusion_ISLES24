@@ -25,7 +25,7 @@ print("[DEBUG:trainer.py] evaluator done", flush=True)
 from src.utils.logger import Logger
 print("[DEBUG:trainer.py] logger done", flush=True)
 
-from src.utils.train_utils import calc_grad_norm, calc_param_norm
+from src.utils.train_utils import calc_grad_norm, calc_param_norm, _parse_multi_gpu_flag
 print("[DEBUG:trainer.py] train_utils done", flush=True)
 
 from torch import no_grad
@@ -614,7 +614,25 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             torch.cuda.empty_cache()
             
             metrics = [get_metric(m['name'], m.get('params', {})) for m in cfg.validation.metrics]
-            val_results = validate_one_epoch(diffusion, val_dataloader, metrics, logger, global_step, cfg)
+            
+            # Check for multi-GPU validation
+            gpu_ids = _parse_multi_gpu_flag(cfg.environment.training.multi_gpu)
+            use_multi_gpu_val = (
+                cfg.validation.get('multi_gpu_validation', False) 
+                and gpu_ids is not None 
+                and len(gpu_ids) > 1
+            )
+            
+            if use_multi_gpu_val:
+                from src.utils.valid_utils import validate_one_epoch_multigpu
+                val_results = validate_one_epoch_multigpu(
+                    diffusion, val_dataloader, metrics, logger, global_step, cfg, gpu_ids
+                )
+            else:
+                val_results = validate_one_epoch(
+                    diffusion, val_dataloader, metrics, logger, global_step, cfg
+                )
+            
             logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
             logger.dumpkvs(global_step, accumulator='val')
             logger.clear_accumulators(accumulator='val')
