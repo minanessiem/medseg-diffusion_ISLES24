@@ -637,6 +637,10 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             logger.dumpkvs(global_step, accumulator='val')
             logger.clear_accumulators(accumulator='val')
             
+            # Free memory after validation before resuming training
+            gc.collect()
+            torch.cuda.empty_cache()
+            
             # Best checkpoint decision and saving
             if cfg.training.checkpoint_best.enabled:
                 try:

@@ -83,8 +83,17 @@ def cleanup_model_copies(models: List[nn.Module]) -> None:
     models : List[nn.Module]
         List of model copies to delete
     """
+    # Move models to CPU before deletion to ensure GPU memory is freed
     for model in models:
+        # Clear all parameters and buffers from GPU
+        model.cpu()
+        # Delete the model
         del model
+    
+    # Clear the list
+    models.clear()
+    
+    # Force CUDA cache cleanup
     torch.cuda.empty_cache()
 
 
@@ -408,6 +417,13 @@ def validate_one_epoch_multigpu(
         # Always cleanup, even on error
         print(f"\n[Validation] Cleaning up model copies...")
         cleanup_model_copies(models)
+        
+        # Synchronize all GPUs to ensure cleanup is complete
+        for gpu_id in gpu_ids:
+            torch.cuda.synchronize(gpu_id)
+        
+        # Aggressive memory cleanup
+        torch.cuda.empty_cache()
     
     # Log peak memory usage
     memory_stats = log_gpu_memory(gpu_ids, "peak during validation")
@@ -424,6 +440,12 @@ def validate_one_epoch_multigpu(
     # Reset metrics for next validation
     for metric in metrics:
         metric.reset()
+    
+    # Set model back to training mode
+    diffusion.train()
+    
+    # Final memory cleanup before returning to training
+    torch.cuda.empty_cache()
     
     return results
 
