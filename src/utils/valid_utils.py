@@ -224,7 +224,7 @@ def sample_parallel(
     gpu_ids: List[int],
 ) -> torch.Tensor:
     """
-    Sample in parallel across multiple GPUs using CUDA streams.
+    Sample in parallel across multiple GPUs using CUDA streams and threading.
     
     Parameters
     ----------
@@ -244,10 +244,11 @@ def sample_parallel(
         
     Notes
     -----
-    Each GPU processes its portion of the batch independently.
+    Each GPU processes its portion of the batch independently using threads.
     Results are gathered to CPU (not GPU 0) to avoid memory accumulation.
-    CUDA streams enable true parallel execution across GPUs.
+    CUDA streams + threading enable true parallel execution across GPUs.
     """
+    import threading
     from src.models.wrappers.conditional_wrapper import ConditionalModelWrapper
     from src.diffusion.openai_adapter import _SamplingModelWrapper
     
@@ -267,12 +268,14 @@ def sample_parallel(
     # Create CUDA streams
     streams = [torch.cuda.Stream(device=f'cuda:{gpu_id}') for gpu_id in gpu_ids]
     
-    # Launch sampling on each GPU
+    # Storage for results and threads
     results = [None] * num_gpus
+    threads = []
     
-    for i, (gpu_id, stream, model, split) in enumerate(zip(gpu_ids, streams, models, splits)):
+    def sample_worker(idx, gpu_id, stream, model, split):
+        """Worker function to run sampling on a specific GPU in a separate thread."""
         if split.shape[0] == 0:
-            continue
+            return
             
         device = f'cuda:{gpu_id}'
         
@@ -281,7 +284,7 @@ def sample_parallel(
             split_device = split.to(device, non_blocking=True)
             
             # Sample on this device
-            results[i] = sample_on_device(
+            results[idx] = sample_on_device(
                 diffusion_params=diffusion_params,
                 model=model,
                 wrapped_model_class=ConditionalModelWrapper,
@@ -292,9 +295,18 @@ def sample_parallel(
                 ddim_eta=diffusion_adapter.ddim_eta,
             )
     
-    # Synchronize all streams
-    for stream in streams:
-        stream.synchronize()
+    # Launch sampling threads for each GPU
+    for i, (gpu_id, stream, model, split) in enumerate(zip(gpu_ids, streams, models, splits)):
+        thread = threading.Thread(
+            target=sample_worker,
+            args=(i, gpu_id, stream, model, split)
+        )
+        thread.start()
+        threads.append(thread)
+    
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
     
     # Gather results from CPU tensors
     valid_results = [r for r in results if r is not None]
