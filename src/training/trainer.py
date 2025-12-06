@@ -494,6 +494,16 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             # Skip this batch but continue training
             print(f"  Skipping batch and resetting gradients...")
             optimizer.zero_grad()
+            
+            # Aggressive cleanup to prevent cascading failures
+            print(f"  Clearing CUDA cache to prevent memory fragmentation...")
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Reset accumulation counter to avoid partial updates
+            accumulation_counter = 0
+            
+            print(f"  Recovery complete. Continuing training from next batch...")
             continue
         
         # Scale loss for gradient accumulation (normalized to integer, always safe to divide)
