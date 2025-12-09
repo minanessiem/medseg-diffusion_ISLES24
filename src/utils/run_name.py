@@ -358,15 +358,25 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     architecture = model['architecture']
     
     if architecture == 'org_medsegdiff':
-        # ORGMedSegDiff: {arch}_{version}_{size}_{channels}c_{channel_mult}_{res_blocks}rb_{heads}h
-        # Example: org_medsegdiff_new_256_128c_1-2-4-8_2rb_4h (S variant)
-        #          org_medsegdiff_new_256_128c_1-2-4-4-8_2rb_4h (B variant)
-        #          org_medsegdiff_new_256_128c_1-1-2-2-4-4_2rb_4h (L variant)
+        # ORGMedSegDiff: {arch}_{version}_{size}_{channels}c_{channel_mult}_{res_blocks}rb_{heads}h[_hwy|_nohwy]
+        # Example: org_medsegdiff_new_256_128c_1-2-4-8_2rb_4h_hwy (S variant with highway)
+        #          org_medsegdiff_new_256_128c_1-2-4-8_2rb_4h_nohwy (S variant without highway)
+        #          org_medsegdiff_new_256_128c_1-2-4-4-8_2rb_4h_hwy (B variant)
+        #          org_medsegdiff_new_256_128c_1-1-2-2-4-4_2rb_4h_hwy (L variant)
         version = model.get('version', 'new')
         channel_mult = model.get('channel_mult', '').replace(',', '-')
+        
+        # Highway network indicator
+        highway_cfg = model.get('highway', {})
+        if isinstance(highway_cfg, dict):
+            highway_enabled = highway_cfg.get('enabled', True)
+        else:
+            highway_enabled = highway_cfg.enabled if hasattr(highway_cfg, 'enabled') else True
+        highway_str = "hwy" if highway_enabled else "nohwy"
+        
         model_str = (f"{architecture}_{version}_{model['image_size']}_"
                      f"{model['model_channels']}c_{channel_mult}_"
-                     f"{model.get('num_res_blocks', 2)}rb_{model.get('num_heads', 4)}h")
+                     f"{model.get('num_res_blocks', 2)}rb_{model.get('num_heads', 4)}h_{highway_str}")
     elif architecture == 'diffswintr':
         # DiffSwinTr: diffswintr_{size}_{embed_dim}d_{depths}_{num_heads}h_{window_size}w[_cem]
         # Example: diffswintr_256_64d_2-2-2-2_2-4-8-16h_8w_cem (Small with CEM)
