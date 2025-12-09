@@ -571,6 +571,7 @@ class UNetModel_v1preview(nn.Module):
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
+        self.high_way = high_way  # Store highway flag for forward() check
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -797,8 +798,14 @@ class UNetModel_v1preview(nn.Module):
                 emb = emb.squeeze()
             h = module(h, emb)
             hs.append(h)
-        uemb, cal = self.highway_forward(c, [hs[3],hs[6],hs[9],hs[12]])
-        h = h + uemb
+        
+        # Only use highway if enabled
+        if self.high_way:
+            uemb, cal = self.highway_forward(c, [hs[3],hs[6],hs[9],hs[12]])
+            h = h + uemb
+        else:
+            cal = None
+        
         h = self.middle_block(h, emb)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
@@ -880,6 +887,7 @@ class UNetModel_newpreview(nn.Module):
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
+        self.high_way = high_way  # Store highway flag for forward() check
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -1100,13 +1108,22 @@ class UNetModel_newpreview(nn.Module):
 
         h = x.type(self.dtype)
         c = h[:,:-1,...]
-        anch, cal = self.highway_forward(c)
+        
+        # Only use highway if enabled
+        if self.high_way:
+            anch, cal = self.highway_forward(c)
+        else:
+            anch = None
+            cal = None
+        
         for ind, module in enumerate(self.input_blocks):
             if len(emb.size()) > 2:
                 emb = emb.squeeze()
             if ind == 0:
                 h = module(h, emb)
-                h = h + th.cat((anch[0], anch[0], anch[1]),1).detach() # 32 + 32 + 64 in 256 res
+                # Only add anchor features if highway is enabled
+                if anch is not None:
+                    h = h + th.cat((anch[0], anch[0], anch[1]),1).detach() # 32 + 32 + 64 in 256 res
             else:
                 h = module(h, emb)
             hs.append(h)
