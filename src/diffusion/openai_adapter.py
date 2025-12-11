@@ -97,6 +97,16 @@ class GaussianDiffusionAdapter(Diffusion):
         
         OmegaConf.set_struct(cfg, False)
         
+        # Parse AMP config for use during sampling
+        amp_cfg = cfg.training.get('amp', {})
+        self.amp_enabled = amp_cfg.get('enabled', False)
+        amp_dtype_str = amp_cfg.get('dtype', 'float32')
+        self.amp_dtype = {
+            'float16': torch.float16,
+            'bfloat16': torch.bfloat16,
+            'float32': torch.float32,
+        }.get(amp_dtype_str, torch.float32)
+        
         # Parse core diffusion parameters
         self.timesteps = cfg.diffusion.timesteps
         self.noise_schedule = cfg.diffusion.noise_schedule
@@ -498,7 +508,11 @@ class GaussianDiffusionAdapter(Diffusion):
         # Wrap model for sampling (handles tuple outputs from ORGMedSegDiff)
         sampling_model = _SamplingModelWrapper(self.wrapped_model)
         
-        with torch.no_grad():
+        # Use AMP autocast during sampling if enabled (critical for memory parity with training)
+        # Without this, sampling runs in FP32 even when training uses BF16/FP16
+        from torch.amp import autocast
+        
+        with torch.no_grad(), autocast(device_type='cuda', enabled=self.amp_enabled, dtype=self.amp_dtype):
             if self.sampling_mode == 'ddim':
                 # DDIM sampling (fast)
                 samples = self.diffusion.ddim_sample_loop(
@@ -561,7 +575,10 @@ class GaussianDiffusionAdapter(Diffusion):
         # Wrap model for sampling (handles tuple outputs from ORGMedSegDiff)
         sampling_model = _SamplingModelWrapper(self.wrapped_model)
         
-        with torch.no_grad():
+        # Use AMP autocast during sampling if enabled
+        from torch.amp import autocast
+        
+        with torch.no_grad(), autocast(device_type='cuda', enabled=self.amp_enabled, dtype=self.amp_dtype):
             step_count = 0
             for sample_dict in self.diffusion.p_sample_loop_progressive(
                 model=sampling_model,

@@ -53,7 +53,7 @@ def generate_loss_string(loss_cfg):
         loss_cfg: Loss configuration dict or DictConfig
         
     Returns:
-        str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw10_d05_b05_w25h')
+        str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw10_d05_b05_cal100_w25h')
     """
     # Handle both dict and DictConfig
     if hasattr(loss_cfg, 'loss_type'):
@@ -80,6 +80,11 @@ def generate_loss_string(loss_cfg):
         bce = aux.get('bce', {})
         if bce.get('enabled', False) and bce.get('weight', 0) > 0:
             parts.append(f"b{format_loss_weight(bce['weight'])}")
+        
+        # Calibration (only if enabled and weight > 0)
+        calibration = aux.get('calibration', {})
+        if calibration.get('enabled', False) and calibration.get('weight', 0) > 0:
+            parts.append(f"cal{format_loss_weight(calibration['weight'])}")
         
         # Warmup
         warmup = aux.get('warmup_steps', 0)
