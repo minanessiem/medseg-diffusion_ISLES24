@@ -1,0 +1,28 @@
+# MedSegDiff Medium-Simple - Increased channel capacity with STABLE attention
+# ~4x parameters vs. 16c variant due to doubled channels, keeps stable attention config
+#
+# Changes from 16c baseline:
+# - first_conv_channels: 16 → 32 (channel progression: 32→64→128→256)
+# - Everything else UNCHANGED to isolate the capacity increase effect
+#
+# This avoids the instability seen in 8x8 attention (medsegdiff_256_4l_32c_8x8a_256t_2btl_medium.yaml)
+# which caused OOMs and gradient explosions.
+#
+# Memory: Fits batch_size=16 on single GPU with AMP BF16
+# Use with: scheduler=warmup_cosine_10pct, optimizer=adamw_5e5lr_wd00 (lower LR for stability)
+
+image_size: 256
+num_layers: 4
+weight_initializer: InitWeights_He
+linear_attn_layers: null  # [T, T, T, F] - linear attention for first 3 layers
+skip_connect_image_feature_maps: false
+first_conv_channels: 32           # Doubled from 16 → channel progression: 32→64→128→256
+time_embedding_dim: 128           # Keep stable (don't increase to 256)
+mask_channels: 1
+output_channels: 1
+image_channels: ${dataset.num_modalities}  # Auto-derived (2 for CBF+TMAX)
+att_heads: 6                      # Keep stable (not 8)
+att_head_dim: 4                   # Keep stable (not 8) - total attention dim: 24
+bottleneck_transformer_layers: 1  # Keep stable (not 2)
+architecture: "medsegdiff"
+
