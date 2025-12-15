@@ -36,15 +36,27 @@ def format_loss_warmup(steps):
     return str(steps)
 
 def format_loss_weight(weight):
-    """Format loss weight as 2-digit string.
+    """Format loss weight as compact string.
+    
+    Handles weights from 0.01 to 9.99 using 3-digit format (weight × 100).
     
     Args:
-        weight: Float weight value (e.g., 0.5, 1.0)
+        weight: Float weight value (e.g., 0.01, 0.5, 1.0, 2.0)
         
     Returns:
-        str: 2-digit string (e.g., 0.5 -> '05', 1.0 -> '10')
+        str: 3-digit string representation
+        
+    Examples:
+        0.01 -> '001'
+        0.1  -> '010'
+        0.5  -> '050'
+        1.0  -> '100'
+        2.0  -> '200'
     """
-    return f"{int(weight * 100):02d}"
+    # Use 3-digit format: weight * 100, zero-padded
+    # This handles 0.01 to 9.99 range cleanly
+    scaled = int(weight * 100)
+    return f"{scaled:03d}"
 
 def generate_loss_string(loss_cfg):
     """Generate loss substring for run name.
