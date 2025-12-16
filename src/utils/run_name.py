@@ -58,6 +58,42 @@ def format_loss_weight(weight):
     scaled = int(weight * 100)
     return f"{scaled:03d}"
 
+
+def format_dice_smooth(smooth):
+    """Format Dice smooth parameter as compact string.
+    
+    Encodes smooth value as negative exponent for 1e-X values.
+    This makes the smooth parameter visible in run names for experiment tracking.
+    
+    Args:
+        smooth: Float smooth value (e.g., 1e-8, 1e-5, 1.0)
+        
+    Returns:
+        str: Compact smooth string using 'sm' prefix + exponent
+        
+    Examples:
+        1e-8 -> 'sm8'
+        1e-5 -> 'sm5'
+        1e-6 -> 'sm6'
+        1.0  -> 'sm0'
+        0.1  -> 'sm1' (1e-1)
+    """
+    import math
+    if smooth <= 0:
+        return "sm0"
+    
+    # Get the exponent: log10(1e-5) = -5, log10(1.0) = 0
+    exponent = math.log10(smooth)
+    
+    # For 1e-X values, exponent is -X, so negate it
+    # For 1.0 (1e0), exponent is 0
+    neg_exp = int(round(-exponent))
+    
+    # Clamp to reasonable range (0-9)
+    neg_exp = max(0, min(9, neg_exp))
+    
+    return f"sm{neg_exp}"
+
 def generate_loss_string(loss_cfg):
     """Generate loss substring for run name.
     
@@ -65,7 +101,7 @@ def generate_loss_string(loss_cfg):
         loss_cfg: Loss configuration dict or DictConfig
         
     Returns:
-        str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw10_d05_b05_cal100_w25h')
+        str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw100_d010sm5_b010_cal100_w25h')
     """
     # Handle both dict and DictConfig
     if hasattr(loss_cfg, 'loss_type'):
@@ -86,7 +122,9 @@ def generate_loss_string(loss_cfg):
         # Dice (only if enabled and weight > 0)
         dice = aux.get('dice', {})
         if dice.get('enabled', False) and dice.get('weight', 0) > 0:
-            parts.append(f"d{format_loss_weight(dice['weight'])}")
+            weight_str = format_loss_weight(dice['weight'])
+            smooth_str = format_dice_smooth(dice['smooth'])
+            parts.append(f"d{weight_str}{smooth_str}")
         
         # BCE (only if enabled and weight > 0)
         bce = aux.get('bce', {})

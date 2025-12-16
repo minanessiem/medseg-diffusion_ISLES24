@@ -30,7 +30,7 @@ class DiceLoss(nn.Module):
     predictions without binarization to enable gradient flow.
     
     Mathematical Formula:
-        Dice Coefficient: DC = (2 * intersection) / (pred_sum + true_sum + smooth)
+        Dice Coefficient: DC = (2 * intersection + smooth) / (pred_sum + true_sum + smooth)
         Dice Loss: 1 - DC (for minimization)
     
     Where:
@@ -48,9 +48,10 @@ class DiceLoss(nn.Module):
         enabling the model to learn segmentation boundaries.
     
     Args:
-        smooth (float): Smoothing constant for numerical stability.
-                       Matches epsilon in DiceNativeCoefficient.
-                       Typical values: 1e-8 (tight) to 1.0 (relaxed).
+        smooth (float): Smoothing constant added to both numerator and denominator
+                       for numerical stability. Prevents gradient explosions when
+                       predictions or targets have few foreground pixels.
+                       Typical values: 1e-5 (MONAI default) to 1.0 (relaxed).
         apply_sigmoid (bool): Whether to apply sigmoid to predictions.
                              Set to False if model already outputs [0,1].
                              Set to True if model outputs logits.
@@ -106,8 +107,9 @@ class DiceLoss(nn.Module):
         # Intersection (element-wise product for soft Dice)
         intersection = torch.sum(y_pred * y_true)
         
-        # Dice coefficient (identical formula to metric)
-        dice_coef = (2.0 * intersection) / (pred_sum + true_sum + self.smooth)
+        # Dice coefficient with smooth in both numerator and denominator
+        # This prevents gradient explosions when sums are small (sparse masks)
+        dice_coef = (2.0 * intersection + self.smooth) / (pred_sum + true_sum + self.smooth)
         
         # Return Dice loss (1 - coefficient for minimization)
         dice_loss = 1.0 - dice_coef
@@ -124,7 +126,7 @@ class DiceLossPerSample(nn.Module):
     different samples have very different foreground ratios.
     
     Mathematical Formula (per sample i):
-        DC_i = (2 * intersection_i) / (pred_sum_i + true_sum_i + smooth)
+        DC_i = (2 * intersection_i + smooth) / (pred_sum_i + true_sum_i + smooth)
         Loss = mean(1 - DC_i)
     
     Advantages over batch-level DiceLoss:
@@ -137,11 +139,12 @@ class DiceLossPerSample(nn.Module):
         - May be less stable for very small masks
     
     Args:
-        smooth (float): Smoothing constant for numerical stability
+        smooth (float): Smoothing constant added to both numerator and denominator.
+                       Typical values: 1e-5 (MONAI default) to 1.0 (relaxed).
         apply_sigmoid (bool): Whether to apply sigmoid to predictions
     
     Example:
-        >>> dice_loss = DiceLossPerSample(smooth=1e-8, apply_sigmoid=False)
+        >>> dice_loss = DiceLossPerSample(smooth=1e-5, apply_sigmoid=False)
         >>> pred = torch.rand(4, 1, 64, 64)  # Batch of 4 samples
         >>> target = torch.randint(0, 2, (4, 1, 64, 64)).float()
         >>> loss = dice_loss(pred, target)
@@ -180,7 +183,8 @@ class DiceLossPerSample(nn.Module):
         pred_sum = torch.sum(y_pred_flat, dim=1)  # [B]
         true_sum = torch.sum(y_true_flat, dim=1)  # [B]
         
-        dice_coef = (2.0 * intersection) / (pred_sum + true_sum + self.smooth)  # [B]
+        # Smooth in both numerator and denominator for gradient stability
+        dice_coef = (2.0 * intersection + self.smooth) / (pred_sum + true_sum + self.smooth)  # [B]
         
         # Average Dice loss across batch
         dice_loss = 1.0 - dice_coef.mean()
@@ -382,7 +386,7 @@ class CombinedSegmentationLoss(nn.Module):
         L_total = w_dice * L_dice + w_bce * L_bce
     
     Where:
-        L_dice = 1 - (2 * intersection) / (pred_sum + true_sum + smooth)
+        L_dice = 1 - (2 * intersection + smooth) / (pred_sum + true_sum + smooth)
         L_bce = -mean(y_true * log(y_pred) + (1 - y_true) * log(1 - y_pred))
     
     Design Rationale:

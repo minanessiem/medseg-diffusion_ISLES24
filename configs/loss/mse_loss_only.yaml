@@ -15,7 +15,7 @@ auxiliary_losses:
   dice:
     enabled: false
     weight: 0.0
-    smooth: 1.0e-8
+    smooth: 1.0e-5  # MONAI default - stable for gradient computation
     apply_sigmoid: false
   bce:
     enabled: false
