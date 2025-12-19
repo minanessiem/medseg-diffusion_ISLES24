@@ -278,8 +278,10 @@ class BCELoss(nn.Module):
                 # Convert to float32 FIRST, then clamp to ensure precision
                 y_pred_fp32 = y_pred.float()
                 y_true_fp32 = y_true.float()
-                # Clamp to strict [0, 1] range (BCE requires this)
-                y_pred_clamped = torch.clamp(y_pred_fp32, min=0.0, max=1.0)
+                # Clamp to (eps, 1-eps) to prevent log(0) = -inf gradient explosions
+                # eps=1e-7 is standard (TensorFlow/Keras default, MONAI, etc.)
+                _BCE_EPS = 1e-7
+                y_pred_clamped = torch.clamp(y_pred_fp32, min=_BCE_EPS, max=1.0 - _BCE_EPS)
                 y_true_clamped = torch.clamp(y_true_fp32, min=0.0, max=1.0)
                 return F.binary_cross_entropy(
                     y_pred_clamped, y_true_clamped, 
@@ -366,8 +368,9 @@ class CalibrationLoss(nn.Module):
                 # Convert to float32 FIRST, then clamp to ensure precision
                 cal_fp32 = cal.float()
                 target_fp32 = target.float()
-                # Clamp to strict [0, 1] range (BCE requires this)
-                cal_clamped = torch.clamp(cal_fp32, min=0.0, max=1.0)
+                # Clamp to (eps, 1-eps) to prevent log(0) = -inf gradient explosions
+                _BCE_EPS = 1e-7
+                cal_clamped = torch.clamp(cal_fp32, min=_BCE_EPS, max=1.0 - _BCE_EPS)
                 target_clamped = torch.clamp(target_fp32, min=0.0, max=1.0)
                 return F.binary_cross_entropy(
                     cal_clamped, target_clamped, reduction='mean'
