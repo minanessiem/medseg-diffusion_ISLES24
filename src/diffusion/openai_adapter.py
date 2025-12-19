@@ -210,6 +210,9 @@ class GaussianDiffusionAdapter(Diffusion):
             self.cal_loss_fn = None
             self.cal_weight = 0
         
+        # Initialize loss components tracker for debugging
+        self.last_loss_components = {}
+        
         # Console output
         print("[OpenAI Adapter] Multi-task loss enabled:")
         print(f"  Diffusion weight: {self.diffusion_weight}")
@@ -454,6 +457,9 @@ class GaussianDiffusionAdapter(Diffusion):
             
             # Add total loss for logging
             loss_components['total'] = loss.item()
+        
+        # Store loss components for debugging (accessible via diffusion.last_loss_components)
+        self.last_loss_components = loss_components
         
         # Compute pred_x0 for logging if needed (even if aux losses disabled)
         if return_intermediates:

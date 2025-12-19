@@ -617,6 +617,25 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             logger.logkv_mean('grad_norm_pre_clip', grad_norm_pre_clip, accumulator='train')
             logger.logkv_mean('grad_clip_ratio', clip_ratio, accumulator='train')
         
+        # Verbose spike logging for debugging gradient explosions
+        # Enable with +debug=true or when grad_norm exceeds thresholds
+        debug_mode = cfg.get('debug', False)
+        if grad_norm_pre_clip > 1e6:
+            print(f"\n{'='*60}")
+            print(f"[SPIKE ALERT] EXTREME gradient spike at step {global_step}!")
+            print(f"  grad_norm_pre_clip: {grad_norm_pre_clip:.2e}")
+            print(f"  grad_norm_post_clip: {grad_norm:.4f}")
+            print(f"  loss: {accumulated_loss:.6f}")
+            if hasattr(diffusion, 'last_loss_components') and diffusion.last_loss_components:
+                print(f"  loss_components: {diffusion.last_loss_components}")
+            print(f"{'='*60}\n")
+        elif grad_norm_pre_clip > 1000 and debug_mode:
+            print(f"[SPIKE] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2e} loss={accumulated_loss:.6f}")
+        elif grad_norm_pre_clip > 100 and debug_mode:
+            print(f"[HIGH] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2f}")
+        elif grad_norm_pre_clip > 10 and debug_mode:
+            print(f"[ELEVATED] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2f}")
+        
         # Validation check
         if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
             # Free memory before validation
