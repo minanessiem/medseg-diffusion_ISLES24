@@ -142,6 +142,32 @@ def generate_loss_string(loss_cfg):
     
     return '_'.join(parts)
 
+
+def format_clip_norm(clip_norm):
+    """Format gradient clip_norm for run name.
+    
+    Args:
+        clip_norm: Float clip norm value or None (disabled)
+        
+    Returns:
+        str: Formatted clip string, or empty string if disabled
+        
+    Examples:
+        1.0  -> 'clip1'
+        10.0 -> 'clip10'
+        50.0 -> 'clip50'
+        None -> ''  (omitted from run name)
+    """
+    if clip_norm is None:
+        return ""
+    
+    # Format as integer if whole number, otherwise one decimal
+    if clip_norm == int(clip_norm):
+        return f"clip{int(clip_norm)}"
+    else:
+        return f"clip{clip_norm:.1f}"
+
+
 def generate_optimizer_string(opt_cfg):
     """Generate optimizer string from separated config.
     
@@ -474,6 +500,10 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     optimizer_str = generate_optimizer_string(optimizer)
     scheduler_str = generate_scheduler_string(scheduler)
     
+    # Gradient clipping string (only if clip_norm is set)
+    clip_norm = training['gradient']['clip_norm']
+    clip_str = format_clip_norm(clip_norm)
+    
     # Training steps: 100000 -> 100K
     max_steps = training['max_steps']
     if max_steps >= 1000 and max_steps % 1000 == 0:
@@ -516,10 +546,14 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
     # Insert amp_str after batch_str (only if non-empty)
+    # Insert clip_str after optimizer_str (only if non-empty)
     parts = [model_str, batch_str]
     if amp_str:  # Only add AMP string if enabled (FP16/BF16)
         parts.append(amp_str)
-    parts.extend([optimizer_str, scheduler_str, steps_str, loss_str, aug_str, diffusion_str, timestamp])
+    parts.append(optimizer_str)
+    if clip_str:  # Only add clip string if clip_norm is set
+        parts.append(clip_str)
+    parts.extend([scheduler_str, steps_str, loss_str, aug_str, diffusion_str, timestamp])
     
     run_name = '_'.join(parts)
     
