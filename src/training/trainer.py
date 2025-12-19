@@ -625,12 +625,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             print(f"[SPIKE ALERT] EXTREME gradient spike at step {global_step}!")
             print(f"  grad_norm_pre_clip: {grad_norm_pre_clip:.2e}")
             print(f"  grad_norm_post_clip: {grad_norm:.4f}")
-            print(f"  loss: {accumulated_loss:.6f}")
             if hasattr(diffusion, 'last_loss_components') and diffusion.last_loss_components:
                 print(f"  loss_components: {diffusion.last_loss_components}")
             print(f"{'='*60}\n")
         elif grad_norm_pre_clip > 1000 and debug_mode:
-            print(f"[SPIKE] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2e} loss={accumulated_loss:.6f}")
+            comps = getattr(diffusion, 'last_loss_components', {})
+            print(f"[SPIKE] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2e} {comps}")
         elif grad_norm_pre_clip > 100 and debug_mode:
             print(f"[HIGH] step={global_step} grad_norm_pre_clip={grad_norm_pre_clip:.2f}")
         elif grad_norm_pre_clip > 10 and debug_mode:
