@@ -152,7 +152,9 @@ def setup_output_directory(cfg: DictConfig, run_name: str) -> str:
     Returns:
         Path to run output directory (with trailing slash)
     """
-    run_output_dir = f"{cfg.environment.training.output_root}{run_name}/"
+    # Normalize output_root to ensure trailing slash (defensive against user input)
+    output_root = cfg.environment.training.output_root.rstrip('/') + '/'
+    run_output_dir = f"{output_root}{run_name}/"
     os.makedirs(run_output_dir, exist_ok=True)
     os.makedirs(f"{run_output_dir}tensorboard/", exist_ok=True)
     os.makedirs(f"{run_output_dir}{cfg.environment.training.model_save_dir}", exist_ok=True)
