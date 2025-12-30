@@ -100,6 +100,11 @@ class DiceLoss(nn.Module):
         if self.apply_sigmoid:
             y_pred = torch.sigmoid(y_pred)
         
+        # Handle NaN values: replace with 0 (no prediction) to prevent NaN propagation
+        # This can happen with aggressive LR scaling or numerical instability
+        if torch.isnan(y_pred).any():
+            y_pred = torch.where(torch.isnan(y_pred), torch.zeros_like(y_pred), y_pred)
+        
         # Compute sums (same formula as DiceNativeCoefficient)
         pred_sum = torch.sum(y_pred)
         true_sum = torch.sum(y_true)
@@ -278,6 +283,12 @@ class BCELoss(nn.Module):
                 # Convert to float32 FIRST, then clamp to ensure precision
                 y_pred_fp32 = y_pred.float()
                 y_true_fp32 = y_true.float()
+                
+                # Handle NaN values: torch.clamp does NOT fix NaN (NaN comparisons return NaN)
+                # Replace NaN with 0.5 (neutral prediction) to prevent CUDA assertion failures
+                # This can happen with aggressive LR scaling or numerical instability
+                y_pred_fp32 = torch.where(torch.isnan(y_pred_fp32), torch.tensor(0.5, device=y_pred_fp32.device, dtype=y_pred_fp32.dtype), y_pred_fp32)
+                
                 # Clamp to (eps, 1-eps) to prevent log(0) = -inf gradient explosions
                 # eps=1e-7 is standard (TensorFlow/Keras default, MONAI, etc.)
                 _BCE_EPS = 1e-7
@@ -368,6 +379,11 @@ class CalibrationLoss(nn.Module):
                 # Convert to float32 FIRST, then clamp to ensure precision
                 cal_fp32 = cal.float()
                 target_fp32 = target.float()
+                
+                # Handle NaN values: torch.clamp does NOT fix NaN (NaN comparisons return NaN)
+                # Replace NaN with 0.5 (neutral prediction) to prevent CUDA assertion failures
+                cal_fp32 = torch.where(torch.isnan(cal_fp32), torch.tensor(0.5, device=cal_fp32.device, dtype=cal_fp32.dtype), cal_fp32)
+                
                 # Clamp to (eps, 1-eps) to prevent log(0) = -inf gradient explosions
                 _BCE_EPS = 1e-7
                 cal_clamped = torch.clamp(cal_fp32, min=_BCE_EPS, max=1.0 - _BCE_EPS)

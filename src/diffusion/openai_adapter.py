@@ -406,6 +406,12 @@ class GaussianDiffusionAdapter(Diffusion):
             cal = None
             has_calibration_output = False
         
+        # NaN detection on model output: early warning for training instability
+        if torch.isnan(noise_hat).any():
+            nan_count = torch.isnan(noise_hat).sum().item()
+            total_elements = noise_hat.numel()
+            print(f"[NaN CRITICAL] step={global_step}: Model output (noise_hat) contains {nan_count}/{total_elements} NaN values! Model weights likely corrupted.")
+        
         # Compute primary diffusion loss (MSE on noise)
         # Note: This assumes model_mean_type=EPSILON (noise prediction)
         # For START_X or PREVIOUS_X modes, target would be different
@@ -429,10 +435,24 @@ class GaussianDiffusionAdapter(Diffusion):
             # Clamp to [-1, 1] range (reconstruction can produce values outside this range)
             pred_x0 = torch.clamp(pred_x0, -1.0, 1.0)
             
+            # NaN detection: warn if model is producing NaN (indicates training instability)
+            if torch.isnan(pred_x0).any():
+                nan_count = torch.isnan(pred_x0).sum().item()
+                total_elements = pred_x0.numel()
+                print(f"[NaN WARNING] step={global_step}: pred_x0 contains {nan_count}/{total_elements} NaN values. Training may be unstable - consider reducing LR.")
+            
             # Denormalize pred_x0 from [-1, 1] to [0, 1] for loss computation
             # (Dice/BCE expect [0, 1] range, not [-1, 1])
             pred_x0_denorm = unnormalize_to_zero_to_one(pred_x0)
-            mask_denorm = mask  # Already in [0, 1]
+            
+            # CRITICAL: Explicit clamp to [0, 1] for BOTH predictions and masks
+            # This prevents BCE CUDA assertion failures that occur when values are
+            # slightly outside [0, 1] due to:
+            # - Numerical precision in multi-GPU (DataParallel) setups
+            # - Augmentation edge cases
+            # - Float32/BFloat16 precision differences
+            pred_x0_denorm = torch.clamp(pred_x0_denorm, 0.0, 1.0)
+            mask_denorm = torch.clamp(mask, 0.0, 1.0)  # Don't assume mask is in [0, 1]
             
             # Dice loss
             if self.dice_loss_fn is not None and self.dice_weight > 0:
@@ -450,7 +470,10 @@ class GaussianDiffusionAdapter(Diffusion):
             # Calibration is the highway network's direct segmentation prediction
             if self.cal_loss_fn is not None and self.cal_weight > 0:
                 if has_calibration_output and cal is not None:
-                    cal_loss = self.cal_loss_fn(cal, mask_denorm)
+                    # Clamp calibration output to [0, 1] - it should already be in range
+                    # (sigmoid applied in model) but precision issues can cause assertion failures
+                    cal_clamped = torch.clamp(cal, 0.0, 1.0)
+                    cal_loss = self.cal_loss_fn(cal_clamped, mask_denorm)
                     loss = loss + self.cal_weight * cal_loss
                     loss_components['cal'] = cal_loss.item()
                 # If model doesn't support calibration, silently skip
