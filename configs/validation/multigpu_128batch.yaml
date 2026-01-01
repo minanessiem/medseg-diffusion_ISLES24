@@ -1,0 +1,12 @@
+# Multi-GPU validation with large batch size
+# For 4-GPU training runs with distributed validation
+#
+# Usage: validation=multigpu_128batch
+
+defaults:
+  - default
+
+val_batch_size: 128
+multi_gpu_validation: true
+
+
