@@ -37,22 +37,8 @@ def apply_override(cfg: Dict, override: str) -> Dict:
         potential_file = f"configs/{config_group}/{value}.yaml"
         
         if os.path.exists(potential_file):
-            # This is a config group reference - load the file
-            with open(potential_file, 'r') as f:
-                group_cfg = yaml.safe_load(f)
-            
-            # Recursively resolve defaults in the loaded config
-            if 'defaults' in group_cfg:
-                # Handle defaults (e.g., if mse_loss_only inherits from another config)
-                for default in group_cfg['defaults']:
-                    if isinstance(default, str) and default != '_self_':
-                        # Load base config from same group
-                        base_path = f"configs/{config_group}/{default}.yaml"
-                        if os.path.exists(base_path):
-                            with open(base_path, 'r') as f:
-                                base_cfg = yaml.safe_load(f)
-                            group_cfg = deep_merge(base_cfg, group_cfg)
-                del group_cfg['defaults']  # Clean up
+            # Use load_group_config to recursively resolve all defaults
+            group_cfg = load_group_config(config_group, value)
             
             # Resolve any interpolations in the loaded config
             group_cfg = resolve_interpolations(group_cfg, cfg)
@@ -128,6 +114,51 @@ def resolve_interpolations(cfg: Dict, root: Dict = None) -> Dict:
         return current
     return cfg
 
+def load_group_config(group: str, name: str) -> Dict:
+    """
+    Load a config file from a config group, recursively resolving its defaults.
+    
+    Args:
+        group: Config group directory (e.g., 'training', 'loss', 'model')
+        name: Config file name without .yaml extension
+        
+    Returns:
+        Fully resolved config dict with all defaults merged
+    """
+    config_path = f"configs/{group}/{name}.yaml"
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        cfg = yaml.safe_load(f) or {}
+    
+    # Recursively resolve defaults within this config
+    if 'defaults' in cfg:
+        base_cfg = {}
+        for default in cfg['defaults']:
+            if isinstance(default, str):
+                if default == '_self_':
+                    continue
+                # Load base config from same group
+                sub_cfg = load_group_config(group, default)
+                base_cfg = deep_merge(base_cfg, sub_cfg)
+            elif isinstance(default, dict):
+                # Handle nested group references (less common in group configs)
+                key, file_name = next(iter(default.items()))
+                if key.startswith('override /'):
+                    section = key[len('override /'):].strip()
+                else:
+                    section = key
+                sub_cfg = load_group_config(section, file_name)
+                base_cfg[section] = sub_cfg
+        
+        # Remove defaults key and merge: base first, then current config overrides
+        del cfg['defaults']
+        cfg = deep_merge(base_cfg, cfg)
+    
+    return cfg
+
+
 def load_config(config_name: str, overrides: List[str]) -> Dict:
     """Load and merge YAML configs mimicking basic Hydra composition."""
     config_path = f"configs/{config_name}.yaml"  # Relative from project root
@@ -156,9 +187,8 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
                 else:
                     section = key
                 
-                sub_path = f"configs/{section}/{file_name}.yaml"
-                with open(sub_path, 'r') as f:
-                    sub_cfg = yaml.safe_load(f)
+                # Use load_group_config to recursively resolve defaults
+                sub_cfg = load_group_config(section, file_name)
                 
                 # Override replaces, normal default merges
                 if is_override:
