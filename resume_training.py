@@ -39,6 +39,15 @@ Notes:
 """
 
 # ============================================================================
+# CRITICAL: Set CUDA memory allocator config BEFORE any CUDA initialization
+# This helps avoid OOM errors caused by memory fragmentation when PyTorch
+# reserves memory but doesn't use it all. Must be set before torch import.
+# See: https://pytorch.org/docs/stable/notes/cuda.html#environment-variables
+# ============================================================================
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# ============================================================================
 # CRITICAL: Import MONAI FIRST, before any other imports
 # MONAI must be imported before CUDA context is created or any library that
 # might initialize CUDA (like TensorBoard/TensorFlow).
