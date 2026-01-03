@@ -1,0 +1,15 @@
+# Linear warmup (30K absolute steps) + cosine annealing to 0
+# Use when scaling LR (e.g., 7.5e-5) to maintain same warmup rate as 5e-5/20K
+# Use with: python main.py scheduler=warmup_cosine_30Ksteps
+#
+# Warmup rate calculation:
+#   5e-5 / 20K = 2.5e-9 per step
+#   7.5e-5 / 30K = 2.5e-9 per step (same rate)
+
+scheduler_type: warmup_cosine
+warmup_steps: 30000           # Absolute 30K steps warmup
+warmup_fraction: null         # Ignored when warmup_steps is set
+eta_min: 0                    # Anneal to 0
+step_frequency: per_step      # Step every iteration
+
+
