@@ -1,0 +1,16 @@
+# Linear warmup (20K absolute steps) + cosine annealing to 0
+# Use when you want consistent warmup regardless of total training steps
+# Use with: python main.py scheduler=warmup_cosine_20Ksteps
+#
+# Unlike percentage-based warmup (warmup_cosine_5pct, warmup_cosine_10pct),
+# this config uses a fixed warmup duration. This is useful when:
+# - Comparing runs of different lengths (400K vs 800K steps)
+# - You want the same warmup behavior across experiments
+
+scheduler_type: warmup_cosine
+warmup_steps: 20000           # Absolute 20K steps warmup
+warmup_fraction: null         # Ignored when warmup_steps is set
+eta_min: 0                    # Anneal to 0
+step_frequency: per_step      # Step every iteration
+
+

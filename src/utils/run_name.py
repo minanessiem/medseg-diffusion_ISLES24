@@ -235,22 +235,36 @@ def generate_scheduler_string(sched_cfg):
         sched_type = sched_cfg['scheduler_type']  # Will raise KeyError if missing
     
     if sched_type == 'warmup_cosine':
-        # Get warmup fraction (required)
-        if hasattr(sched_cfg, 'warmup_fraction'):
-            warmup_frac = sched_cfg.warmup_fraction
+        # Check for absolute warmup_steps first, then fall back to warmup_fraction
+        warmup_steps = sched_cfg.warmup_steps if hasattr(sched_cfg, 'warmup_steps') else sched_cfg.get('warmup_steps')
+        if warmup_steps is not None:
+            # Absolute steps: format as "wcos20K" or "wcos40K"
+            warmup_str = format_loss_warmup(warmup_steps)
+            return f"wcos{warmup_str}"
         else:
-            warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
-        warmup_pct = int(warmup_frac * 100)
-        return f"wcos{warmup_pct}"
+            # Percentage-based: format as "wcos5" or "wcos10"
+            if hasattr(sched_cfg, 'warmup_fraction'):
+                warmup_frac = sched_cfg.warmup_fraction
+            else:
+                warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
+            warmup_pct = int(warmup_frac * 100)
+            return f"wcos{warmup_pct}"
     
     elif sched_type == 'warmup_constant':
-        # Get warmup fraction (required)
-        if hasattr(sched_cfg, 'warmup_fraction'):
-            warmup_frac = sched_cfg.warmup_fraction
+        # Check for absolute warmup_steps first, then fall back to warmup_fraction
+        warmup_steps = sched_cfg.warmup_steps if hasattr(sched_cfg, 'warmup_steps') else sched_cfg.get('warmup_steps')
+        if warmup_steps is not None:
+            # Absolute steps: format as "wcon20K" or "wcon40K"
+            warmup_str = format_loss_warmup(warmup_steps)
+            return f"wcon{warmup_str}"
         else:
-            warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
-        warmup_pct = int(warmup_frac * 100)
-        return f"wcon{warmup_pct}"
+            # Percentage-based: format as "wcon5" or "wcon10"
+            if hasattr(sched_cfg, 'warmup_fraction'):
+                warmup_frac = sched_cfg.warmup_fraction
+            else:
+                warmup_frac = sched_cfg['warmup_fraction']  # Will raise KeyError if missing
+            warmup_pct = int(warmup_frac * 100)
+            return f"wcon{warmup_pct}"
     
     elif sched_type == 'cosine':
         return "cos"
