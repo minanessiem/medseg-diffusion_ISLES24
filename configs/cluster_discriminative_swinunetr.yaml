@@ -23,3 +23,6 @@ defaults:
   - override /scheduler: warmup_cosine_20Ksteps
   - override /validation: default
 
+environment:
+  training:
+    output_root: '/mnt/outputs/discriminative_swinunetr_170126/'
