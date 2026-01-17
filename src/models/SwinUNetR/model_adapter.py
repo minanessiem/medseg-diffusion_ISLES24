@@ -25,7 +25,7 @@ class SwinUNetRAdapter(nn.Module):
         cfg (DictConfig): Hydra configuration object
     
     Required config keys:
-        cfg.model.image_size: Input image size (assumes square)
+        cfg.model.image_size: Input image size (for interface compatibility)
         cfg.model.image_channels: Number of input channels (modalities)
         cfg.model.out_channels: Number of output channels (1 for binary seg)
         cfg.model.feature_size: SwinUNETR feature dimension
@@ -50,8 +50,8 @@ class SwinUNetRAdapter(nn.Module):
         num_heads = self._parse_list(model_cfg.num_heads)
         
         # Initialize MONAI SwinUNETR
+        # Note: MONAI SwinUNETR doesn't take img_size - it infers from input
         self.model = SwinUNETR(
-            img_size=(model_cfg.image_size, model_cfg.image_size),
             in_channels=model_cfg.image_channels,
             out_channels=model_cfg.out_channels,
             feature_size=model_cfg.feature_size,
