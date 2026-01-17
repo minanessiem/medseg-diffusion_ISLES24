@@ -1,0 +1,13 @@
+# Local discriminative training with MONAI SwinUNETR.
+# Single forward pass segmentation - no diffusion.
+#
+# Use for local development/testing of discriminative models.
+
+defaults:
+  - local
+  - override /model: swinunetr_base
+  - override /diffusion: discriminative
+  - override /loss: discriminative_dicebce
+  - override /logging: discriminative
+  - override /augmentation: none
+

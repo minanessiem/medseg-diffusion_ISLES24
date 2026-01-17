@@ -1,0 +1,51 @@
+# Pure segmentation loss for discriminative models.
+# No diffusion/MSE component - direct mask supervision.
+#
+# Loss configuration follows the same pattern as auxiliary_losses:
+# - Each loss has an 'enabled' flag to turn it on/off
+# - Weight controls contribution (0.0 to 1.0)
+# - Can use dice only, bce only, or both together
+#
+# Total loss: L = dice_weight * Dice + bce_weight * BCE
+
+# Primary loss type (set to NONE - no diffusion loss used)
+loss_type: NONE
+
+# Auxiliary losses section (required by openai_adapter, ignored by discriminative)
+# Keep disabled to avoid confusion
+auxiliary_losses:
+  enabled: false
+  diffusion_weight: 0.0
+  dice:
+    enabled: false
+    weight: 0.0
+    smooth: 1.0e-5
+    apply_sigmoid: false
+  bce:
+    enabled: false
+    weight: 0.0
+    pos_weight: null
+    apply_sigmoid: false
+  calibration:
+    enabled: false
+    weight: 0.0
+    apply_sigmoid: false
+  warmup_steps: 0
+
+# ============================================================
+# Discriminative-specific loss configuration
+# Used by DiscriminativeAdapter (not auxiliary_losses)
+# Each loss can be enabled/disabled independently
+# ============================================================
+discriminative:
+  dice:
+    enabled: true         # Set to false to disable dice loss
+    weight: 1.0           # Contribution weight (0.0 to 1.0)
+    smooth: 1.0e-5        # Smoothing for numerical stability
+    apply_sigmoid: false  # Model outputs sigmoid already
+  bce:
+    enabled: true         # Set to false to disable BCE loss
+    weight: 1.0           # Contribution weight (0.0 to 1.0)
+    pos_weight: null      # null = no class weighting
+    apply_sigmoid: false  # Model outputs sigmoid already
+

@@ -747,18 +747,44 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                 labels = []
                 metrics = {}
                 num_modalities = len(cfg.dataset.modalities)
-                for i in range(num_samples):
-                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
-                    all_images.extend(sample_images)
-                    
-                    modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                    noisy_label = f"Noise Mask t={t[i].item()}"
-                    base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
-                    labels.extend(base_labels)
-                    
-                    metrics[i] = sample_mses[i].item()
                 
-                logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=len(base_labels))
+                # Check if discriminative mode (no diffusion intermediates)
+                is_discriminative = cfg.diffusion.type == "Discriminative"
+                
+                if is_discriminative:
+                    # Discriminative: simpler grid (modalities, prediction, target)
+                    for i in range(num_samples):
+                        # Modality channels (each channel separately)
+                        for c in range(num_modalities):
+                            all_images.append(intermediates['img'][i, c:c+1])
+                            labels.append(f"Modality: {cfg.dataset.modalities[c]}")
+                        
+                        # Prediction
+                        all_images.append(intermediates['pred'][i])
+                        labels.append("Prediction")
+                        
+                        # Target
+                        all_images.append(intermediates['mask'][i])
+                        labels.append("Target")
+                    
+                    per_sample_ncol = num_modalities + 2  # modalities + pred + target
+                    
+                else:
+                    # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
+                    for i in range(num_samples):
+                        sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
+                        all_images.extend(sample_images)
+                        
+                        modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
+                        noisy_label = f"Noise Mask t={t[i].item()}"
+                        base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
+                        labels.extend(base_labels)
+                        
+                        metrics[i] = sample_mses[i].item()
+                    
+                    per_sample_ncol = len(base_labels)
+                
+                logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=per_sample_ncol)
             
         # Sampling logging (outside image logging block)
         if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0 and global_step >= cfg.logging.min_log_step:

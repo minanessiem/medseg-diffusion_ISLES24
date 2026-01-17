@@ -102,15 +102,40 @@ def generate_loss_string(loss_cfg):
         
     Returns:
         str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw100_d010sm5_b010_cal100_w25h')
+        For discriminative: 'lDICE_BCE' or 'lDICE' or 'lBCE'
     """
     # Handle both dict and DictConfig
     if hasattr(loss_cfg, 'loss_type'):
         loss_type = loss_cfg.loss_type
         aux = loss_cfg.get('auxiliary_losses', {})
+        disc = loss_cfg.get('discriminative', {})
     else:
         loss_type = loss_cfg.get('loss_type', 'MSE')
         aux = loss_cfg.get('auxiliary_losses', {})
+        disc = loss_cfg.get('discriminative', {})
     
+    # Check for discriminative loss config (used by DiscriminativeAdapter)
+    if disc and loss_type == 'NONE':
+        # Discriminative mode: format as lDICE_BCE, lDICE, or lBCE
+        disc_parts = []
+        
+        dice = disc.get('dice', {})
+        if dice.get('enabled', False):
+            weight_str = format_loss_weight(dice.get('weight', 1.0))
+            smooth_str = format_dice_smooth(dice.get('smooth', 1e-5))
+            disc_parts.append(f"d{weight_str}{smooth_str}")
+        
+        bce = disc.get('bce', {})
+        if bce.get('enabled', False):
+            weight_str = format_loss_weight(bce.get('weight', 1.0))
+            disc_parts.append(f"b{weight_str}")
+        
+        if disc_parts:
+            return 'l' + '_'.join(disc_parts)
+        else:
+            return 'lNONE'
+    
+    # Diffusion mode: existing logic
     parts = [f"l{loss_type}"]
     
     # Only add auxiliary loss details if enabled
@@ -498,6 +523,28 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         # Add CEM suffix if enabled
         if model.get('cem_enabled', True):
             model_str += "_cem"
+    
+    elif architecture == 'swinunetr':
+        # SwinUNETR (discriminative): swinunetr_{size}_{feature_size}f_{depths}_{num_heads}h
+        # Example: swinunetr_256_48f_2-2-2-2_3-6-12-24h
+        
+        # Format depths as dash-separated string
+        depths = model.get('depths', [])
+        if isinstance(depths, (list, tuple)):
+            depths_str = '-'.join(str(d) for d in depths)
+        else:
+            depths_str = str(depths).replace(',', '-')
+        
+        # Format num_heads as dash-separated string
+        num_heads = model.get('num_heads', [])
+        if isinstance(num_heads, (list, tuple)):
+            heads_str = '-'.join(str(h) for h in num_heads)
+        else:
+            heads_str = str(num_heads).replace(',', '-')
+        
+        model_str = (f"{architecture}_{model['image_size']}_"
+                     f"{model['feature_size']}f_{depths_str}_{heads_str}h")
+    
     else:
         # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
         model_str = (f"{architecture}_{model['image_size']}_{model['num_layers']}l_{model['first_conv_channels']}c_"
@@ -525,30 +572,37 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     else:
         steps_str = f"s{max_steps}"
     
-    # Diffusion string: {oai_prefix}_{sampling_mode}_ds{timesteps}_nz{noise_schedule}_tr{timestep_respacing}
-    diffusion_parts = []
+    # Diffusion string: depends on diffusion type
+    diffusion_type = diffusion.get('type', 'OpenAI_DDPM')
     
-    # Add "oai" prefix if type is OpenAI_DDPM
-    if diffusion.get('type') == 'OpenAI_DDPM':
-        diffusion_parts.append('oai')
-    
-    # Sampling mode
-    sampling_mode = diffusion.get('sampling_mode', 'ddpm')
-    diffusion_parts.append(sampling_mode)
-    
-    # Timesteps
-    diffusion_parts.append(f"ds{diffusion['timesteps']}")
-    
-    # Noise schedule
-    noise_schedule = diffusion.get('noise_schedule', 'linear')
-    diffusion_parts.append(f"nz{noise_schedule}")
-    
-    # Timestep respacing (only if not empty)
-    timestep_respacing = diffusion.get('timestep_respacing', '')
-    if timestep_respacing:
-        diffusion_parts.append(f"tr{timestep_respacing}")
-    
-    diffusion_str = '_'.join(diffusion_parts)
+    if diffusion_type == 'Discriminative':
+        # Discriminative: simple "disc" suffix (no noise schedule, no timesteps)
+        diffusion_str = 'disc'
+    else:
+        # Diffusion models: {oai_prefix}_{sampling_mode}_ds{timesteps}_nz{noise_schedule}_tr{timestep_respacing}
+        diffusion_parts = []
+        
+        # Add "oai" prefix if type is OpenAI_DDPM
+        if diffusion_type == 'OpenAI_DDPM':
+            diffusion_parts.append('oai')
+        
+        # Sampling mode
+        sampling_mode = diffusion.get('sampling_mode', 'ddpm')
+        diffusion_parts.append(sampling_mode)
+        
+        # Timesteps
+        diffusion_parts.append(f"ds{diffusion['timesteps']}")
+        
+        # Noise schedule
+        noise_schedule = diffusion.get('noise_schedule', 'linear')
+        diffusion_parts.append(f"nz{noise_schedule}")
+        
+        # Timestep respacing (only if not empty)
+        timestep_respacing = diffusion.get('timestep_respacing', '')
+        if timestep_respacing:
+            diffusion_parts.append(f"tr{timestep_respacing}")
+        
+        diffusion_str = '_'.join(diffusion_parts)
     
     # Loss string: l{loss_type}[_dw{diffusion_weight}_d{dice_weight}_b{bce_weight}_w{warmup}]
     loss_str = generate_loss_string(loss)

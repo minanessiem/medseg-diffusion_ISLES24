@@ -1,0 +1,24 @@
+# Dice-only loss for discriminative models.
+# Use when BCE causes training instability or for class-imbalanced data.
+#
+# Dice loss is better for:
+# - Highly imbalanced datasets (small lesions)
+# - When precise boundary detection is less critical
+# - Avoiding pixel-wise loss saturation issues
+
+defaults:
+  - discriminative_dicebce
+
+# Override: disable BCE, keep only Dice
+discriminative:
+  dice:
+    enabled: true
+    weight: 1.0
+    smooth: 1.0e-5
+    apply_sigmoid: false
+  bce:
+    enabled: false        # Disabled
+    weight: 0.0
+    pos_weight: null
+    apply_sigmoid: false
+

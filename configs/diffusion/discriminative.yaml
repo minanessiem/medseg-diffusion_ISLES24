@@ -1,0 +1,12 @@
+# Discriminative (non-diffusion) training mode.
+# Model directly predicts segmentation mask from input modalities.
+# No noise, no timesteps, no iterative denoising.
+#
+# Use with discriminative models like SwinUNETR that perform
+# single forward pass segmentation.
+
+type: Discriminative
+
+# Dummy value for interface compatibility (unused)
+timesteps: 1
+

@@ -1,0 +1,34 @@
+# MONAI SwinUNETR for discriminative 2D segmentation.
+#
+# Key differences from diffusion models (DiffSwinTr, MedSegDiff):
+# - NO time conditioning (no timestep input)
+# - NO mask concatenation (input is modalities only)
+# - Direct mask prediction (not noise prediction)
+#
+# Input: modalities only [B, image_channels, H, W]
+# Output: binary segmentation mask [B, out_channels, H, W]
+#
+# Parameters: ~62M (with default settings)
+
+architecture: swinunetr
+
+# ==================== Core Dimensions ====================
+image_size: 256
+image_channels: ${dataset.num_modalities}  # Dynamic based on dataset (e.g., 2 for CBF+TMAX)
+out_channels: 1                             # Binary segmentation
+
+# ==================== SwinUNETR Architecture ====================
+# Feature dimension (similar to embed_dim in Swin Transformer)
+feature_size: 48
+
+# Number of Swin blocks per encoder stage
+# Standard Swin-T style: [2, 2, 2, 2]
+depths: [2, 2, 2, 2]
+
+# Number of attention heads per stage (increases with feature dimension)
+num_heads: [3, 6, 12, 24]
+
+# ==================== Regularization ====================
+drop_rate: 0.0
+attn_drop_rate: 0.0
+

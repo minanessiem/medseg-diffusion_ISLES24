@@ -30,7 +30,7 @@ gradient:
 # Saves model + optimizer + training state at fixed step intervals for fault recovery
 checkpoint_interval:
   enabled: true
-  save_interval: 10000
+  save_interval: 5000
   keep_last_n: 3  # Keep only last 3 interval checkpoints (null = keep all)
   model_template: 'models/checkpoint/diffusion_chkpt_step_{:06d}.pth'
   opt_template: 'models/checkpoint/opt_chkpt_step_{:06d}.pth'

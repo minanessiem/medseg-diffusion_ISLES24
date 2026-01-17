@@ -1,0 +1,20 @@
+# Simplified logging for discriminative training.
+# No diffusion-specific logging (no noise, no x_t, no denoising snapshots).
+#
+# Key differences from diffusion logging:
+# - Sampling snapshots disabled (discriminative = single forward pass)
+# - Image logging shows: input modalities, prediction, target (not diffusion intermediates)
+
+defaults:
+  - default
+
+# Override image logging for discriminative mode
+enable_image_logging: true
+image_log_interval: 2000
+
+# Disable diffusion-specific sampling snapshots
+# (discriminative inference is single forward pass, no iterative denoising)
+enable_sampling_snapshots: false
+sampling_log_interval: 0
+snapshot_step_interval: 0
+

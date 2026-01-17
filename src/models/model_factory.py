@@ -157,3 +157,25 @@ def build_diffswintr(cfg: DictConfig) -> nn.Module:
     from .DiffSwinTr import DiffSwinTrAdapter
     return DiffSwinTrAdapter(cfg)
 
+
+@register_architecture('swinunetr')
+def build_swinunetr(cfg: DictConfig) -> nn.Module:
+    """
+    Build MONAI SwinUNETR for discriminative segmentation.
+    
+    This is a discriminative model (no diffusion) that takes only
+    the input modalities and directly predicts the segmentation mask.
+    
+    Required config keys:
+        cfg.model.architecture: "swinunetr"
+        cfg.model.image_size: int
+        cfg.model.image_channels: int
+        cfg.model.out_channels: int
+        cfg.model.feature_size: int
+        cfg.model.depths: list[int] or comma-separated string
+        cfg.model.num_heads: list[int] or comma-separated string
+        cfg.model.drop_rate: float
+        cfg.model.attn_drop_rate: float
+    """
+    from .SwinUNetR import SwinUNetRAdapter
+    return SwinUNetRAdapter(cfg)

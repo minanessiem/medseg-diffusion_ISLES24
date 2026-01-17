@@ -84,8 +84,11 @@ class Diffusion(nn.Module, ABC):
                     f"  python -c 'from src.improved_diffusion import GaussianDiffusion' "
                     f"Original error: {e}"
                 )
+        elif diffusion_type == "Discriminative":
+            from .discriminative_adapter import DiscriminativeAdapter
+            return DiscriminativeAdapter(model, cfg, device)
         else:
-            available_types = ["DDPM", "DDIM", "OpenAI_DDPM"]
+            available_types = ["DDPM", "DDIM", "OpenAI_DDPM", "Discriminative"]
             raise ValueError(
                 f"Unknown diffusion type: '{diffusion_type}'. "
                 f"Available types: {available_types}. "

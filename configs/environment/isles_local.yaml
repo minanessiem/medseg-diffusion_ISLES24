@@ -1,10 +1,10 @@
 dataset:
   dir: '/mnt/c/Users/minanessiem/Development/isles24_combined'
   json_list: '/mnt/c/Users/minanessiem/Development/isles24_combined/isles24_multimodal_5fold_NIHSSstratified.json'
-  num_train_workers: 4
+  num_train_workers: 16
   num_valid_workers: 4
   num_test_workers: 4
-  train_batch_size: 1
+  train_batch_size: 16
   test_batch_size: 2
 training:
   output_root: './outputs/'
