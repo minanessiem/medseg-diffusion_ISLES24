@@ -72,5 +72,5 @@ ulimit -n 4096
 srun \\
   --container-mounts=$CODE_DIR:{container_code_dir},$DATASETS_DIR:{container_datasets_dir},$OUTPUTS_DIR:{container_outputs_dir} \\
   --container-image=$IMAGE \\
-  bash -c "cd {container_code_dir}/medseg-diffusion_ISLES24 && export PYTHONNOUSERSITE=1 && {python_command}"
+  bash -c "cd {container_code_dir}/medseg-diffusion_ISLES24 && export PYTHONNOUSERSITE=1 && export TORCH_MULTIPROCESSING_SHARING_STRATEGY=file_system && {python_command}"
 """

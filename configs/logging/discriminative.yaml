@@ -10,7 +10,7 @@ defaults:
 
 # Override image logging for discriminative mode
 enable_image_logging: true
-image_log_interval: 2000
+image_log_interval: 1000
 
 # Disable diffusion-specific sampling snapshots
 # (discriminative inference is single forward pass, no iterative denoising)

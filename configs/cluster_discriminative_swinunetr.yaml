@@ -19,7 +19,7 @@ defaults:
   - override /loss: discriminative_dicebce
   - override /logging: discriminative
   - override /augmentation: aggressive_2d
-  - override /training: train_800Kms_ampbfloat16
+  - override /training: train_100Kms_ampbfloat16
   - override /scheduler: warmup_cosine_20Ksteps
   - override /validation: default
 
