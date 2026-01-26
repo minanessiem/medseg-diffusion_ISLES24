@@ -181,14 +181,24 @@ def main():
     model_name_short = args.model_name[:30] if len(args.model_name) > 30 else args.model_name
     config['job_name'] = f'thresh_{model_name_short}'
     
-    # Put SLURM logs inside the run directory's analysis folder
-    # This keeps everything together and avoids path construction issues
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    slurm_log_subdir = os.path.join('analysis', 'slurm_logs', f'threshold_{timestamp}')
+    # Extract relative path from container outputs to preserve full directory structure
+    # e.g., /mnt/outputs/discriminative_swinunetr_170126/run_name/ -> discriminative_swinunetr_170126/run_name/
+    container_outputs = config['container_outputs_dir'].rstrip('/')
+    run_dir_clean = args.run_dir.rstrip('/')
     
-    # Construct full paths directly (don't use update_logdir_paths which assumes outputs root)
-    config['host_logdir'] = os.path.join(args.run_dir, slurm_log_subdir)
-    config['container_logdir'] = os.path.join(args.run_dir, slurm_log_subdir)
+    if run_dir_clean.startswith(container_outputs):
+        # Get the relative path from outputs to the run dir (preserves parent folders)
+        relative_run_path = run_dir_clean[len(container_outputs):].lstrip('/')
+    else:
+        # Fallback to basename if not under container outputs
+        relative_run_path = os.path.basename(run_dir_clean)
+    
+    # Put SLURM logs inside the run directory's analysis folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config['logdir_name'] = os.path.join(relative_run_path, 'analysis', 'slurm_logs', f'threshold_{timestamp}')
+    
+    # Update logdir paths (converts to proper host paths like /dss/...)
+    config = update_logdir_paths(config)
     
     # Print job summary
     print("\n" + "=" * 60)
