@@ -181,13 +181,14 @@ def main():
     model_name_short = args.model_name[:30] if len(args.model_name) > 30 else args.model_name
     config['job_name'] = f'thresh_{model_name_short}'
     
-    # Derive log directory from run_dir
-    run_name = os.path.basename(args.run_dir.rstrip('/'))
+    # Put SLURM logs inside the run directory's analysis folder
+    # This keeps everything together and avoids path construction issues
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    config['logdir_name'] = f'{run_name}_threshold_analysis_{timestamp}'
+    slurm_log_subdir = os.path.join('analysis', 'slurm_logs', f'threshold_{timestamp}')
     
-    # Update logdir paths
-    config = update_logdir_paths(config)
+    # Construct full paths directly (don't use update_logdir_paths which assumes outputs root)
+    config['host_logdir'] = os.path.join(args.run_dir, slurm_log_subdir)
+    config['container_logdir'] = os.path.join(args.run_dir, slurm_log_subdir)
     
     # Print job summary
     print("\n" + "=" * 60)
