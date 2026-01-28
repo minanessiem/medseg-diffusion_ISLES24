@@ -182,9 +182,18 @@ def find_checkpoint(run_dir: str, model_name: str) -> str:
     )
 
 
+def is_discriminative_model(cfg: DictConfig) -> bool:
+    """Check if the model is discriminative (single forward pass) vs diffusion (sampling loop)."""
+    diffusion_type = cfg.get('diffusion', {}).get('type', 'Discriminative')
+    return diffusion_type == 'Discriminative'
+
+
 def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
     """
-    Build model from config and load checkpoint weights.
+    Build model/diffusion from config and load checkpoint weights.
+    
+    For discriminative models: Returns the model directly
+    For diffusion models: Returns the full diffusion wrapper with sample() method
     
     Args:
         cfg: Hydra configuration
@@ -192,12 +201,21 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
         device: Device to load model onto
         
     Returns:
-        Model in evaluation mode
+        Model or Diffusion wrapper in evaluation mode
     """
     from src.models.model_factory import build_model
+    from src.diffusion.diffusion import Diffusion
     
     # Build model architecture
-    model = build_model(cfg)
+    unet = build_model(cfg)
+    
+    # For diffusion models, we need the full diffusion wrapper
+    if not is_discriminative_model(cfg):
+        print(f"  Building diffusion wrapper (type: {cfg.diffusion.type})...")
+        diffusion = Diffusion.build_diffusion(unet, cfg, device)
+        model = diffusion
+    else:
+        model = unet
     
     # Load checkpoint
     state_dict = torch.load(checkpoint_path, map_location=device)
@@ -223,7 +241,7 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
         'module.',                    # DataParallel/DDP
         'wrapped_model.base_model.',  # EMA wrapper
         'model.model.',               # Double adapter wrapping (SwinUNETR)
-        'model.',                     # Single model wrapper (MedSegDiff/Diffusion)
+        'model.',                     # Single model wrapper (only if not diffusion)
     ]
     
     # Try each prefix and see if it results in matching keys
@@ -269,8 +287,12 @@ def run_inference(
     """
     Run model inference on validation set.
     
+    Automatically detects model type:
+    - Discriminative models: Direct forward pass
+    - Diffusion models: Uses sample() method with full sampling loop
+    
     Args:
-        model: Trained model in evaluation mode
+        model: Trained model/diffusion in evaluation mode
         cfg: Configuration with dataset settings
         device: Device to run inference on
         
@@ -282,6 +304,11 @@ def run_inference(
     dataloaders = get_dataloaders(cfg)
     val_loader = dataloaders['val']
     
+    # Determine inference method based on model type
+    use_diffusion_sampling = not is_discriminative_model(cfg)
+    if use_diffusion_sampling:
+        print("  Using diffusion sampling loop for inference...")
+    
     all_predictions = []
     all_ground_truths = []
     all_modalities = []
@@ -292,8 +319,14 @@ def run_inference(
             img = batch[0].to(device)
             mask = batch[1]
             
-            # Forward pass
-            pred = model(img)
+            # Forward pass - different for discriminative vs diffusion
+            if use_diffusion_sampling:
+                # Diffusion models: use sample() method
+                # This runs the full DDIM/DDPM sampling loop
+                pred = model.sample(img, disable_tqdm=True)
+            else:
+                # Discriminative models: direct forward pass
+                pred = model(img)
             
             # Apply sigmoid if model outputs logits
             if pred.min() < 0 or pred.max() > 1:
