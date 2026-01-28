@@ -208,17 +208,49 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
     elif 'state_dict' in state_dict:
         state_dict = state_dict['state_dict']
     
-    # Remove 'module.' prefix if present (from DataParallel/DDP)
-    if any(k.startswith('module.') for k in state_dict.keys()):
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    # Get the expected keys from the model to determine correct prefix handling
+    model_keys = set(model.state_dict().keys())
+    checkpoint_keys = set(state_dict.keys())
     
-    # Handle double 'model.model.' prefix from adapter wrapping
-    # The training saves the full adapter (with self.model), so keys have 'model.model.'
-    # but load_state_dict expects 'model.' for the adapter's internal model
-    if any(k.startswith('model.model.') for k in state_dict.keys()):
-        state_dict = {k.replace('model.model.', 'model.', 1): v for k, v in state_dict.items()}
+    # Try to find the correct prefix mapping
+    def strip_prefix(state_dict: dict, prefix: str) -> dict:
+        """Remove a prefix from all keys in state_dict."""
+        return {k[len(prefix):] if k.startswith(prefix) else k: v 
+                for k, v in state_dict.items()}
     
-    model.load_state_dict(state_dict)
+    # Common prefixes to try stripping (in order of priority)
+    prefixes_to_try = [
+        'module.',                    # DataParallel/DDP
+        'wrapped_model.base_model.',  # EMA wrapper
+        'model.model.',               # Double adapter wrapping (SwinUNETR)
+        'model.',                     # Single model wrapper (MedSegDiff/Diffusion)
+    ]
+    
+    # Try each prefix and see if it results in matching keys
+    best_match = state_dict
+    best_overlap = len(model_keys & checkpoint_keys)
+    
+    for prefix in prefixes_to_try:
+        if any(k.startswith(prefix) for k in state_dict.keys()):
+            stripped = strip_prefix(state_dict, prefix)
+            overlap = len(model_keys & set(stripped.keys()))
+            if overlap > best_overlap:
+                best_match = stripped
+                best_overlap = overlap
+                print(f"  Stripped prefix '{prefix}' -> {overlap} matching keys")
+    
+    state_dict = best_match
+    
+    # Final attempt: if still no match, try strict=False loading with diagnostic
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as e:
+        print(f"  Warning: Strict loading failed, trying non-strict...")
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            print(f"  Missing keys ({len(missing)}): {missing[:5]}...")
+        if unexpected:
+            print(f"  Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
     model.to(device)
     model.eval()
     
