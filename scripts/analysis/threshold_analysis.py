@@ -52,6 +52,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from scripts.analysis.metrics_registry import compute_metrics_at_threshold, get_all_metrics
+from src.utils.ensemble import mean_ensemble, soft_staple
 
 
 # ============================================================================
@@ -107,6 +108,33 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help='Device to use (default: cuda if available, else cpu)'
+    )
+    
+    # Ensemble options (for diffusion models)
+    parser.add_argument(
+        '--ensemble-samples',
+        type=int,
+        default=1,
+        help='Number of samples to ensemble for diffusion models (default: 1, no ensemble)'
+    )
+    parser.add_argument(
+        '--ensemble-method',
+        type=str,
+        default='soft_staple',
+        choices=['mean', 'soft_staple'],
+        help="Ensemble method: 'mean' or 'soft_staple' (default: soft_staple)"
+    )
+    parser.add_argument(
+        '--staple-max-iters',
+        type=int,
+        default=5,
+        help='Max iterations for soft_staple algorithm (default: 5)'
+    )
+    parser.add_argument(
+        '--staple-tolerance',
+        type=float,
+        default=0.02,
+        help='Convergence tolerance for soft_staple (default: 0.02)'
     )
     
     return parser.parse_args()
@@ -282,7 +310,8 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
 def run_inference(
     model: nn.Module, 
     cfg: DictConfig, 
-    device: str
+    device: str,
+    args: argparse.Namespace
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
     """
     Run model inference on validation set.
@@ -291,10 +320,13 @@ def run_inference(
     - Discriminative models: Direct forward pass
     - Diffusion models: Uses sample() method with full sampling loop
     
+    Supports ensemble inference for diffusion models when args.ensemble_samples >= 2.
+    
     Args:
         model: Trained model/diffusion in evaluation mode
         cfg: Configuration with dataset settings
         device: Device to run inference on
+        args: Command-line arguments with ensemble settings
         
     Returns:
         Tuple of (predictions, ground_truths, modalities) as lists of tensors
@@ -306,24 +338,50 @@ def run_inference(
     
     # Determine inference method based on model type
     use_diffusion_sampling = not is_discriminative_model(cfg)
+    use_ensemble = use_diffusion_sampling and args.ensemble_samples >= 2
+    
     if use_diffusion_sampling:
-        print("  Using diffusion sampling loop for inference...")
+        if use_ensemble:
+            print(f"  Using diffusion sampling with ensemble ({args.ensemble_samples} samples, method={args.ensemble_method})...")
+        else:
+            print("  Using diffusion sampling loop for inference...")
     
     all_predictions = []
     all_ground_truths = []
     all_modalities = []
     
+    # Progress bar description
+    desc = "Running inference"
+    if use_ensemble:
+        desc = f"Running inference ({args.ensemble_samples} samples/input)"
+    
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Running inference"):
+        for batch in tqdm(val_loader, desc=desc):
             # Unpack batch - format is (image, mask, path)
             img = batch[0].to(device)
             mask = batch[1]
             
             # Forward pass - different for discriminative vs diffusion
             if use_diffusion_sampling:
-                # Diffusion models: use sample() method
-                # This runs the full DDIM/DDPM sampling loop
-                pred = model.sample(img, disable_tqdm=True)
+                if use_ensemble:
+                    # Ensemble sampling: generate N samples and combine
+                    samples = []
+                    for _ in range(args.ensemble_samples):
+                        sample = model.sample(img, disable_tqdm=True)
+                        samples.append(sample)
+                    samples = torch.stack(samples, dim=0)  # [N, B, C, H, W]
+                    
+                    if args.ensemble_method == 'mean':
+                        pred = mean_ensemble(samples)
+                    else:  # soft_staple
+                        pred = soft_staple(
+                            samples,
+                            max_iters=args.staple_max_iters,
+                            tolerance=args.staple_tolerance
+                        )
+                else:
+                    # Single sample (default behavior)
+                    pred = model.sample(img, disable_tqdm=True)
             else:
                 # Discriminative models: direct forward pass
                 pred = model(img)
@@ -570,6 +628,24 @@ def save_json_summary(
         }
     }
     
+    # Add ensemble configuration if used
+    if args.ensemble_samples >= 2:
+        summary['ensemble'] = {
+            'enabled': True,
+            'num_samples': args.ensemble_samples,
+            'method': args.ensemble_method,
+        }
+        if args.ensemble_method == 'soft_staple':
+            summary['ensemble']['soft_staple'] = {
+                'max_iters': args.staple_max_iters,
+                'tolerance': args.staple_tolerance,
+            }
+    else:
+        summary['ensemble'] = {
+            'enabled': False,
+            'num_samples': 1,
+        }
+    
     json_path = os.path.join(output_dir, 'optimal_thresholds.json')
     with open(json_path, 'w') as f:
         json.dump(summary, f, indent=2)
@@ -603,9 +679,23 @@ def save_summary_text(
         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         f"Validation Set: {num_samples} slices",
+    ]
+    
+    # Add ensemble info if used
+    if args.ensemble_samples >= 2:
+        lines.extend([
+            "",
+            "Ensemble Configuration:",
+            f"  Samples: {args.ensemble_samples}",
+            f"  Method: {args.ensemble_method}",
+        ])
+        if args.ensemble_method == 'soft_staple':
+            lines.append(f"  STAPLE: max_iters={args.staple_max_iters}, tolerance={args.staple_tolerance}")
+    
+    lines.extend([
         "",
         "Optimal Thresholds:",
-    ]
+    ])
     
     for metric in ['dice', 'precision', 'recall', 'specificity', 'f1', 'f2']:
         t = optimal[metric]['threshold']
@@ -940,6 +1030,10 @@ def main():
     print(f"  Model: {args.model_name}")
     print(f"  Device: {device}")
     print(f"  Output: {output_dir}")
+    if args.ensemble_samples >= 2:
+        print(f"  Ensemble: {args.ensemble_samples} samples, method={args.ensemble_method}")
+    else:
+        print(f"  Ensemble: disabled (single sample)")
     print("=" * 60)
     
     # 1. Load config and model
@@ -953,7 +1047,7 @@ def main():
     
     # 2. Run inference
     print("\n[3/8] Running inference on validation set...")
-    predictions, ground_truths, modalities = run_inference(model, cfg, device)
+    predictions, ground_truths, modalities = run_inference(model, cfg, device, args)
     num_samples = len(predictions)
     print(f"  Collected {num_samples} samples")
     

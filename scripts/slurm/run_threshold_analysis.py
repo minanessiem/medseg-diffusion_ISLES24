@@ -89,6 +89,33 @@ def parse_arguments() -> argparse.Namespace:
         help='Number of comparison visualization images (default: 4)'
     )
     
+    # Ensemble options (for diffusion models)
+    parser.add_argument(
+        '--ensemble-samples',
+        type=int,
+        default=1,
+        help='Number of samples to ensemble for diffusion models (default: 1, no ensemble)'
+    )
+    parser.add_argument(
+        '--ensemble-method',
+        type=str,
+        default='soft_staple',
+        choices=['mean', 'soft_staple'],
+        help="Ensemble method: 'mean' or 'soft_staple' (default: soft_staple)"
+    )
+    parser.add_argument(
+        '--staple-max-iters',
+        type=int,
+        default=5,
+        help='Max iterations for soft_staple algorithm (default: 5)'
+    )
+    parser.add_argument(
+        '--staple-tolerance',
+        type=float,
+        default=0.02,
+        help='Convergence tolerance for soft_staple (default: 0.02)'
+    )
+    
     # SLURM resource arguments
     parser.add_argument(
         '--gpus',
@@ -153,6 +180,14 @@ def build_python_command(args: argparse.Namespace) -> str:
     if args.save_per_sample:
         cmd_parts.append('--save-per-sample')
     
+    # Ensemble options (only add if ensemble is enabled)
+    if args.ensemble_samples >= 2:
+        cmd_parts.append(f'--ensemble-samples {args.ensemble_samples}')
+        cmd_parts.append(f'--ensemble-method {args.ensemble_method}')
+        if args.ensemble_method == 'soft_staple':
+            cmd_parts.append(f'--staple-max-iters {args.staple_max_iters}')
+            cmd_parts.append(f'--staple-tolerance {args.staple_tolerance}')
+    
     return ' '.join(cmd_parts)
 
 
@@ -208,6 +243,10 @@ def main():
     print(f"  Model:       {args.model_name}")
     print(f"  Thresholds:  {args.thresholds}")
     print(f"  Visualizations: {args.num_visualizations}")
+    if args.ensemble_samples >= 2:
+        print(f"  Ensemble:    {args.ensemble_samples} samples, method={args.ensemble_method}")
+    else:
+        print(f"  Ensemble:    disabled (single sample)")
     print("-" * 60)
     print("  Resources:")
     print(f"    GPUs:      {args.gpus}")
