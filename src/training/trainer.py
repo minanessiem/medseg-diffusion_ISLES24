@@ -49,6 +49,13 @@ from omegaconf import OmegaConf
 
 # AMP (Automatic Mixed Precision) support
 from torch.amp import autocast, GradScaler
+
+# Ensemble validation support
+from src.utils.ensemble import (
+    should_ensemble,
+    ensemble_predictions,
+    should_log_ensembled_image,
+)
 print("[DEBUG:trainer.py] All imports complete!", flush=True)
 
 def get_optimizer_and_scheduler(cfg, model):
@@ -174,13 +181,52 @@ def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
 
 @device_grad_decorator(no_grad=True)
 def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
+    """
+    Validate the diffusion model for one epoch.
+    
+    Supports ensemble validation when configured. When ensemble is enabled,
+    generates multiple samples per input and combines them using the configured
+    method before computing metrics.
+    
+    Args:
+        diffusion: The diffusion model.
+        val_dl: DataLoader for validation dataset.
+        metrics: List of metric objects.
+        logger: Logger instance.
+        global_step: Current training step.
+        cfg: Hydra configuration object.
+    
+    Returns:
+        dict: Aggregated validation metrics.
+    """
     diffusion.eval()
+    
+    # Check if ensemble is enabled
+    use_ensemble = should_ensemble(cfg)
+    if use_ensemble:
+        num_ensemble_samples = cfg.validation.ensemble.num_samples
+        ensemble_method = cfg.validation.ensemble.method
+        print(f"  Ensemble validation: {num_ensemble_samples} samples, method='{ensemble_method}'")
+    
     pbar = tqdm(val_dl, desc="Validation", leave=True)
     for img, true_mask, _ in pbar:
         img = img.to(cfg.device)
         true_mask = true_mask.to(cfg.device)
-        # Generate predictions (assume diffusion.sample returns predicted masks [B, 1, H, W])
-        pred_mask = diffusion.sample(img, disable_tqdm=True)
+        
+        # Generate predictions with optional ensemble
+        if use_ensemble:
+            # Generate multiple samples and combine
+            samples = []
+            for _ in range(num_ensemble_samples):
+                sample = diffusion.sample(img, disable_tqdm=True)
+                samples.append(sample)
+            # Stack: [N, B, C, H, W]
+            samples = torch.stack(samples, dim=0)
+            # Combine using configured method
+            pred_mask = ensemble_predictions(samples, cfg.validation.ensemble)
+        else:
+            # Single sample (original behavior)
+            pred_mask = diffusion.sample(img, disable_tqdm=True)
         
         # Process each sample in batch (since metrics are slice-wise)
         batch_size = img.shape[0]
@@ -220,6 +266,127 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
         metric.reset()
 
     return results
+
+
+@device_grad_decorator(no_grad=True)
+def log_ensembled_segmentation(diffusion, val_dl, logger, global_step, cfg):
+    """
+    Log ensembled segmentation grid to TensorBoard.
+    
+    Generates an ensemble of predictions for a few validation samples and logs
+    a grid visualization showing modalities, ground truth, and the ensembled
+    prediction.
+    
+    Grid layout:
+        Rows = ensembled_image.num_samples slices
+        Cols = [modalities...] [ground_truth] [ensembled_pred]
+    
+    Args:
+        diffusion: The diffusion model.
+        val_dl: Validation dataloader.
+        logger: Logger instance with TensorBoard writer.
+        global_step: Current training step.
+        cfg: Hydra configuration object.
+    """
+    diffusion.eval()
+    
+    ensembled_image_cfg = cfg.validation.ensembled_image
+    num_vis_samples = ensembled_image_cfg.num_samples
+    
+    # Require ensemble config - don't use defaults
+    if not hasattr(cfg.validation, 'ensemble'):
+        raise ValueError(
+            "log_ensembled_segmentation requires 'validation.ensemble' config section. "
+            "Please use 'validation: ensemble' in your config or add the ensemble section manually."
+        )
+    
+    ensemble_cfg = cfg.validation.ensemble
+    num_ensemble_samples = ensemble_cfg.num_samples
+    
+    print(f"Logging ensembled segmentation at step {global_step} "
+          f"({num_vis_samples} slices, {num_ensemble_samples} ensemble samples)")
+    
+    # Collect samples from validation dataloader
+    collected_imgs = []
+    collected_masks = []
+    dl_iter = iter(val_dl)
+    
+    while len(collected_imgs) < num_vis_samples:
+        try:
+            batch = next(dl_iter)
+        except StopIteration:
+            dl_iter = iter(val_dl)
+            batch = next(dl_iter)
+        
+        b_img, b_mask = batch[0], batch[1]
+        for j in range(b_img.shape[0]):
+            if len(collected_imgs) >= num_vis_samples:
+                break
+            # Prefer non-empty masks for visualization
+            if b_mask[j].sum() > 0:
+                collected_imgs.append(b_img[j:j+1])
+                collected_masks.append(b_mask[j:j+1])
+    
+    if len(collected_imgs) < num_vis_samples:
+        print(f"Warning: Only found {len(collected_imgs)} non-empty validation samples")
+        if len(collected_imgs) == 0:
+            return  # Nothing to log
+    
+    # Stack collected samples
+    sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
+    sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
+    num_samples = sample_imgs.shape[0]
+    num_modalities = sample_imgs.shape[1]
+    
+    # Build grid
+    all_images = []
+    labels = []
+    modality_names = cfg.dataset.modalities if hasattr(cfg.dataset, 'modalities') else [f"Mod{i}" for i in range(num_modalities)]
+    
+    for i in range(num_samples):
+        # Generate ensemble prediction for this slice
+        img_slice = sample_imgs[i:i+1]  # [1, C, H, W]
+        
+        # Collect multiple samples
+        samples = []
+        for _ in range(num_ensemble_samples):
+            sample = diffusion.sample(img_slice, disable_tqdm=True)
+            samples.append(sample)
+        samples = torch.stack(samples, dim=0)  # [N, 1, 1, H, W]
+        
+        # Ensemble the predictions
+        ensembled_pred = ensemble_predictions(samples, ensemble_cfg)  # [1, 1, H, W]
+        
+        # Add modality channels
+        for c in range(num_modalities):
+            mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])
+            all_images.append(mod_channel)
+            labels.append(f"Modality: {modality_names[c]}")
+        
+        # Add ground truth
+        gt_norm = normalize_to_neg_one_to_one(sample_masks[i])
+        all_images.append(gt_norm)
+        labels.append("Ground Truth")
+        
+        # Add ensembled prediction
+        pred_norm = normalize_to_neg_one_to_one(ensembled_pred[0])
+        all_images.append(pred_norm)
+        labels.append(f"Ensemble ({num_ensemble_samples} avg)")
+    
+    # Calculate grid dimensions
+    per_sample_ncol = num_modalities + 2  # modalities + GT + ensemble pred
+    
+    # Log the grid
+    logger.log_image_grid(
+        f"validation/ensembled_segmentation",
+        all_images,
+        global_step,
+        metrics=None,
+        grid_layout='horizontal',
+        labels=labels,
+        per_sample_ncol=per_sample_ncol,
+    )
+
 
 def save_model(diffusion, old_best_epoch, new_best_epoch, model_save_path_template):
     """
@@ -711,6 +878,14 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             gc.collect()
             torch.cuda.empty_cache()
         
+        # Ensembled segmentation image logging
+        if should_log_ensembled_image(cfg, global_step):
+            log_ensembled_segmentation(
+                diffusion, val_dataloader, logger, global_step, cfg
+            )
+            gc.collect()
+            torch.cuda.empty_cache()
+        
         # New: Image-based logging
         if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0 and global_step >= cfg.logging.min_log_step:
             print(f"Starting forward image logging at step {global_step}")
@@ -768,20 +943,21 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                         labels.append("Target")
                     
                     per_sample_ncol = num_modalities + 2  # modalities + pred + target
-                    
                 else:
-                    # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
-                    for i in range(num_samples):
-                        sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
-                        all_images.extend(sample_images)
-                        
-                        modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                        noisy_label = f"Noise Mask t={t[i].item()}"
-                        base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
-                        labels.extend(base_labels)
-                        
-                        metrics[i] = sample_mses[i].item()
+                    pass
+
+                # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
+                for i in range(num_samples):
+                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
+                    all_images.extend(sample_images)
                     
+                    modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
+                    noisy_label = f"Noise Mask t={t[i].item()}"
+                    base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
+                    labels.extend(base_labels)
+                    
+                    metrics[i] = sample_mses[i].item()
+                
                     per_sample_ncol = len(base_labels)
                 
                 logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=per_sample_ncol)

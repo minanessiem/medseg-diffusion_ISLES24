@@ -1,0 +1,28 @@
+# Ensemble validation for diffusion models
+# Inherits all settings from default.yaml
+# Usage: set `validation: ensemble` in your experiment config
+#
+# Ensemble validation generates multiple samples per input and combines them
+# using consensus methods, producing stable and reproducible metrics that
+# accurately reflect model quality.
+
+defaults:
+  - default
+
+# Ensemble settings for validation metrics
+# When enabled, generates num_samples predictions and combines them
+ensemble:
+  enabled: true
+  num_samples: 5              # Number of samples to average
+  method: 'soft_staple'       # 'mean' | 'soft_staple'
+  soft_staple:
+    max_iters: 5              # Maximum STAPLE iterations
+    tolerance: 0.02           # Convergence threshold
+
+# Ensembled segmentation image logging
+# Logs grid showing modalities, ground truth, and ensembled prediction
+ensembled_image:
+  enabled: true
+  num_samples: 4              # Number of slices to visualize (rows in grid)
+  interval: 5000              # Steps between ensembled segmentation logs
+
