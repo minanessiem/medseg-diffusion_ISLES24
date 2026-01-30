@@ -5,5 +5,5 @@ defaults:
   - local
   - override /diffusion: openai_ddim_250steps
   - override /logging: ddim_250steps
-  - override /loss: multitask
+  - override /loss: multitask_equal
 
