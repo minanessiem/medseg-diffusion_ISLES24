@@ -386,9 +386,15 @@ def run_inference(
                 # Discriminative models: direct forward pass
                 pred = model(img)
             
-            # Apply sigmoid if model outputs logits
-            if pred.min() < 0 or pred.max() > 1:
-                pred = torch.sigmoid(pred)
+            # Handle output normalization based on model type
+            if use_diffusion_sampling:
+                # Diffusion models output values in ~[0,1] range directly
+                # Small overflows are possible; clamp instead of sigmoid
+                pred = pred.clamp(0, 1)
+            else:
+                # Discriminative models may output logits; apply sigmoid if needed
+                if pred.min() < 0 or pred.max() > 1:
+                    pred = torch.sigmoid(pred)
             
             # Store per-sample (unbatch)
             for i in range(pred.shape[0]):
