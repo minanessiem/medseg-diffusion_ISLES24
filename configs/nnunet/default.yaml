@@ -10,6 +10,11 @@ dataset_name: ${dataset.name}         # Dataset name suffix
 test: true                            # Set to false for full export
 test_max_slices: 100                  # Max slices per split when test=true
 
+# Parallel processing
+parallel:
+  enabled: true                       # Enable parallel export
+  num_workers: 32                     # Number of parallel threads
+
 # nnUNet_raw: "/mnt/c/Users/minanessiem/Development/medseg-diffusion/nnunet_raw"
 # nnUNet_preprocessed: "/mnt/c/Users/minanessiem/Development/nnUNet_preprocessed"
 # nnUNet_export: "/mnt/c/Users/minanessiem/Development/nnUNet_export"

@@ -37,6 +37,8 @@ import numpy as np
 import json
 from pathlib import Path
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 
 from src.utils.train_utils import setup_seeds
 from src.data.loaders import get_dataloaders
@@ -64,6 +66,52 @@ def setup_export_config_aliases(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
+def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path, 
+                         num_channels: int) -> str:
+    """
+    Process and save a single slice to nnU-Net format.
+    
+    Args:
+        idx: Slice index in dataset
+        dataset: ISLES24Dataset2D instance
+        images_dir: Output directory for images
+        labels_dir: Output directory for labels
+        num_channels: Number of modality channels
+    
+    Returns:
+        Case identifier string
+    """
+    image, label, virtual_path = dataset[idx]
+    # image: [C, H, W], label: [1, H, W]
+    
+    # Parse case_id and slice_idx from virtual_path
+    # Format from ISLES24Dataset2D: "{caseID}_slice{slice_idx}"
+    case_id, slice_part = virtual_path.rsplit("_slice", 1)
+    slice_idx = int(slice_part)
+    
+    # Create case identifier for nnU-Net
+    safe_case_id = f"{case_id}_s{slice_idx:04d}"
+    
+    # Save each channel as separate file
+    for ch_idx in range(num_channels):
+        ch_data = image[ch_idx].numpy()  # [H, W]
+        
+        # Create 2D NIfTI (shape [H, W, 1] for 2D)
+        nii_data = ch_data[..., np.newaxis].astype(np.float32)
+        nii_img = nib.Nifti1Image(nii_data, affine=np.eye(4))
+        
+        filename = f"{safe_case_id}_{ch_idx:04d}.nii.gz"
+        nib.save(nii_img, images_dir / filename)
+    
+    # Save label (as uint8 for segmentation)
+    label_data = label[0].numpy()  # [H, W]
+    label_nii = label_data[..., np.newaxis].astype(np.uint8)
+    label_img = nib.Nifti1Image(label_nii, affine=np.eye(4))
+    nib.save(label_img, labels_dir / f"{safe_case_id}.nii.gz")
+    
+    return safe_case_id
+
+
 def export_dataset(
     dataset, 
     images_dir: Path, 
@@ -73,7 +121,7 @@ def export_dataset(
     max_slices: int = None
 ) -> set:
     """
-    Export a dataset to nnU-Net format by iterating deterministically by index.
+    Export a dataset to nnU-Net format sequentially.
     
     Args:
         dataset: ISLES24Dataset2D instance
@@ -90,41 +138,67 @@ def export_dataset(
     
     # Determine number of slices to process
     total_slices = len(dataset)
-    if max_slices is not None:
-        num_to_process = min(max_slices, total_slices)
-    else:
-        num_to_process = total_slices
+    num_to_process = min(max_slices, total_slices) if max_slices else total_slices
     
-    # Deterministic iteration by index (bypasses any dataloader shuffle)
+    # Sequential iteration by index
     for idx in tqdm(range(num_to_process), desc=desc):
-        image, label, virtual_path = dataset[idx]
-        # image: [C, H, W], label: [1, H, W]
+        case_id = process_single_slice(idx, dataset, images_dir, labels_dir, num_channels)
+        case_ids.add(case_id)
+    
+    return case_ids
+
+
+def export_dataset_parallel(
+    dataset, 
+    images_dir: Path, 
+    labels_dir: Path, 
+    num_channels: int, 
+    desc: str,
+    max_slices: int = None,
+    num_workers: int = 32
+) -> set:
+    """
+    Export a dataset to nnU-Net format using parallel threads.
+    
+    Uses ThreadPoolExecutor for parallel processing. GIL is released
+    during I/O operations (nibabel read/write), allowing good parallelism.
+    
+    Args:
+        dataset: ISLES24Dataset2D instance
+        images_dir: Output directory for images
+        labels_dir: Output directory for labels
+        num_channels: Number of modality channels
+        desc: Progress bar description
+        max_slices: Maximum number of slices to export (None for all)
+        num_workers: Number of parallel threads
+    
+    Returns:
+        Set of exported case identifiers
+    """
+    # Determine number of slices to process
+    total_slices = len(dataset)
+    num_to_process = min(max_slices, total_slices) if max_slices else total_slices
+    
+    case_ids = set()
+    
+    # Create partial function with fixed arguments
+    process_fn = partial(
+        process_single_slice,
+        dataset=dataset,
+        images_dir=images_dir,
+        labels_dir=labels_dir,
+        num_channels=num_channels
+    )
+    
+    # Process slices in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        futures = {executor.submit(process_fn, idx): idx for idx in range(num_to_process)}
         
-        # Parse case_id and slice_idx from virtual_path
-        # Format from ISLES24Dataset2D: "{caseID}_slice{slice_idx}"
-        case_id, slice_part = virtual_path.rsplit("_slice", 1)
-        slice_idx = int(slice_part)
-        
-        # Create case identifier for nnU-Net
-        safe_case_id = f"{case_id}_s{slice_idx:04d}"
-        case_ids.add(safe_case_id)
-        
-        # Save each channel as separate file
-        for ch_idx in range(num_channels):
-            ch_data = image[ch_idx].numpy()  # [H, W]
-            
-            # Create 2D NIfTI (shape [H, W, 1] for 2D)
-            nii_data = ch_data[..., np.newaxis].astype(np.float32)
-            nii_img = nib.Nifti1Image(nii_data, affine=np.eye(4))
-            
-            filename = f"{safe_case_id}_{ch_idx:04d}.nii.gz"
-            nib.save(nii_img, images_dir / filename)
-        
-        # Save label (as uint8 for segmentation)
-        label_data = label[0].numpy()  # [H, W]
-        label_nii = label_data[..., np.newaxis].astype(np.uint8)
-        label_img = nib.Nifti1Image(label_nii, affine=np.eye(4))
-        nib.save(label_img, labels_dir / f"{safe_case_id}.nii.gz")
+        # Collect results with progress bar
+        for future in tqdm(as_completed(futures), total=num_to_process, desc=desc):
+            case_id = future.result()
+            case_ids.add(case_id)
     
     return case_ids
 
@@ -158,13 +232,18 @@ def main(cfg: DictConfig):
     is_test_mode = cfg.nnunet.test
     max_slices = cfg.nnunet.test_max_slices if is_test_mode else None
     
-    # === 4. Print configuration summary ===
+    # === 4. Determine parallel settings ===
+    use_parallel = cfg.nnunet.parallel.enabled
+    num_workers = cfg.nnunet.parallel.num_workers
+    
+    # === 5. Print configuration summary ===
     print(f"\n{'='*60}")
     print(f"nnU-Net Dataset Conversion")
     print(f"{'='*60}")
     print(f"Mode: {'TEST (limited slices)' if is_test_mode else 'FULL EXPORT'}")
     if is_test_mode:
         print(f"Max slices per split: {max_slices}")
+    print(f"Parallel: {'enabled (' + str(num_workers) + ' threads)' if use_parallel else 'disabled'}")
     print(f"Source dataset: {cfg.dataset.name}")
     print(f"Modalities: {list(cfg.dataset.modalities)}")
     print(f"Image size: {cfg.model.image_size}")
@@ -173,7 +252,7 @@ def main(cfg: DictConfig):
     print(f"Output: {dataset_folder}")
     print(f"{'='*60}\n")
     
-    # === 5. Get dataloaders, extract underlying datasets ===
+    # === 6. Get dataloaders, extract underlying datasets ===
     dataloaders = get_dataloaders(cfg)
     
     # Access underlying datasets (bypasses dataloader shuffle)
@@ -189,20 +268,34 @@ def main(cfg: DictConfig):
         print(f"Will export: {min(max_slices, len(train_dataset))} train, {min(max_slices, len(val_dataset))} val")
     print()
     
-    # === 6. Export datasets (deterministic iteration by index) ===
+    # === 7. Export datasets ===
     # Both train and val go into imagesTr/labelsTr - split is defined by splits_final.json
-    train_case_ids = export_dataset(
-        train_dataset, imagesTr, labelsTr, 
-        num_channels, "Exporting training set",
-        max_slices=max_slices
-    )
-    val_case_ids = export_dataset(
-        val_dataset, imagesTr, labelsTr,  # Same folder as train!
-        num_channels, "Exporting validation set",
-        max_slices=max_slices
-    )
+    if use_parallel:
+        train_case_ids = export_dataset_parallel(
+            train_dataset, imagesTr, labelsTr, 
+            num_channels, "Exporting training set",
+            max_slices=max_slices,
+            num_workers=num_workers
+        )
+        val_case_ids = export_dataset_parallel(
+            val_dataset, imagesTr, labelsTr,  # Same folder as train!
+            num_channels, "Exporting validation set",
+            max_slices=max_slices,
+            num_workers=num_workers
+        )
+    else:
+        train_case_ids = export_dataset(
+            train_dataset, imagesTr, labelsTr, 
+            num_channels, "Exporting training set",
+            max_slices=max_slices
+        )
+        val_case_ids = export_dataset(
+            val_dataset, imagesTr, labelsTr,  # Same folder as train!
+            num_channels, "Exporting validation set",
+            max_slices=max_slices
+        )
     
-    # === 7. Generate dataset.json ===
+    # === 8. Generate dataset.json ===
     channel_names = {
         str(i): cfg.dataset.modalities[i] 
         for i in range(num_channels)
@@ -233,7 +326,7 @@ def main(cfg: DictConfig):
     with open(dataset_folder / "dataset.json", "w") as f:
         json.dump(dataset_json, f, indent=2)
     
-    # === 8. Generate splits_final.json ===
+    # === 9. Generate splits_final.json ===
     splits = [{
         "train": sorted(list(train_case_ids)),
         "val": sorted(list(val_case_ids))
@@ -242,7 +335,7 @@ def main(cfg: DictConfig):
     with open(dataset_folder / "splits_final.json", "w") as f:
         json.dump(splits, f, indent=2)
     
-    # === 9. Summary ===
+    # === 10. Summary ===
     print(f"\n{'='*60}")
     print(f"Conversion complete!")
     print(f"{'='*60}")
