@@ -1,0 +1,7 @@
+# nnU-Net export configuration - Local environment
+# Inherits from default, overrides output_dir for local paths
+
+defaults:
+  - default
+
+output_dir: './nnunet_raw'

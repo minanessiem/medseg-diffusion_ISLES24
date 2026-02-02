@@ -6,18 +6,21 @@ Uses existing config infrastructure and data loading structure.
 Outputs preprocessed 2D slices in nnU-Net format for benchmarking.
 
 Usage:
-    # Test mode (default - processes limited slices)
-    python scripts/convert_to_nnunet.py --config-name=convert_nnunet
+    # Local environment - test mode (default - processes limited slices)
+    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local
+    
+    # Cluster environment
+    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_cluster
     
     # Full export
-    python scripts/convert_to_nnunet.py --config-name=convert_nnunet nnunet.test=false
+    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local nnunet.test=false
     
     # Override output location
-    python scripts/convert_to_nnunet.py --config-name=convert_nnunet \
+    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local \
         nnunet.output_dir=/mnt/data/nnUNet_raw
     
     # Different fold
-    python scripts/convert_to_nnunet.py --config-name=convert_nnunet \
+    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local \
         dataset.fold=2
 """
 
@@ -203,7 +206,7 @@ def export_dataset_parallel(
     return case_ids
 
 
-@hydra.main(config_path="../configs", config_name="convert_nnunet", version_base=None)
+@hydra.main(config_path="../configs", config_name="convert_nnunet_local", version_base=None)
 def main(cfg: DictConfig):
     """
     Main conversion entry point.
@@ -216,16 +219,18 @@ def main(cfg: DictConfig):
     setup_seeds(cfg)
     
     # === 2. Build output paths from config ===
-    # NOTE: In nnU-Net, ALL data for training+validation goes into imagesTr/labelsTr
-    # The train/val split is defined by splits_final.json, NOT by folder location
-    # imagesTs is ONLY for held-out test data that won't be used during training
+    # Clean train/test split:
+    # - imagesTr/labelsTr = Training data ONLY
+    # - imagesTs/labelsTs = Validation/test data ONLY (configured fold)
     output_base = Path(cfg.nnunet.output_dir)
     dataset_folder = output_base / f"Dataset{cfg.nnunet.dataset_id}_{cfg.nnunet.dataset_name}"
     
     imagesTr = dataset_folder / "imagesTr"
     labelsTr = dataset_folder / "labelsTr"
+    imagesTs = dataset_folder / "imagesTs"
+    labelsTs = dataset_folder / "labelsTs"
     
-    for d in [imagesTr, labelsTr]:
+    for d in [imagesTr, labelsTr, imagesTs, labelsTs]:
         d.mkdir(parents=True, exist_ok=True)
     
     # === 3. Determine test mode settings ===
@@ -269,7 +274,7 @@ def main(cfg: DictConfig):
     print()
     
     # === 7. Export datasets ===
-    # Both train and val go into imagesTr/labelsTr - split is defined by splits_final.json
+    # Clean separation: train → imagesTr/labelsTr, val → imagesTs/labelsTs
     if use_parallel:
         train_case_ids = export_dataset_parallel(
             train_dataset, imagesTr, labelsTr, 
@@ -278,8 +283,8 @@ def main(cfg: DictConfig):
             num_workers=num_workers
         )
         val_case_ids = export_dataset_parallel(
-            val_dataset, imagesTr, labelsTr,  # Same folder as train!
-            num_channels, "Exporting validation set",
+            val_dataset, imagesTs, labelsTs,
+            num_channels, "Exporting test set (validation fold)",
             max_slices=max_slices,
             num_workers=num_workers
         )
@@ -290,8 +295,8 @@ def main(cfg: DictConfig):
             max_slices=max_slices
         )
         val_case_ids = export_dataset(
-            val_dataset, imagesTr, labelsTr,  # Same folder as train!
-            num_channels, "Exporting validation set",
+            val_dataset, imagesTs, labelsTs,
+            num_channels, "Exporting test set (validation fold)",
             max_slices=max_slices
         )
     
@@ -301,8 +306,9 @@ def main(cfg: DictConfig):
         for i in range(num_channels)
     }
     
-    # numTraining = total cases in imagesTr (both train and val)
-    total_cases = len(train_case_ids) + len(val_case_ids)
+    # numTraining = training cases only (not test/validation)
+    num_training = len(train_case_ids)
+    num_test = len(val_case_ids)
     
     dataset_json = {
         "channel_names": channel_names,
@@ -310,7 +316,7 @@ def main(cfg: DictConfig):
             "background": 0,
             "lesion": 1
         },
-        "numTraining": total_cases,
+        "numTraining": num_training,
         "file_ending": ".nii.gz",
         "description": f"ISLES24 2D slices preprocessed with MedSegDiff pipeline",
         "reference": "Converted from MedSegDiff preprocessing",
@@ -319,43 +325,35 @@ def main(cfg: DictConfig):
             "modalities": list(cfg.dataset.modalities),
             "image_size": cfg.model.image_size,
             "fold": cfg.dataset.fold,
-            "test_mode": is_test_mode
+            "test_mode": is_test_mode,
+            "num_test": num_test
         }
     }
     
     with open(dataset_folder / "dataset.json", "w") as f:
         json.dump(dataset_json, f, indent=2)
     
-    # === 9. Generate splits_final.json ===
-    splits = [{
-        "train": sorted(list(train_case_ids)),
-        "val": sorted(list(val_case_ids))
-    }]
-    
-    with open(dataset_folder / "splits_final.json", "w") as f:
-        json.dump(splits, f, indent=2)
-    
-    # === 10. Summary ===
+    # === 9. Summary ===
     print(f"\n{'='*60}")
     print(f"Conversion complete!")
     print(f"{'='*60}")
-    print(f"Training slices: {len(train_case_ids)}")
-    print(f"Validation slices: {len(val_case_ids)}")
-    print(f"Total in imagesTr: {total_cases}")
+    print(f"Training slices: {num_training}")
+    print(f"Test slices (fold {cfg.dataset.fold}): {num_test}")
     if is_test_mode:
         print(f"\n⚠️  TEST MODE: Only exported {max_slices} slices per split")
         print(f"   Run with nnunet.test=false for full export")
     print(f"\nOutput structure:")
     print(f"  {dataset_folder}/")
     print(f"  ├── dataset.json")
-    print(f"  ├── splits_final.json  (defines train/val split)")
-    print(f"  ├── imagesTr/  ({total_cases * num_channels} files - both train & val)")
-    print(f"  └── labelsTr/  ({total_cases} files - both train & val)")
+    print(f"  ├── imagesTr/  ({num_training * num_channels} files)")
+    print(f"  ├── labelsTr/  ({num_training} files)")
+    print(f"  ├── imagesTs/  ({num_test * num_channels} files)")
+    print(f"  └── labelsTs/  ({num_test} files)")
     print(f"\nNext steps for nnU-Net:")
     print(f"  1. export nnUNet_raw={output_base}")
     print(f"  2. nnUNetv2_plan_and_preprocess -d {cfg.nnunet.dataset_id}")
-    print(f"  3. Copy splits_final.json to nnUNet_preprocessed/Dataset{cfg.nnunet.dataset_id}_{cfg.nnunet.dataset_name}/")
-    print(f"  4. nnUNetv2_train {cfg.nnunet.dataset_id} 2d 0 --npz")
+    print(f"  3. nnUNetv2_train {cfg.nnunet.dataset_id} 2d all")
+    print(f"  4. nnUNetv2_predict -i {imagesTs} -o <output_dir> -d {cfg.nnunet.dataset_id} -c 2d -f all")
 
 
 if __name__ == "__main__":

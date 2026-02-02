@@ -1,5 +1,5 @@
-# Configuration for nnU-Net dataset conversion
-# Usage: python scripts/convert_to_nnunet.py --config-name=convert_nnunet
+# Configuration for nnU-Net dataset conversion - Cluster environment
+# Usage: python scripts/convert_to_nnunet.py --config-name=convert_nnunet_cluster
 #
 # Override examples:
 #   Full export:     nnunet.test=false
@@ -13,7 +13,7 @@ defaults:
   - dataset: isles24
   - augmentation: none  # No augmentation for clean export
   - validation: default  # Needed for val_batch_size in get_dataloaders
-  - nnunet: default
+  - nnunet: cluster
 
 random_seed: 42
 

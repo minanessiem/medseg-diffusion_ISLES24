@@ -2,7 +2,7 @@
 # Used by scripts/convert_to_nnunet.py
 
 # Output settings
-output_dir: '/mnt/datasets/nnunet_raw'           # Base output directory (nnUNet_raw equivalent)
+output_dir: './nnunet_raw'           # Base output directory (nnUNet_raw equivalent)
 dataset_id: '050'                     # 3-digit nnU-Net dataset ID (001-010 reserved for MSD)
 dataset_name: ${dataset.name}         # Dataset name suffix
 
