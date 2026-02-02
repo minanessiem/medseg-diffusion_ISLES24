@@ -241,13 +241,21 @@ def main(cfg: DictConfig):
     use_parallel = cfg.nnunet.parallel.enabled
     num_workers = cfg.nnunet.parallel.num_workers
     
-    # === 5. Print configuration summary ===
+    # === 5. Determine which splits to export ===
+    export_train = cfg.nnunet.export_train
+    export_test = cfg.nnunet.export_test
+    
+    if not export_train and not export_test:
+        raise ValueError("At least one of export_train or export_test must be True")
+    
+    # === 6. Print configuration summary ===
     print(f"\n{'='*60}")
     print(f"nnU-Net Dataset Conversion")
     print(f"{'='*60}")
     print(f"Mode: {'TEST (limited slices)' if is_test_mode else 'FULL EXPORT'}")
     if is_test_mode:
         print(f"Max slices per split: {max_slices}")
+    print(f"Export splits: {'train' if export_train else ''}{' + ' if export_train and export_test else ''}{'test' if export_test else ''}")
     print(f"Parallel: {'enabled (' + str(num_workers) + ' threads)' if use_parallel else 'disabled'}")
     print(f"Source dataset: {cfg.dataset.name}")
     print(f"Modalities: {list(cfg.dataset.modalities)}")
@@ -257,7 +265,7 @@ def main(cfg: DictConfig):
     print(f"Output: {dataset_folder}")
     print(f"{'='*60}\n")
     
-    # === 6. Get dataloaders, extract underlying datasets ===
+    # === 7. Get dataloaders, extract underlying datasets ===
     dataloaders = get_dataloaders(cfg)
     
     # Access underlying datasets (bypasses dataloader shuffle)
@@ -270,37 +278,52 @@ def main(cfg: DictConfig):
     print(f"Total validation slices: {len(val_dataset)}")
     print(f"Channels per slice: {num_channels}")
     if is_test_mode:
-        print(f"Will export: {min(max_slices, len(train_dataset))} train, {min(max_slices, len(val_dataset))} val")
+        if export_train:
+            print(f"Will export train: {min(max_slices, len(train_dataset))} slices")
+        if export_test:
+            print(f"Will export test: {min(max_slices, len(val_dataset))} slices")
     print()
     
-    # === 7. Export datasets ===
+    # === 8. Export datasets ===
     # Clean separation: train → imagesTr/labelsTr, val → imagesTs/labelsTs
-    if use_parallel:
-        train_case_ids = export_dataset_parallel(
-            train_dataset, imagesTr, labelsTr, 
-            num_channels, "Exporting training set",
-            max_slices=max_slices,
-            num_workers=num_workers
-        )
-        val_case_ids = export_dataset_parallel(
-            val_dataset, imagesTs, labelsTs,
-            num_channels, "Exporting test set (validation fold)",
-            max_slices=max_slices,
-            num_workers=num_workers
-        )
-    else:
-        train_case_ids = export_dataset(
-            train_dataset, imagesTr, labelsTr, 
-            num_channels, "Exporting training set",
-            max_slices=max_slices
-        )
-        val_case_ids = export_dataset(
-            val_dataset, imagesTs, labelsTs,
-            num_channels, "Exporting test set (validation fold)",
-            max_slices=max_slices
-        )
+    train_case_ids = set()
+    val_case_ids = set()
     
-    # === 8. Generate dataset.json ===
+    if export_train:
+        if use_parallel:
+            train_case_ids = export_dataset_parallel(
+                train_dataset, imagesTr, labelsTr, 
+                num_channels, "Exporting training set",
+                max_slices=max_slices,
+                num_workers=num_workers
+            )
+        else:
+            train_case_ids = export_dataset(
+                train_dataset, imagesTr, labelsTr, 
+                num_channels, "Exporting training set",
+                max_slices=max_slices
+            )
+    else:
+        print("Skipping training set export (export_train=false)")
+    
+    if export_test:
+        if use_parallel:
+            val_case_ids = export_dataset_parallel(
+                val_dataset, imagesTs, labelsTs,
+                num_channels, "Exporting test set (validation fold)",
+                max_slices=max_slices,
+                num_workers=num_workers
+            )
+        else:
+            val_case_ids = export_dataset(
+                val_dataset, imagesTs, labelsTs,
+                num_channels, "Exporting test set (validation fold)",
+                max_slices=max_slices
+            )
+    else:
+        print("Skipping test set export (export_test=false)")
+    
+    # === 9. Generate dataset.json ===
     channel_names = {
         str(i): cfg.dataset.modalities[i] 
         for i in range(num_channels)
@@ -333,7 +356,7 @@ def main(cfg: DictConfig):
     with open(dataset_folder / "dataset.json", "w") as f:
         json.dump(dataset_json, f, indent=2)
     
-    # === 9. Summary ===
+    # === 10. Summary ===
     print(f"\n{'='*60}")
     print(f"Conversion complete!")
     print(f"{'='*60}")

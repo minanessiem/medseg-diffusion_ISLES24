@@ -10,6 +10,10 @@ dataset_name: ${dataset.name}         # Dataset name suffix
 test: true                            # Set to false for full export
 test_max_slices: 100                  # Max slices per split when test=true
 
+# Split selection - choose which splits to export
+export_train: true                    # Export training set to imagesTr/labelsTr
+export_test: true                     # Export test/validation set to imagesTs/labelsTs
+
 # Parallel processing
 parallel:
   enabled: true                       # Enable parallel export
