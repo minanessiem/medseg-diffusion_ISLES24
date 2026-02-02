@@ -5,3 +5,6 @@ defaults:
   - default
 
 output_dir: '/mnt/datasets/nnunet_raw'
+
+parallel:
+  num_workers: 64
