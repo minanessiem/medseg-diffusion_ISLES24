@@ -439,6 +439,9 @@ def compute_threshold_sweep(
     """
     Compute all metrics at all thresholds.
     
+    For foreground-only metrics (dice), only includes slices with ground truth
+    foreground in the average, matching training validation behavior.
+    
     Args:
         predictions: List of prediction tensors
         ground_truths: List of ground truth tensors
@@ -447,24 +450,49 @@ def compute_threshold_sweep(
     Returns:
         Dictionary with results for each threshold
     """
-    results = {t: {'samples': []} for t in thresholds}
+    results = {t: {'samples': [], 'has_foreground': []} for t in thresholds}
     
     for pred, gt in tqdm(zip(predictions, ground_truths), 
                          total=len(predictions), 
                          desc="Computing metrics"):
+        # Track if this slice has foreground (for foreground-only metrics)
+        has_fg = bool((gt > 0.5).sum() > 0)
+        
         for t in thresholds:
             metrics = compute_metrics_at_threshold(pred, gt, t)
             results[t]['samples'].append(metrics)
+            results[t]['has_foreground'].append(has_fg)
     
     # Aggregate statistics
+    # Foreground-only metrics should only average over slices with foreground
+    foreground_only_metrics = {'dice'}  # Add others if needed
+    
     for t in thresholds:
         samples = results[t]['samples']
+        has_fg_list = results[t]['has_foreground']
+        
         if samples:
             metric_names = samples[0].keys()
             for metric_name in metric_names:
                 values = [s[metric_name] for s in samples]
-                results[t][f'{metric_name}_mean'] = float(np.mean(values))
-                results[t][f'{metric_name}_std'] = float(np.std(values))
+                
+                if metric_name in foreground_only_metrics:
+                    # Only average over slices with foreground (matching training)
+                    fg_values = [v for v, has_fg in zip(values, has_fg_list) if has_fg]
+                    if fg_values:
+                        results[t][f'{metric_name}_mean'] = float(np.mean(fg_values))
+                        results[t][f'{metric_name}_std'] = float(np.std(fg_values))
+                    else:
+                        results[t][f'{metric_name}_mean'] = 0.0
+                        results[t][f'{metric_name}_std'] = 0.0
+                else:
+                    # All slices for other metrics
+                    results[t][f'{metric_name}_mean'] = float(np.mean(values))
+                    results[t][f'{metric_name}_std'] = float(np.std(values))
+        
+        # Count foreground slices for reference
+        results[t]['foreground_slices'] = sum(has_fg_list)
+        results[t]['total_slices'] = len(has_fg_list)
     
     return results
 
@@ -614,11 +642,16 @@ def save_json_summary(
     improvement = dice_at_optimal - dice_at_default
     improvement_pct = (improvement / dice_at_default * 100) if dice_at_default > 0 else 0
     
+    # Get foreground slice count from results
+    sample_threshold = thresholds[0]
+    fg_slices = results[sample_threshold].get('foreground_slices', num_samples)
+    
     summary = {
         'model_name': args.model_name,
         'run_dir': args.run_dir,
         'analysis_timestamp': datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
         'num_samples': num_samples,
+        'foreground_slices': fg_slices,
         'thresholds_evaluated': thresholds,
         'optimal': optimal,
         'auc': {
@@ -686,6 +719,12 @@ def save_summary_text(
         "",
         f"Validation Set: {num_samples} slices",
     ]
+    
+    # Add foreground slice info if available
+    sample_threshold = thresholds[0]
+    if 'foreground_slices' in results[sample_threshold]:
+        fg_slices = results[sample_threshold]['foreground_slices']
+        lines.append(f"  Foreground slices: {fg_slices} ({100*fg_slices/num_samples:.1f}%)")
     
     # Add ensemble info if used
     if args.ensemble_samples >= 2:

@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """
-Evaluate nnU-Net predictions against ground truth labels.
+Compute segmentation metrics for nnU-Net 2D predictions.
 
-Computes standard 2D segmentation metrics (Dice, Precision, Recall, F1, F2)
-by comparing NIfTI prediction files against ground truth labels exported
-via our preprocessing pipeline.
+Evaluates nnU-Net predictions against ground truth labels by computing
+standard 2D segmentation metrics (Dice, Precision, Recall, F1, F2).
+
+This script is designed for 2D slice predictions exported via our
+preprocessing pipeline. It loads NIfTI files, matches predictions to
+ground truth by case ID, and outputs metric summaries.
+
+Metrics computed:
+    - Dice (foreground slices only, matching training behavior)
+    - Precision (positive predictive value)
+    - Recall/Sensitivity (true positive rate)
+    - F1 Score
+    - F2 Score (recall-weighted)
 
 Usage:
-    python3 -m scripts.evaluate_nnunet_predictions \
+    python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \
         --pred-dir ../nnUNet_exports/predictionsTs/ \
         --gt-dir nnunet_raw/Dataset050_isles24/labelsTs/
 
 Examples:
     # Evaluate predictions from a trained nnU-Net model
-    python3 -m scripts.evaluate_nnunet_predictions \
+    python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \
         --pred-dir /path/to/nnUNet_results/predictionsTs \
         --gt-dir /path/to/nnunet_raw/Dataset050_isles24/labelsTs
 """
@@ -31,7 +41,8 @@ import torch
 from tqdm import tqdm
 
 # Add project root to path for imports
-PROJECT_ROOT = Path(__file__).parent.parent
+# Script is in scripts/nnunet/, so go up two levels
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -51,7 +62,7 @@ from src.metrics.metrics import (
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Evaluate nnU-Net predictions against ground truth labels',
+        description='Compute segmentation metrics for nnU-Net 2D predictions',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -291,7 +302,7 @@ def save_results(
     fg_pct = 100 * sc["foreground"] / sc["total"] if sc["total"] > 0 else 0
     
     lines = [
-        "nnU-Net Prediction Evaluation Results",
+        "Segmentation Metrics for nnU-Net 2D Predictions",
         "=" * 50,
         f"Timestamp: {timestamp}",
         f"Predictions: {pred_dir.resolve()}",
@@ -357,7 +368,7 @@ def main():
         sys.exit(1)
     
     print("=" * 60)
-    print("nnU-Net Prediction Evaluation")
+    print("Segmentation Metrics for nnU-Net 2D Predictions")
     print("=" * 60)
     print(f"Predictions: {args.pred_dir}")
     print(f"Ground Truth: {args.gt_dir}")
@@ -380,7 +391,7 @@ def main():
     save_results(results, args.pred_dir, args.gt_dir)
     
     print("\n" + "=" * 60)
-    print("Evaluation complete!")
+    print("Metrics computation complete!")
     print("=" * 60)
 
 

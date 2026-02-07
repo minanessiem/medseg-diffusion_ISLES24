@@ -6,19 +6,19 @@ This script wraps the threshold analysis tool and submits it as a SLURM job.
 It follows the same patterns as single_job_runner.py for consistency.
 
 Usage:
-    python scripts/slurm/run_threshold_analysis.py \
+    python scripts/analysis/slurm_runners/run_threshold_analysis.py \
         --run-dir <path> \
         --model-name <name> \
         [--gpus 1] [--time 00:30:00] [--dry-run]
 
 Examples:
     # Basic submission
-    python scripts/slurm/run_threshold_analysis.py \
+    python scripts/analysis/slurm_runners/run_threshold_analysis.py \
         --run-dir /mnt/outputs/discriminative_swinunetr/run_2026-01-17_10-30-00 \
         --model-name best_model_step_002000_dice_2d_fg_0.1815
 
     # With custom resources and dry-run
-    python scripts/slurm/run_threshold_analysis.py \
+    python scripts/analysis/slurm_runners/run_threshold_analysis.py \
         --run-dir /mnt/outputs/my_run \
         --model-name best_model \
         --gpus 1 \
@@ -26,7 +26,7 @@ Examples:
         --dry-run
 
     # Custom threshold range
-    python scripts/slurm/run_threshold_analysis.py \
+    python scripts/analysis/slurm_runners/run_threshold_analysis.py \
         --run-dir /mnt/outputs/my_run \
         --model-name best_model \
         --thresholds 0.1:0.9:0.02
@@ -38,7 +38,7 @@ import sys
 from datetime import datetime
 
 # Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 

@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
 """
-Convert ISLES24 dataset to nnU-Net v2 format using our preprocessing pipeline.
+Convert ISLES24 2D dataset to nnU-Net v2 format using our preprocessing pipeline.
 
-Uses existing config infrastructure and data loading structure.
-Outputs preprocessed 2D slices in nnU-Net format for benchmarking.
+This script is specifically designed for ISLES24Dataset2D, which provides
+preprocessed 2D axial slices. It exports these slices to nnU-Net format
+for benchmarking against our diffusion-based segmentation method.
+
+Dataset-specific assumptions:
+    - Uses ISLES24Dataset2D via get_dataloaders()
+    - Parses slice paths in format "{caseID}_slice{idx}"
+    - Outputs 2D NIfTI files with shape [H, W, 1]
+
+For 3D volumes or other datasets, create a new converter script
+(e.g., convert_isles24_3d_dataset_to_nnunet.py).
 
 Usage:
     # Local environment - test mode (default - processes limited slices)
-    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=convert_nnunet_local
     
     # Cluster environment
-    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_cluster
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=convert_nnunet_cluster
     
     # Full export
-    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local nnunet.test=false
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=convert_nnunet_local nnunet.test=false
     
     # Override output location
-    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local \
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=convert_nnunet_local \
         nnunet.output_dir=/mnt/data/nnUNet_raw
     
     # Different fold
-    python3 -m scripts.convert_to_nnunet --config-name=convert_nnunet_local \
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=convert_nnunet_local \
         dataset.fold=2
 """
 
@@ -206,7 +220,7 @@ def export_dataset_parallel(
     return case_ids
 
 
-@hydra.main(config_path="../configs", config_name="convert_nnunet_local", version_base=None)
+@hydra.main(config_path="../../configs", config_name="convert_nnunet_local", version_base=None)
 def main(cfg: DictConfig):
     """
     Main conversion entry point.
@@ -250,7 +264,7 @@ def main(cfg: DictConfig):
     
     # === 6. Print configuration summary ===
     print(f"\n{'='*60}")
-    print(f"nnU-Net Dataset Conversion")
+    print(f"ISLES24 2D Dataset → nnU-Net Conversion")
     print(f"{'='*60}")
     print(f"Mode: {'TEST (limited slices)' if is_test_mode else 'FULL EXPORT'}")
     if is_test_mode:
