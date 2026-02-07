@@ -23,7 +23,7 @@ BASE_CONFIG = {
     "host_code_dir": os.path.join(HOME_DIR, "code"),
     "host_datasets_dir": os.path.join(ssd_store_path, "datasets"),
     "host_outputs_dir": os.path.join(ssd_store_path, "outputs"),
-    "container_image": os.path.join(ssd_store_path, "MedSegDiff_updateTMUX_191025.sqsh"),
+    "container_image": os.path.join(ssd_store_path, "MedSegDiff_nnUNet_010226.sqsh"),
     
     # Container mount points (where directories appear inside container)
     "container_code_dir": "/mnt/code",
