@@ -7,13 +7,13 @@
 #   Custom output:   nnunet.output_dir=/mnt/data/nnUNet_raw
 
 defaults:
-  - _self_
   - environment: isles_cluster
   - model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple  # For image_size
   - dataset: isles24_team1
   - augmentation: none  # No augmentation for clean export
   - validation: default  # Needed for val_batch_size in get_dataloaders
   - nnunet: cluster
+  - _self_  # Must be last so local overrides (dataset_id, dataset_name) take precedence
 
 random_seed: 42
 

@@ -114,9 +114,53 @@ def resolve_interpolations(cfg: Dict, root: Dict = None) -> Dict:
         return current
     return cfg
 
+def _find_self_index(defaults: list) -> int:
+    """
+    Find the position of _self_ in a defaults list.
+    
+    Returns the index of _self_, or len(defaults) if not present
+    (Hydra treats absent _self_ as if it were last).
+    """
+    for i, default in enumerate(defaults):
+        if default == '_self_':
+            return i
+    return len(defaults)
+
+
+def _process_group_default(default, group: str) -> tuple:
+    """
+    Process a single default entry from a group config's defaults list.
+    
+    Args:
+        default: Either a string (same-group reference) or dict (cross-group)
+        group: The current config group directory
+        
+    Returns:
+        Tuple of (section_key, loaded_config) where section_key is None
+        for same-group merges or the section name for cross-group merges
+    """
+    if isinstance(default, str):
+        sub_cfg = load_group_config(group, default)
+        return None, sub_cfg
+    elif isinstance(default, dict):
+        key, file_name = next(iter(default.items()))
+        if key.startswith('override /'):
+            section = key[len('override /'):].strip()
+        else:
+            section = key
+        sub_cfg = load_group_config(section, file_name)
+        return section, sub_cfg
+    return None, {}
+
+
 def load_group_config(group: str, name: str) -> Dict:
     """
     Load a config file from a config group, recursively resolving its defaults.
+    
+    Respects _self_ position for merge ordering (Hydra semantics):
+    - Defaults BEFORE _self_: overridden by local values
+    - Defaults AFTER _self_: override local values
+    - If _self_ is absent: treated as last (local values win)
     
     Args:
         group: Config group directory (e.g., 'training', 'loss', 'model')
@@ -134,83 +178,119 @@ def load_group_config(group: str, name: str) -> Dict:
     
     # Recursively resolve defaults within this config
     if 'defaults' in cfg:
-        base_cfg = {}
-        for default in cfg['defaults']:
-            if isinstance(default, str):
-                if default == '_self_':
-                    continue
-                # Load base config from same group
-                sub_cfg = load_group_config(group, default)
-                base_cfg = deep_merge(base_cfg, sub_cfg)
-            elif isinstance(default, dict):
-                # Handle nested group references (less common in group configs)
-                key, file_name = next(iter(default.items()))
-                if key.startswith('override /'):
-                    section = key[len('override /'):].strip()
-                else:
-                    section = key
-                sub_cfg = load_group_config(section, file_name)
-                base_cfg[section] = sub_cfg
+        defaults = cfg.pop('defaults')
+        local_values = dict(cfg)
         
-        # Remove defaults key and merge: base first, then current config overrides
-        del cfg['defaults']
-        cfg = deep_merge(base_cfg, cfg)
+        # Find _self_ position to determine merge order
+        self_idx = _find_self_index(defaults)
+        before_self = [d for d in defaults[:self_idx] if d != '_self_']
+        after_self = [d for d in defaults[self_idx + 1:] if d != '_self_']
+        
+        # Step 1: Merge defaults BEFORE _self_ (local values will override these)
+        cfg = {}
+        for default in before_self:
+            section, sub_cfg = _process_group_default(default, group)
+            if section is not None:
+                cfg[section] = sub_cfg
+            else:
+                cfg = deep_merge(cfg, sub_cfg)
+        
+        # Step 2: Apply _self_ (local values override defaults before it)
+        cfg = deep_merge(cfg, local_values)
+        
+        # Step 3: Merge defaults AFTER _self_ (these override local values)
+        for default in after_self:
+            section, sub_cfg = _process_group_default(default, group)
+            if section is not None:
+                cfg[section] = sub_cfg
+            else:
+                cfg = deep_merge(cfg, sub_cfg)
+    
+    return cfg
+
+
+def _process_top_level_default(default, current_cfg: Dict) -> Dict:
+    """
+    Process a single default entry from a top-level config's defaults list.
+    
+    Handles string references (recursive config loads), dict references
+    (config group loads), and Hydra's 'override /' syntax.
+    
+    Args:
+        default: Either a string or dict default entry
+        current_cfg: Current accumulated config (for override vs merge logic)
+        
+    Returns:
+        Updated config dict with the default merged in
+    """
+    cfg = current_cfg
+    
+    if isinstance(default, str):
+        # Simple string reference: load another config file recursively
+        sub_cfg = load_config(default, [])
+        cfg = deep_merge(cfg, sub_cfg)
+    elif isinstance(default, dict):
+        key, file_name = next(iter(default.items()))
+        
+        # Handle Hydra's 'override /section: file' syntax
+        is_override = False
+        if key.startswith('override /'):
+            is_override = True
+            section = key[len('override /'):].strip()
+        else:
+            section = key
+        
+        # Use load_group_config to recursively resolve defaults
+        sub_cfg = load_group_config(section, file_name)
+        
+        # Override replaces, normal default merges
+        if is_override:
+            cfg[section] = sub_cfg
+        else:
+            if section in cfg and isinstance(cfg[section], dict):
+                cfg[section] = deep_merge(cfg[section], sub_cfg)
+            else:
+                cfg[section] = sub_cfg
     
     return cfg
 
 
 def load_config(config_name: str, overrides: List[str]) -> Dict:
-    """Load and merge YAML configs mimicking basic Hydra composition."""
+    """
+    Load and merge YAML configs mimicking Hydra composition.
+    
+    Respects _self_ position for merge ordering:
+    - Defaults BEFORE _self_: overridden by local values
+    - Defaults AFTER _self_: override local values
+    - If _self_ is absent: treated as last (local values win)
+    """
     config_path = f"configs/{config_name}.yaml"  # Relative from project root
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f) or {}
     
-    # Save local values (non-defaults) to apply AFTER loading defaults
-    # This ensures local values override defaults (Hydra semantics)
-    local_values = {k: v for k, v in cfg.items() if k != 'defaults'}
-    
     # Merge defaults with nesting (recursively)
     if 'defaults' in cfg:
-        # Start with empty base, accumulate defaults
-        base_cfg = {}
-        for default in cfg['defaults']:
-            if isinstance(default, str):
-                # Skip Hydra's special _self_ keyword (controls merge order)
-                if default == '_self_':
-                    continue
-                # Simple string reference: load another config file recursively
-                # e.g., '- local' or '- cluster'
-                sub_cfg = load_config(default, [])  # Recursive call
-                base_cfg = deep_merge(base_cfg, sub_cfg)
-            elif isinstance(default, dict):
-                key, file_name = next(iter(default.items()))
-                
-                # Handle Hydra's 'override /section: file' syntax
-                is_override = False
-                if key.startswith('override /'):
-                    is_override = True
-                    section = key[len('override /'):].strip()  # Strip 'override /' prefix
-                else:
-                    section = key
-                
-                # Use load_group_config to recursively resolve defaults
-                sub_cfg = load_group_config(section, file_name)
-                
-                # Override replaces, normal default merges into base
-                if is_override:
-                    # Override: replace entire section in base
-                    base_cfg[section] = sub_cfg
-                else:
-                    # Normal default: merge if section exists, else assign
-                    if section in base_cfg and isinstance(base_cfg[section], dict):
-                        base_cfg[section] = deep_merge(base_cfg[section], sub_cfg)
-                    else:
-                        base_cfg[section] = sub_cfg
+        defaults = cfg.pop('defaults')
+        local_values = {k: v for k, v in cfg.items()}
         
-        # Now merge: base_cfg (defaults) first, then local_values override
-        cfg = deep_merge(base_cfg, local_values)
+        # Find _self_ position to determine merge order
+        self_idx = _find_self_index(defaults)
+        before_self = [d for d in defaults[:self_idx] if d != '_self_']
+        after_self = [d for d in defaults[self_idx + 1:] if d != '_self_']
+        
+        # Step 1: Merge defaults BEFORE _self_ (local values will override these)
+        cfg = {}
+        for default in before_self:
+            cfg = _process_top_level_default(default, cfg)
+        
+        # Step 2: Apply _self_ (local values override defaults before it)
+        cfg = deep_merge(cfg, local_values)
+        
+        # Step 3: Merge defaults AFTER _self_ (these override local values)
+        for default in after_self:
+            cfg = _process_top_level_default(default, cfg)
     
-    # Apply overrides (command-line overrides come last)
+    # Apply overrides (command-line overrides come last, always win)
     for ovr in overrides:
         cfg = apply_override(cfg, ovr)
     
