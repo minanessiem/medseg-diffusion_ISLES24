@@ -1,7 +1,7 @@
 defaults:
   - isles24
 
-name: isles24_emperical
+name: isles24
 modalities: ['CBF_min_0_max_70', 'CTA_min_minval_max_maxval', 'CTA_w_75_l_40', 'NCCT_level_20_window_60', 'NCCT_min_minval_max_maxval', 'TMAX_min_4_max_30']
 num_modalities: 6
 

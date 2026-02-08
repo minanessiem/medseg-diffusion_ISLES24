@@ -19,6 +19,7 @@ random_seed: 42
 
 nnunet:
   dataset_id: '052'
+  dataset_name: isles24_team1
 
 hydra:
   run:
