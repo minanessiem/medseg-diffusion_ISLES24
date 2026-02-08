@@ -1,0 +1,26 @@
+# Configuration for nnU-Net dataset conversion - Cluster environment (emperical modalities)
+# Usage: python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet --config-name=convert_nnunet_cluster_emperical
+#
+# Override examples:
+#   Full export:     nnunet.test=false
+#   Different fold:  dataset.fold=2
+#   Custom output:   nnunet.output_dir=/mnt/data/nnUNet_raw
+
+defaults:
+  - _self_
+  - environment: isles_cluster
+  - model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple  # For image_size
+  - dataset: isles24_emperical
+  - augmentation: none  # No augmentation for clean export
+  - validation: default  # Needed for val_batch_size in get_dataloaders
+  - nnunet: cluster
+
+random_seed: 42
+
+nnunet:
+  dataset_id: '051'
+
+hydra:
+  run:
+    dir: '.'
+
