@@ -7,7 +7,7 @@ as a non-interactive SLURM job.
 
 Usage:
     python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
-        [--time 02:00:00] [--cpus 64] [--mem 48G] \
+        [--time 02:00:00] [--cpus 64] [--mem 64G] \
         [--config-name convert_nnunet_cluster] \
         [hydra_overrides...] \
         [--dry-run]
@@ -49,7 +49,7 @@ from scripts.slurm.job_runner import SlurmJobRunner
 CONVERT_DEFAULTS = {
     "time": "02:00:00",
     "cpus_per_task": 64,
-    "mem": "48G",
+    "mem": "64G",
 }
 
 
