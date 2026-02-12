@@ -50,8 +50,9 @@ class SwinUNetRAdapter(nn.Module):
         num_heads = self._parse_list(model_cfg.num_heads)
         
         # Initialize MONAI SwinUNETR
-        # Note: MONAI SwinUNETR doesn't take img_size - it infers from input
+        # img_size is required by MONAI SwinUNETR
         self.model = SwinUNETR(
+            img_size=(model_cfg.image_size, model_cfg.image_size),
             in_channels=model_cfg.image_channels,
             out_channels=model_cfg.out_channels,
             feature_size=model_cfg.feature_size,

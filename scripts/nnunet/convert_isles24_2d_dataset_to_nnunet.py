@@ -47,6 +47,8 @@ try:
 except ImportError:
     pass
 
+import gc
+import shutil
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import nibabel as nib
@@ -81,6 +83,52 @@ def setup_export_config_aliases(cfg: DictConfig) -> DictConfig:
     
     OmegaConf.set_struct(cfg, True)
     return cfg
+
+
+def clear_directory(directory: Path, description: str = "") -> int:
+    """
+    Remove all files from a directory, keeping the directory itself.
+    
+    Args:
+        directory: Path to directory to clear
+        description: Human-readable description for logging
+    
+    Returns:
+        Number of files removed
+    """
+    if not directory.exists():
+        return 0
+    
+    files = list(directory.glob("*"))
+    count = len(files)
+    
+    if count > 0:
+        # Remove and recreate for speed (faster than individual deletes)
+        shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        label = f" ({description})" if description else ""
+        print(f"  Cleared {count} stale files from {directory.name}/{label}")
+    
+    return count
+
+
+def count_files_in_directory(directory: Path, pattern: str = "*.nii.gz") -> int:
+    """
+    Count files matching a pattern in a directory.
+    
+    Used to determine numTraining from existing files on disk
+    when only exporting the test split (resume scenario).
+    
+    Args:
+        directory: Path to directory
+        pattern: Glob pattern to match
+    
+    Returns:
+        Number of matching files
+    """
+    if not directory.exists():
+        return 0
+    return len(list(directory.glob(pattern)))
 
 
 def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path, 
@@ -304,6 +352,10 @@ def main(cfg: DictConfig):
     val_case_ids = set()
     
     if export_train:
+        # Clear stale files from previous runs
+        clear_directory(imagesTr, "training images")
+        clear_directory(labelsTr, "training labels")
+        
         if use_parallel:
             train_case_ids = export_dataset_parallel(
                 train_dataset, imagesTr, labelsTr, 
@@ -320,7 +372,18 @@ def main(cfg: DictConfig):
     else:
         print("Skipping training set export (export_train=false)")
     
+    # === 8b. Memory cleanup between phases ===
+    # Free training data references before starting validation export
+    # to avoid accumulating memory from both phases simultaneously
+    del train_dataset
+    del dataloaders
+    gc.collect()
+    
     if export_test:
+        # Clear stale files from previous runs
+        clear_directory(imagesTs, "test images")
+        clear_directory(labelsTs, "test labels")
+        
         if use_parallel:
             val_case_ids = export_dataset_parallel(
                 val_dataset, imagesTs, labelsTs,
@@ -337,14 +400,25 @@ def main(cfg: DictConfig):
     else:
         print("Skipping test set export (export_test=false)")
     
+    # Free validation data references
+    del val_dataset
+    gc.collect()
+    
     # === 9. Generate dataset.json ===
     channel_names = {
         str(i): cfg.dataset.modalities[i] 
         for i in range(num_channels)
     }
     
-    # numTraining = training cases only (not test/validation)
-    num_training = len(train_case_ids)
+    # numTraining: use exported count if we exported, otherwise count from disk
+    # This supports the resume scenario where only test is exported but
+    # dataset.json still needs the correct numTraining from a previous run
+    if export_train:
+        num_training = len(train_case_ids)
+    else:
+        num_training = count_files_in_directory(labelsTr, "*.nii.gz")
+        print(f"Counted {num_training} existing training labels on disk")
+    
     num_test = len(val_case_ids)
     
     dataset_json = {
@@ -386,11 +460,27 @@ def main(cfg: DictConfig):
     print(f"  ├── labelsTr/  ({num_training} files)")
     print(f"  ├── imagesTs/  ({num_test * num_channels} files)")
     print(f"  └── labelsTs/  ({num_test} files)")
-    print(f"\nNext steps for nnU-Net:")
+    # Build helpful paths for next steps
+    dataset_id = cfg.nnunet.dataset_id
+    pred_dir = f"/mnt/outputs/nnunet_results/predictionsTs_{cfg.nnunet.dataset_name}"
+    
+    print(f"\nNext steps — Raw nnU-Net commands:")
     print(f"  1. export nnUNet_raw={output_base}")
-    print(f"  2. nnUNetv2_plan_and_preprocess -d {cfg.nnunet.dataset_id}")
-    print(f"  3. nnUNetv2_train {cfg.nnunet.dataset_id} 2d all")
-    print(f"  4. nnUNetv2_predict -i {imagesTs} -o <output_dir> -d {cfg.nnunet.dataset_id} -c 2d -f all")
+    print(f"  2. nnUNetv2_plan_and_preprocess -d {dataset_id} --verify_dataset_integrity")
+    print(f"  3. nnUNetv2_train {dataset_id} 2d all")
+    print(f"  4. nnUNetv2_predict -i {imagesTs} -o {pred_dir} -d {dataset_id} -c 2d -f all")
+    print(f"  5. python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \\")
+    print(f"       --pred-dir {pred_dir} --gt-dir {labelsTs}")
+    
+    print(f"\nNext steps — SLURM runners:")
+    print(f"  1. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command preprocess \\")
+    print(f"       -d {dataset_id} --verify")
+    print(f"  2. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command train \\")
+    print(f"       -d {dataset_id} -c 2d -f all")
+    print(f"  3. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command predict \\")
+    print(f"       -d {dataset_id} -i {imagesTs} -o {pred_dir}")
+    print(f"  4. python3 -m scripts.nnunet.slurm_runners.run_compute_segmentation_metrics_for_nnunet_2d_predictions \\")
+    print(f"       --pred-dir {pred_dir} --gt-dir {labelsTs}")
 
 
 if __name__ == "__main__":
