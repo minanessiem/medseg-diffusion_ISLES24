@@ -11,6 +11,7 @@ import os
 import csv
 import re
 import torch
+import torch.nn as nn
 from typing import Dict, List, Tuple
 
 
@@ -176,6 +177,61 @@ def save_interval_checkpoint(
     return saved_files
 
 
+def _build_ema_state_dict(diffusion: nn.Module, ema_params: List) -> dict:
+    """
+    Build a correctly-aligned EMA state dict from EMA parameters.
+    
+    The EMA parameter list (from ``copy.deepcopy(list(diffusion.parameters()))``)
+    contains one tensor per *unique* parameter, in ``parameters()`` iteration order.
+    This helper maps those values back to the full ``state_dict()`` key space,
+    correctly handling:
+    
+    - **Registered buffers** (e.g. sinusoidal embeddings): preserved from the
+      live model since EMA does not track them.
+    - **Shared parameters under multiple keys** (e.g. ``model.conv.weight`` and
+      ``wrapped_model.base_model.conv.weight``): all aliases receive the same
+      EMA value.
+    
+    Args:
+        diffusion: The live diffusion model (provides architecture and buffers).
+        ema_params: Flat list of EMA parameter tensors, one per unique parameter
+                    in ``diffusion.parameters()`` order.
+    
+    Returns:
+        Complete state dict (same keys as ``diffusion.state_dict()``) with
+        parameter values replaced by their EMA counterparts and buffers
+        preserved from the live model.
+    """
+    # Step 1: Map canonical (deduplicated) parameter names → EMA values
+    canonical_names = [name for name, _ in diffusion.named_parameters()]
+    ema_map = dict(zip(canonical_names, (p.data for p in ema_params)))
+    
+    # Step 2: Build name → canonical name mapping for ALL parameter names,
+    # including shared duplicates (e.g. wrapped_model.base_model.X → model.X).
+    # named_parameters(remove_duplicate=False) yields every parameter path,
+    # including aliases that point to the same underlying tensor.
+    name_to_canonical = {}
+    seen_param_ids = {}
+    for name, param in diffusion.named_parameters(remove_duplicate=False):
+        pid = id(param)
+        if pid not in seen_param_ids:
+            seen_param_ids[pid] = name   # First occurrence is canonical
+        name_to_canonical[name] = seen_param_ids[pid]
+    
+    # Step 3: Assemble the complete EMA state dict
+    ema_state = {}
+    for key, value in diffusion.state_dict().items():
+        if key in name_to_canonical:
+            # Parameter (canonical or shared alias) → use EMA value
+            canonical = name_to_canonical[key]
+            ema_state[key] = ema_map[canonical]
+        else:
+            # Buffer or other non-parameter state → keep from live model
+            ema_state[key] = value
+    
+    return ema_state
+
+
 def save_best_checkpoint(
     diffusion,
     ema_params: List,
@@ -231,13 +287,7 @@ def save_best_checkpoint(
             format_kwargs['rate'] = formatted_rate
             ema_path = f"{run_dir}{config.ema_template.format(**format_kwargs)}"
             
-            # Build EMA state dict
-            ema_state = {
-                k: v for k, v in zip(
-                    diffusion.state_dict().keys(),
-                    (p.data for p in params)
-                )
-            }
+            ema_state = _build_ema_state_dict(diffusion, params)
             torch.save(ema_state, ema_path)
             saved_files.append(ema_path)
             print(f"  ├─ EMA ({rate}): {ema_path}")

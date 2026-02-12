@@ -110,6 +110,13 @@ def parse_arguments() -> argparse.Namespace:
         help='Device to use (default: cuda if available, else cpu)'
     )
     
+    # EMA model option
+    parser.add_argument(
+        '--ema',
+        action='store_true',
+        help='Use EMA (Exponential Moving Average) version of the model checkpoint'
+    )
+    
     # Ensemble options (for diffusion models)
     parser.add_argument(
         '--ensemble-samples',
@@ -174,13 +181,14 @@ def load_config_from_run_dir(run_dir: str) -> DictConfig:
 # Model Loading
 # ============================================================================
 
-def find_checkpoint(run_dir: str, model_name: str) -> str:
+def find_checkpoint(run_dir: str, model_name: str, use_ema: bool = False) -> str:
     """
     Search for model checkpoint in standard locations.
     
     Args:
         run_dir: Path to run directory
         model_name: Model checkpoint name (without .pth)
+        use_ema: If True, search for EMA version of the checkpoint
         
     Returns:
         Full path to checkpoint file
@@ -188,26 +196,48 @@ def find_checkpoint(run_dir: str, model_name: str) -> str:
     Raises:
         FileNotFoundError: If checkpoint not found in any location
     """
-    # Add .pth extension if not present
-    if not model_name.endswith('.pth'):
-        model_name = f'{model_name}.pth'
+    import glob
     
-    # Search locations in priority order
-    candidates = [
-        os.path.join(run_dir, 'models', 'best', model_name),
-        os.path.join(run_dir, 'models', 'checkpoints', model_name),
-        os.path.join(run_dir, 'models', model_name),
+    # Strip .pth extension if present (we'll add it back)
+    if model_name.endswith('.pth'):
+        model_name = model_name[:-4]
+    
+    # Search directories in priority order
+    search_dirs = [
+        os.path.join(run_dir, 'models', 'best'),
+        os.path.join(run_dir, 'models', 'checkpoints'),
+        os.path.join(run_dir, 'models'),
     ]
     
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-    
-    raise FileNotFoundError(
-        f"Checkpoint not found: {model_name}\n"
-        f"Searched locations:\n" + 
-        "\n".join(f"  - {p}" for p in candidates)
-    )
+    if use_ema:
+        # Search for EMA file: {model_name}_ema_*.pth
+        for search_dir in search_dirs:
+            pattern = os.path.join(search_dir, f'{model_name}_ema_*.pth')
+            matches = glob.glob(pattern)
+            if matches:
+                if len(matches) > 1:
+                    print(f"  Warning: Multiple EMA files found, using: {os.path.basename(matches[0])}")
+                return matches[0]
+        
+        raise FileNotFoundError(
+            f"EMA checkpoint not found for: {model_name}\n"
+            f"Searched pattern: {model_name}_ema_*.pth\n"
+            f"Searched locations:\n" + 
+            "\n".join(f"  - {d}" for d in search_dirs)
+        )
+    else:
+        # Search for regular file: {model_name}.pth
+        candidates = [os.path.join(d, f'{model_name}.pth') for d in search_dirs]
+        
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        
+        raise FileNotFoundError(
+            f"Checkpoint not found: {model_name}.pth\n"
+            f"Searched locations:\n" + 
+            "\n".join(f"  - {p}" for p in candidates)
+        )
 
 
 def is_discriminative_model(cfg: DictConfig) -> bool:
@@ -219,6 +249,9 @@ def is_discriminative_model(cfg: DictConfig) -> bool:
 def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
     """
     Build model/diffusion from config and load checkpoint weights.
+    
+    Supports regular and EMA checkpoints (both saved as full state dicts),
+    with fallback prefix stripping for DDP/adapter-wrapped models.
     
     For discriminative models: Returns the model directly
     For diffusion models: Returns the full diffusion wrapper with sample() method
@@ -254,42 +287,40 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
     elif 'state_dict' in state_dict:
         state_dict = state_dict['state_dict']
     
-    # Get the expected keys from the model to determine correct prefix handling
+    # ── Prefix stripping fallback (DDP, adapter wrappers, etc.) ──
     model_keys = set(model.state_dict().keys())
     checkpoint_keys = set(state_dict.keys())
     
-    # Try to find the correct prefix mapping
-    def strip_prefix(state_dict: dict, prefix: str) -> dict:
-        """Remove a prefix from all keys in state_dict."""
-        return {k[len(prefix):] if k.startswith(prefix) else k: v 
-                for k, v in state_dict.items()}
+    if not (model_keys & checkpoint_keys):
+        # No direct overlap — try stripping common prefixes
+        prefixes_to_try = [
+            'module.',                    # DataParallel/DDP
+            'wrapped_model.base_model.',  # Adapter wrapper
+            'model.model.',               # Double adapter wrapping (SwinUNETR)
+            'model.',                     # Single model wrapper
+        ]
+        
+        best_match = state_dict
+        best_overlap = 0
+        
+        for prefix in prefixes_to_try:
+            if any(k.startswith(prefix) for k in state_dict.keys()):
+                stripped = {
+                    k[len(prefix):] if k.startswith(prefix) else k: v
+                    for k, v in state_dict.items()
+                }
+                overlap = len(model_keys & set(stripped.keys()))
+                if overlap > best_overlap:
+                    best_match = stripped
+                    best_overlap = overlap
+                    print(f"  Stripped prefix '{prefix}' -> {overlap} matching keys")
+        
+        state_dict = best_match
     
-    # Common prefixes to try stripping (in order of priority)
-    prefixes_to_try = [
-        'module.',                    # DataParallel/DDP
-        'wrapped_model.base_model.',  # EMA wrapper
-        'model.model.',               # Double adapter wrapping (SwinUNETR)
-        'model.',                     # Single model wrapper (only if not diffusion)
-    ]
-    
-    # Try each prefix and see if it results in matching keys
-    best_match = state_dict
-    best_overlap = len(model_keys & checkpoint_keys)
-    
-    for prefix in prefixes_to_try:
-        if any(k.startswith(prefix) for k in state_dict.keys()):
-            stripped = strip_prefix(state_dict, prefix)
-            overlap = len(model_keys & set(stripped.keys()))
-            if overlap > best_overlap:
-                best_match = stripped
-                best_overlap = overlap
-                print(f"  Stripped prefix '{prefix}' -> {overlap} matching keys")
-    
-    state_dict = best_match
-    
-    # Final attempt: if still no match, try strict=False loading with diagnostic
+    # ── Load with diagnostics ──
     try:
         model.load_state_dict(state_dict)
+        print(f"  Loaded {len(state_dict)} keys successfully")
     except RuntimeError as e:
         print(f"  Warning: Strict loading failed, trying non-strict...")
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -297,6 +328,7 @@ def load_model(cfg: DictConfig, checkpoint_path: str, device: str) -> nn.Module:
             print(f"  Missing keys ({len(missing)}): {missing[:5]}...")
         if unexpected:
             print(f"  Unexpected keys ({len(unexpected)}): {unexpected[:5]}...")
+    
     model.to(device)
     model.eval()
     
@@ -649,6 +681,7 @@ def save_json_summary(
     summary = {
         'model_name': args.model_name,
         'run_dir': args.run_dir,
+        'use_ema': args.ema,
         'analysis_timestamp': datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
         'num_samples': num_samples,
         'foreground_slices': fg_slices,
@@ -710,10 +743,11 @@ def save_summary_text(
     dice_at_optimal = optimal['dice']['value']
     improvement_pct = ((dice_at_optimal - dice_at_default) / dice_at_default * 100) if dice_at_default > 0 else 0
     
+    ema_str = " (EMA)" if args.ema else ""
     lines = [
         "Threshold Analysis Report",
         "=" * 50,
-        f"Model: {args.model_name}",
+        f"Model: {args.model_name}{ema_str}",
         f"Run: {args.run_dir}",
         f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -1073,6 +1107,7 @@ def main():
     print("=" * 60)
     print(f"  Run dir: {args.run_dir}")
     print(f"  Model: {args.model_name}")
+    print(f"  EMA: {'yes' if args.ema else 'no'}")
     print(f"  Device: {device}")
     print(f"  Output: {output_dir}")
     if args.ensemble_samples >= 2:
@@ -1086,8 +1121,9 @@ def main():
     cfg = load_config_from_run_dir(args.run_dir)
     
     print("[2/8] Loading model...")
-    checkpoint_path = find_checkpoint(args.run_dir, args.model_name)
-    print(f"  Checkpoint: {checkpoint_path}")
+    checkpoint_path = find_checkpoint(args.run_dir, args.model_name, use_ema=args.ema)
+    ema_str = " (EMA)" if args.ema else ""
+    print(f"  Checkpoint{ema_str}: {checkpoint_path}")
     model = load_model(cfg, checkpoint_path, device)
     
     # 2. Run inference

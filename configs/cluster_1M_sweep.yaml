@@ -9,8 +9,7 @@
 #
 # Ensemble validation: 3 samples per input, soft_staple consensus
 #
-# Usage: python3 -m scripts.slurm.single_job_runner --config-name cluster_1M_sweep --gpus 1 \
-#   --overrides optimizer=adamw_5e5lr_wd00
+# Usage: python3 -m scripts.slurm.single_job_runner --config-name cluster_1M_sweep --gpus 1 --overrides optimizer=adamw_7e5lr_wd00
 
 defaults:
   - cluster                              # base cluster environment

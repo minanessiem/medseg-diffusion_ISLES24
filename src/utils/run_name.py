@@ -405,6 +405,43 @@ def generate_amp_string(cfg):
     return dtype_map.get(dtype, "")
 
 
+def generate_ensemble_string(cfg):
+    """Generate ensemble validation string for run name.
+    
+    Encodes the number of ensemble samples used during validation.
+    This indicates whether validation uses single-sample or multi-sample
+    ensemble consensus.
+    
+    Args:
+        cfg: Configuration object (dict or DictConfig)
+    
+    Returns:
+        str: Ensemble string for run name
+        
+    Examples:
+        ensemble.enabled=false → "e1"
+        ensemble.enabled=true, num_samples=1 → "e1"
+        ensemble.enabled=true, num_samples=3 → "e3"
+        ensemble.enabled=true, num_samples=5 → "e5"
+        validation section missing → "e1"
+    """
+    # Access validation config
+    if isinstance(cfg, dict):
+        val_cfg = cfg.get('validation', {})
+        ensemble_cfg = val_cfg.get('ensemble', {})
+    else:
+        val_cfg = cfg.get('validation', {}) if hasattr(cfg, 'validation') else {}
+        ensemble_cfg = val_cfg.get('ensemble', {}) if hasattr(val_cfg, 'get') else {}
+    
+    enabled = ensemble_cfg.get('enabled', False)
+    num_samples = ensemble_cfg.get('num_samples', 1)
+    
+    if not enabled or num_samples <= 1:
+        return "e1"
+    
+    return f"e{num_samples}"
+
+
 def generate_batch_string(cfg):
     """Generate batch string with optional accumulation encoding.
     
@@ -611,6 +648,9 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     aug_cfg = cfg.get('augmentation', None) if isinstance(cfg, dict) else (cfg.augmentation if hasattr(cfg, 'augmentation') else None)
     aug_str = generate_augmentation_string(aug_cfg)
     
+    # NEW: Add ensemble string (validation ensemble indicator)
+    ensemble_str = generate_ensemble_string(cfg)
+    
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
     # Insert amp_str after batch_str (only if non-empty)
@@ -621,7 +661,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     parts.append(optimizer_str)
     if clip_str:  # Only add clip string if clip_norm is set
         parts.append(clip_str)
-    parts.extend([scheduler_str, steps_str, loss_str, aug_str, diffusion_str, timestamp])
+    parts.extend([scheduler_str, steps_str, loss_str, aug_str, diffusion_str, ensemble_str, timestamp])
     
     run_name = '_'.join(parts)
     
