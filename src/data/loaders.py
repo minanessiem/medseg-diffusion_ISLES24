@@ -14,6 +14,7 @@ print("[DEBUG:loaders.py] sklearn done", flush=True)
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 print("[DEBUG:loaders.py] torch done", flush=True)
 
 import json
@@ -41,6 +42,7 @@ print("[DEBUG:loaders.py] modalities done", flush=True)
 import logging
 import tqdm
 import threading
+from src.utils.distribution_utils import resolve_strategy
 print("[DEBUG:loaders.py] All imports complete!", flush=True)
 
 logging.getLogger('nibabel').setLevel(logging.WARNING)
@@ -373,10 +375,29 @@ def get_dataloaders(cfg):
             aug_cfg=None,          # NEW: explicitly None for validation
             is_training=False      # NEW
         )
+
+        strategy = resolve_strategy(cfg)
+        train_sampler = None
+        train_shuffle = True
+        if strategy == "ddp":
+            if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+                raise RuntimeError(
+                    "distribution=ddp requires an initialized torch.distributed process group "
+                    "before dataloader construction."
+                )
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=torch.distributed.get_world_size(),
+                rank=torch.distributed.get_rank(),
+                shuffle=True,
+            )
+            train_shuffle = False
+
         train_dataloader = DataLoader(
             train_dataset, 
             batch_size=cfg.dataset.train_batch_size, 
-            shuffle=True,
+            shuffle=train_shuffle,
+            sampler=train_sampler,
             num_workers=cfg.dataset.num_train_workers,
             pin_memory=True,
             persistent_workers=False, # True if cfg.dataset.num_workers > 0 else False,

@@ -520,6 +520,10 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     
     diffusion.train()
     train_iterator = iter(train_dataloader)
+    train_sampler = getattr(train_dataloader, "sampler", None)
+    sampler_epoch = 0
+    if hasattr(train_sampler, "set_epoch"):
+        train_sampler.set_epoch(sampler_epoch)
     
     # Gradient accumulation setup
     accumulation_steps = cfg.training.gradient.accumulation_steps
@@ -642,6 +646,9 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             img, mask, *_ = next(train_iterator)
         except StopIteration:
             # Reinitialize iterator if dataset is exhausted
+            sampler_epoch += 1
+            if hasattr(train_sampler, "set_epoch"):
+                train_sampler.set_epoch(sampler_epoch)
             train_iterator = iter(train_dataloader)
             img, mask, *_ = next(train_iterator)
         
