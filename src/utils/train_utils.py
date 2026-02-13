@@ -368,7 +368,7 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     """
     from src.data.loaders import get_dataloaders
     from src.training.trainer import get_optimizer_and_scheduler, step_based_train
-    from src.training.checkpoint_utils import load_checkpoint
+    from src.training.checkpoint_utils import load_checkpoint, load_model_state_dict_compat
     
     device = setup_device(cfg)
     
@@ -380,8 +380,16 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     diffusion = build_model_and_diffusion(cfg, device)
     
     # Load model weights
-    diffusion.load_state_dict(resume_state['model_state_dict'])
-    print(f"  ├─ Model weights loaded")
+    missing_keys, unexpected_keys = load_model_state_dict_compat(
+        diffusion, resume_state['model_state_dict']
+    )
+    if missing_keys or unexpected_keys:
+        print(
+            f"  ├─ Model weights loaded with compatibility mode "
+            f"(missing={len(missing_keys)}, unexpected={len(unexpected_keys)})"
+        )
+    else:
+        print(f"  ├─ Model weights loaded")
     
     # Get dataloaders
     dataloaders = get_dataloaders(cfg)
