@@ -16,6 +16,7 @@ from typing import Iterable, List, Tuple, Optional
 from omegaconf import OmegaConf, DictConfig, ListConfig
 from torch.utils.tensorboard import SummaryWriter
 from src.utils.distribution_utils import (
+    is_main_process,
     get_distribution_state,
     resolve_process_device,
     resolve_strategy,
@@ -189,25 +190,28 @@ def setup_logger(
     from src.utils.logger import Logger
     from datetime import datetime
     
+    main_process = is_main_process()
     if mode == 'train':
         log_dir = f"{run_dir}tensorboard/"
-        writer = SummaryWriter(log_dir=log_dir)
+        writer = SummaryWriter(log_dir=log_dir) if main_process else None
     else:
         # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
         if timestamp is None:
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         log_dir = f"runs/eval_{timestamp}/"
-        writer = SummaryWriter(log_dir=log_dir)
+        writer = SummaryWriter(log_dir=log_dir) if main_process else None
     
+    enabled_outputs = list(cfg.logging.outputs) if main_process else []
     logger = Logger(
         log_dir=log_dir,
-        enabled_outputs=list(cfg.logging.outputs),
+        enabled_outputs=enabled_outputs,
         log_interval=int(cfg.logging.interval),
         table_format=cfg.logging.table_format,
         writer=writer,
         cfg=cfg.logging,  # Pass logging config
     )
-    logger.print_config(OmegaConf.to_yaml(cfg, resolve=True))
+    if main_process:
+        logger.print_config(OmegaConf.to_yaml(cfg, resolve=True))
     
     return logger, writer
 

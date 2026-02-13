@@ -27,6 +27,7 @@ print("[DEBUG:trainer.py] logger done", flush=True)
 
 from src.utils.train_utils import calc_grad_norm, calc_param_norm, _parse_multi_gpu_flag
 print("[DEBUG:trainer.py] train_utils done", flush=True)
+from src.utils.distribution_utils import barrier_if_needed, is_main_process
 
 from torch import no_grad
 from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
@@ -505,6 +506,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     train_dataloader = dataloaders['train']
     sample_dataloader = dataloaders['sample']  # Formerly test_dataloader
     val_dataloader = dataloaders['val']  # For future validation
+    main_process = is_main_process()
 
     # Startup validation
     if not cfg.training.checkpoint_interval.enabled and not cfg.training.checkpoint_best.enabled:
@@ -691,13 +693,14 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         # Log micro-batch metrics (accumulated across micro-batches)
         # Log unscaled loss (primary metric for model performance)
-        logger.logkv_mean('loss', loss.item(), accumulator='train')
-        # Log scaled loss (for verifying accumulation math)
-        logger.logkv_mean('loss/scaled', scaled_loss.item(), accumulator='train')
-        logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
+        if main_process:
+            logger.logkv_mean('loss', loss.item(), accumulator='train')
+            # Log scaled loss (for verifying accumulation math)
+            logger.logkv_mean('loss/scaled', scaled_loss.item(), accumulator='train')
+            logger.logkv_loss_quartiles(diffusion, ts, {'loss': sample_mses}, accumulator='train')
         
         # Log loss components if multi-task
-        if loss_components is not None:
+        if main_process and loss_components is not None:
             for component_name, component_value in loss_components.items():
                 # Log both scaled and unscaled for each component
                 logger.logkv_mean(f'loss/{component_name}', component_value, accumulator='train')
@@ -779,14 +782,15 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         samples = global_step * effective_batch_size  # Use effective batch size
         
         # Log macro-batch metrics (once per optimizer update)
-        logger.logkv('step', global_step, accumulator='train')
-        logger.logkv('samples', samples, accumulator='train')
-        logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
-        logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
-        logger.logkv_mean('param_norm', param_norm, accumulator='train')
+        if main_process:
+            logger.logkv('step', global_step, accumulator='train')
+            logger.logkv('samples', samples, accumulator='train')
+            logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
+            logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
+            logger.logkv_mean('param_norm', param_norm, accumulator='train')
         
         # Log clipping diagnostics (only when clipping occurs)
-        if grad_cfg.clip_norm is not None and grad_norm_pre_clip > grad_cfg.clip_norm:
+        if main_process and grad_cfg.clip_norm is not None and grad_norm_pre_clip > grad_cfg.clip_norm:
             clip_ratio = grad_norm_pre_clip / grad_cfg.clip_norm
             logger.logkv_mean('grad_norm_pre_clip', grad_norm_pre_clip, accumulator='train')
             logger.logkv_mean('grad_clip_ratio', clip_ratio, accumulator='train')
@@ -812,243 +816,252 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         # Validation check
         if global_step % cfg.validation.validation_interval == 0 and global_step > 0:
-            # Free memory before validation
-            gc.collect()
-            torch.cuda.empty_cache()
-            
-            metrics = [get_metric(m['name'], m.get('params', {})) for m in cfg.validation.metrics]
-            
-            # Check for multi-GPU validation
-            gpu_ids = _parse_multi_gpu_flag(cfg.environment.training.multi_gpu)
-            use_multi_gpu_val = (
-                cfg.validation.get('multi_gpu_validation', False) 
-                and gpu_ids is not None 
-                and len(gpu_ids) > 1
-            )
-            
-            if use_multi_gpu_val:
-                from src.utils.valid_utils import validate_one_epoch_multigpu
-                val_results = validate_one_epoch_multigpu(
-                    diffusion, val_dataloader, metrics, logger, global_step, cfg, gpu_ids
-                )
-            else:
-                val_results = validate_one_epoch(
-                    diffusion, val_dataloader, metrics, logger, global_step, cfg
-                )
-            
-            logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
-            logger.dumpkvs(global_step, accumulator='val')
-            logger.clear_accumulators(accumulator='val')
-            
-            # Free memory after validation before resuming training
-            gc.collect()
-            torch.cuda.empty_cache()
-            
-            # Best checkpoint decision and saving
-            if cfg.training.checkpoint_best.enabled:
-                try:
-                    should_save, reason, new_best = should_save_best_checkpoint(
-                        val_results,
-                        best_metric_value,
-                        cfg.training.checkpoint_best
-                    )
-                    
-                    if should_save:
-                        print(f"✓ {reason}")
-                        saved_files = save_best_checkpoint(
-                            diffusion, ema_params, ema_rates, global_step,
-                            cfg, run_dir, val_results
-                        )
-                        best_checkpoints.append((new_best, global_step, saved_files))
-                        best_metric_value = new_best
-                        best_metric_step = global_step
-                        
-                        # Cleanup old checkpoints if needed
-                        keep_n = cfg.training.checkpoint_best.keep_last_n
-                        if keep_n is not None and keep_n > 0:
-                            best_checkpoints = cleanup_best_checkpoints(
-                                best_checkpoints,
-                                keep_n,
-                                cfg.training.checkpoint_best.metric_mode
-                            )
-                    else:
-                        print(f"✗ {reason}")
+            barrier_if_needed()
+            if main_process:
+                # Free memory before validation
+                gc.collect()
+                torch.cuda.empty_cache()
                 
-                except KeyError as e:
-                    # Metric not found - crash with clear message
-                    print(f"[ERROR] {e}")
-                    print(f"   Validation returned metrics: {list(val_results.keys())}")
-                    print(f"   Check your checkpoint_best.metric_name config!")
-                    raise
-            
-            # Free memory after validation
-            gc.collect()
-            torch.cuda.empty_cache()
+                metrics = [get_metric(m['name'], m.get('params', {})) for m in cfg.validation.metrics]
+                
+                # Check for multi-GPU validation
+                gpu_ids = _parse_multi_gpu_flag(cfg.environment.training.multi_gpu)
+                use_multi_gpu_val = (
+                    cfg.validation.get('multi_gpu_validation', False) 
+                    and gpu_ids is not None 
+                    and len(gpu_ids) > 1
+                )
+                
+                if use_multi_gpu_val:
+                    from src.utils.valid_utils import validate_one_epoch_multigpu
+                    val_results = validate_one_epoch_multigpu(
+                        diffusion, val_dataloader, metrics, logger, global_step, cfg, gpu_ids
+                    )
+                else:
+                    val_results = validate_one_epoch(
+                        diffusion, val_dataloader, metrics, logger, global_step, cfg
+                    )
+                
+                logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
+                logger.dumpkvs(global_step, accumulator='val')
+                logger.clear_accumulators(accumulator='val')
+                
+                # Free memory after validation before resuming training
+                gc.collect()
+                torch.cuda.empty_cache()
+                
+                # Best checkpoint decision and saving
+                if cfg.training.checkpoint_best.enabled:
+                    try:
+                        should_save, reason, new_best = should_save_best_checkpoint(
+                            val_results,
+                            best_metric_value,
+                            cfg.training.checkpoint_best
+                        )
+                        
+                        if should_save:
+                            print(f"✓ {reason}")
+                            saved_files = save_best_checkpoint(
+                                diffusion, ema_params, ema_rates, global_step,
+                                cfg, run_dir, val_results
+                            )
+                            best_checkpoints.append((new_best, global_step, saved_files))
+                            best_metric_value = new_best
+                            best_metric_step = global_step
+                            
+                            # Cleanup old checkpoints if needed
+                            keep_n = cfg.training.checkpoint_best.keep_last_n
+                            if keep_n is not None and keep_n > 0:
+                                best_checkpoints = cleanup_best_checkpoints(
+                                    best_checkpoints,
+                                    keep_n,
+                                    cfg.training.checkpoint_best.metric_mode
+                                )
+                        else:
+                            print(f"✗ {reason}")
+                    
+                    except KeyError as e:
+                        # Metric not found - crash with clear message
+                        print(f"[ERROR] {e}")
+                        print(f"   Validation returned metrics: {list(val_results.keys())}")
+                        print(f"   Check your checkpoint_best.metric_name config!")
+                        raise
+                
+                # Free memory after validation
+                gc.collect()
+                torch.cuda.empty_cache()
+            barrier_if_needed()
         
         # Ensembled segmentation image logging
         if should_log_ensembled_image(cfg, global_step):
-            log_ensembled_segmentation(
-                diffusion, val_dataloader, logger, global_step, cfg
-            )
-            gc.collect()
-            torch.cuda.empty_cache()
+            if main_process:
+                log_ensembled_segmentation(
+                    diffusion, val_dataloader, logger, global_step, cfg
+                )
+                gc.collect()
+                torch.cuda.empty_cache()
+            barrier_if_needed()
         
         # New: Image-based logging
         if cfg.logging.enable_image_logging and global_step % cfg.logging.image_log_interval == 0 and global_step >= cfg.logging.min_log_step:
-            print(f"Starting forward image logging at step {global_step}")
-            # Log forward process (accumulate fresh batches from dataloader)
-            with torch.no_grad():
-                collected_masks = []
-                collected_imgs = []
-                dl_iter = iter(train_dataloader)  # Use iterator
-                while len(collected_imgs) < cfg.logging.num_log_samples:
-                    try:
-                        batch = next(dl_iter)
-                    except StopIteration:
-                        dl_iter = iter(train_dataloader)  # Restart if exhausted
-                        batch = next(dl_iter)
-                    b_img, b_mask = batch[0], batch[1]  # Full batch
-                    for j in range(b_img.shape[0]):
-                        if len(collected_imgs) >= cfg.logging.num_log_samples:
-                            break
-                        if b_mask[j].sum() > 0:  # Only add non-empty
-                            collected_imgs.append(b_img[j:j+1])
-                            collected_masks.append(b_mask[j:j+1])
-                full_mask = torch.cat(collected_masks, dim=0).to(cfg.device)
-                full_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
-                num_samples = len(full_mask)
-                
-                if num_samples < cfg.logging.num_log_samples:
-                    print(f"Warning: Accumulated {num_samples} < num_log_samples {cfg.logging.num_log_samples} for forward.")
-                
-                loss, sample_mses, t, intermediates = diffusion.forward(
-                    full_mask, full_img, return_intermediates=True, global_step=global_step
-                )
-                
-                all_images = []
-                labels = []
-                metrics = {}
-                num_modalities = len(cfg.dataset.modalities)
-                
-                # Check if discriminative mode (no diffusion intermediates)
-                is_discriminative = cfg.diffusion.type == "Discriminative"
-                
-                if is_discriminative:
-                    # Discriminative: simpler grid (modalities, prediction, target)
-                    for i in range(num_samples):
-                        # Modality channels (each channel separately)
-                        for c in range(num_modalities):
-                            all_images.append(intermediates['img'][i, c:c+1])
-                            labels.append(f"Modality: {cfg.dataset.modalities[c]}")
-                        
-                        # Prediction
-                        all_images.append(intermediates['pred'][i])
-                        labels.append("Prediction")
-                        
-                        # Target
-                        all_images.append(intermediates['mask'][i])
-                        labels.append("Target")
+            if main_process:
+                print(f"Starting forward image logging at step {global_step}")
+                # Log forward process (accumulate fresh batches from dataloader)
+                with torch.no_grad():
+                    collected_masks = []
+                    collected_imgs = []
+                    dl_iter = iter(train_dataloader)  # Use iterator
+                    while len(collected_imgs) < cfg.logging.num_log_samples:
+                        try:
+                            batch = next(dl_iter)
+                        except StopIteration:
+                            dl_iter = iter(train_dataloader)  # Restart if exhausted
+                            batch = next(dl_iter)
+                        b_img, b_mask = batch[0], batch[1]  # Full batch
+                        for j in range(b_img.shape[0]):
+                            if len(collected_imgs) >= cfg.logging.num_log_samples:
+                                break
+                            if b_mask[j].sum() > 0:  # Only add non-empty
+                                collected_imgs.append(b_img[j:j+1])
+                                collected_masks.append(b_mask[j:j+1])
+                    full_mask = torch.cat(collected_masks, dim=0).to(cfg.device)
+                    full_img = torch.cat(collected_imgs, dim=0).to(cfg.device)
+                    num_samples = len(full_mask)
                     
-                    per_sample_ncol = num_modalities + 2  # modalities + pred + target
-                else:
-                    pass
+                    if num_samples < cfg.logging.num_log_samples:
+                        print(f"Warning: Accumulated {num_samples} < num_log_samples {cfg.logging.num_log_samples} for forward.")
+                    
+                    loss, sample_mses, t, intermediates = diffusion.forward(
+                        full_mask, full_img, return_intermediates=True, global_step=global_step
+                    )
+                    
+                    all_images = []
+                    labels = []
+                    metrics = {}
+                    num_modalities = len(cfg.dataset.modalities)
+                    
+                    # Check if discriminative mode (no diffusion intermediates)
+                    is_discriminative = cfg.diffusion.type == "Discriminative"
+                    
+                    if is_discriminative:
+                        # Discriminative: simpler grid (modalities, prediction, target)
+                        for i in range(num_samples):
+                            # Modality channels (each channel separately)
+                            for c in range(num_modalities):
+                                all_images.append(intermediates['img'][i, c:c+1])
+                                labels.append(f"Modality: {cfg.dataset.modalities[c]}")
+                            
+                            # Prediction
+                            all_images.append(intermediates['pred'][i])
+                            labels.append("Prediction")
+                            
+                            # Target
+                            all_images.append(intermediates['mask'][i])
+                            labels.append("Target")
+                        
+                        per_sample_ncol = num_modalities + 2  # modalities + pred + target
+                    else:
+                        pass
 
-                # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
-                for i in range(num_samples):
-                    sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
-                    all_images.extend(sample_images)
+                    # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
+                    for i in range(num_samples):
+                        sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
+                        all_images.extend(sample_images)
+                        
+                        modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
+                        noisy_label = f"Noise Mask t={t[i].item()}"
+                        base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
+                        labels.extend(base_labels)
+                        
+                        metrics[i] = sample_mses[i].item()
                     
-                    modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                    noisy_label = f"Noise Mask t={t[i].item()}"
-                    base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
-                    labels.extend(base_labels)
+                        per_sample_ncol = len(base_labels)
                     
-                    metrics[i] = sample_mses[i].item()
-                
-                    per_sample_ncol = len(base_labels)
-                
-                logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=per_sample_ncol)
+                    logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=per_sample_ncol)
+            barrier_if_needed()
             
         # Sampling logging (outside image logging block)
         if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0 and global_step >= cfg.logging.min_log_step:
-            print(f"Starting sampling logging at step {global_step}")
-            
-            # Select dataloader
-            if sample_dataloader is None and cfg.logging.log_test_samples:
-                print("Warning: sample_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
-            dl = sample_dataloader if cfg.logging.log_test_samples and sample_dataloader is not None else train_dataloader
-            if dl is None:
-                print("Warning: No dataloader available for sampling – skipping snapshot logging.")
-            else:
-                # Accumulate samples (images + masks) until we have num_log_samples
-                collected_imgs, collected_masks = [], []
-                remaining = cfg.logging.num_log_samples
-                dl_iter = iter(dl)  # Use iterator to avoid recreating loader each time
-                while len(collected_imgs) < cfg.logging.num_log_samples:
-                    try:
-                        b_img, b_mask, *_ = next(dl_iter)
-                    except StopIteration:
-                        dl_iter = iter(dl)  # Restart if exhausted
-                        b_img, b_mask, *_ = next(dl_iter)
-                    for j in range(b_img.shape[0]):
-                        if len(collected_imgs) >= cfg.logging.num_log_samples:
-                            break
-                        if b_mask[j].sum() > 0:  # Only add non-empty
-                            collected_imgs.append(b_img[j:j+1])
-                            collected_masks.append(b_mask[j:j+1])
-                sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
-                sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
-                num_samples = sample_imgs.shape[0]
+            if main_process:
+                print(f"Starting sampling logging at step {global_step}")
                 
-                # Build composite grid
-                all_images = []
-                labels = []
-                num_modalities = sample_imgs.shape[1]
-                # Determine timesteps that sample_with_snapshots will yield
-                snapshots_per_sample = []
-                snapshot_timesteps = []  # Track actual timesteps for labels
-                for i in range(num_samples):
-                    snaps = list(diffusion.sample_with_snapshots(sample_imgs[i:i+1], cfg.logging.snapshot_step_interval))
-                    # snaps is list of (t, mask); keep order as yielded (descending t) then final 0
-                    if i == 0:  # Extract timesteps from first sample (same for all)
-                        snapshot_timesteps = [int(t) for t, _ in snaps]
-                    snapshots_per_sample.append([normalize_to_neg_one_to_one(m[1]) for m in snaps])  # Normalize snapshots to -1/1
-                num_snapshots = len(snapshots_per_sample[0])
-                
-                # Labels per category
-                modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
-                snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
-                row_len = num_modalities + num_snapshots + 1  # +1 for target
-                
-                for i in range(num_samples):
-                    # append each modality channel individually
-                    for c in range(num_modalities):
-                        mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
-                        all_images.append(mod_channel)
-                        labels.append(modality_labels[c])
-                    # snapshots
-                    for snap in snapshots_per_sample[i]:
-                        all_images.append(snap)
-                    labels.extend(snapshot_labels)
-                    # target mask (normalize to match forward)
-                    target_norm = normalize_to_neg_one_to_one(sample_masks[i])
-                    all_images.append(target_norm)
-                    labels.append("Target")
-                
-                logger.log_image_grid(
-                    f"Sampling/Snapshots_Step_{global_step}",
-                    all_images,
-                    global_step,
-                    metrics=None,
-                    grid_layout='horizontal',
-                    labels=labels,
-                    per_sample_ncol=row_len,
-                )
+                # Select dataloader
+                if sample_dataloader is None and cfg.logging.log_test_samples:
+                    print("Warning: sample_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
+                dl = sample_dataloader if cfg.logging.log_test_samples and sample_dataloader is not None else train_dataloader
+                if dl is None:
+                    print("Warning: No dataloader available for sampling – skipping snapshot logging.")
+                else:
+                    # Accumulate samples (images + masks) until we have num_log_samples
+                    collected_imgs, collected_masks = [], []
+                    remaining = cfg.logging.num_log_samples
+                    dl_iter = iter(dl)  # Use iterator to avoid recreating loader each time
+                    while len(collected_imgs) < cfg.logging.num_log_samples:
+                        try:
+                            b_img, b_mask, *_ = next(dl_iter)
+                        except StopIteration:
+                            dl_iter = iter(dl)  # Restart if exhausted
+                            b_img, b_mask, *_ = next(dl_iter)
+                        for j in range(b_img.shape[0]):
+                            if len(collected_imgs) >= cfg.logging.num_log_samples:
+                                break
+                            if b_mask[j].sum() > 0:  # Only add non-empty
+                                collected_imgs.append(b_img[j:j+1])
+                                collected_masks.append(b_mask[j:j+1])
+                    sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
+                    sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
+                    num_samples = sample_imgs.shape[0]
+                    
+                    # Build composite grid
+                    all_images = []
+                    labels = []
+                    num_modalities = sample_imgs.shape[1]
+                    # Determine timesteps that sample_with_snapshots will yield
+                    snapshots_per_sample = []
+                    snapshot_timesteps = []  # Track actual timesteps for labels
+                    for i in range(num_samples):
+                        snaps = list(diffusion.sample_with_snapshots(sample_imgs[i:i+1], cfg.logging.snapshot_step_interval))
+                        # snaps is list of (t, mask); keep order as yielded (descending t) then final 0
+                        if i == 0:  # Extract timesteps from first sample (same for all)
+                            snapshot_timesteps = [int(t) for t, _ in snaps]
+                        snapshots_per_sample.append([normalize_to_neg_one_to_one(m[1]) for m in snaps])  # Normalize snapshots to -1/1
+                    num_snapshots = len(snapshots_per_sample[0])
+                    
+                    # Labels per category
+                    modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
+                    # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
+                    snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
+                    row_len = num_modalities + num_snapshots + 1  # +1 for target
+                    
+                    for i in range(num_samples):
+                        # append each modality channel individually
+                        for c in range(num_modalities):
+                            mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
+                            all_images.append(mod_channel)
+                            labels.append(modality_labels[c])
+                        # snapshots
+                        for snap in snapshots_per_sample[i]:
+                            all_images.append(snap)
+                        labels.extend(snapshot_labels)
+                        # target mask (normalize to match forward)
+                        target_norm = normalize_to_neg_one_to_one(sample_masks[i])
+                        all_images.append(target_norm)
+                        labels.append("Target")
+                    
+                    logger.log_image_grid(
+                        f"Sampling/Snapshots_Step_{global_step}",
+                        all_images,
+                        global_step,
+                        metrics=None,
+                        grid_layout='horizontal',
+                        labels=labels,
+                        per_sample_ncol=row_len,
+                    )
+            barrier_if_needed()
         
         # Training-metric-based checkpoint (if check_interval is set and not using validation)
         # Must check BEFORE logger clears accumulators
-        if cfg.training.checkpoint_best.enabled:
+        if main_process and cfg.training.checkpoint_best.enabled:
             check_interval = cfg.training.checkpoint_best.get('check_interval', None)
             if check_interval is not None and global_step % check_interval == 0 and global_step > 0:
                 # Get current training metrics from logger (before clearing)
@@ -1090,7 +1103,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                         print(f"   Check your checkpoint_best.metric_name config!")
                         raise
         
-        if global_step % log_interval == 0:
+        if main_process and global_step % log_interval == 0:
             logger.dumpkvs(global_step, accumulator='train')
             logger.clear_accumulators(accumulator='train')
         
@@ -1131,7 +1144,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     interval_count = 0
         
         # Interval checkpoint saving
-        if cfg.training.checkpoint_interval.enabled:
+        if main_process and cfg.training.checkpoint_interval.enabled:
             if global_step % cfg.training.checkpoint_interval.save_interval == 0 and global_step > 0:
                 print(f"✓ Saving interval checkpoint at step {global_step}")
                 saved_files = save_interval_checkpoint(
@@ -1156,7 +1169,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         # Removed old visualization block
         
     # Final checkpoint save
-    if cfg.training.checkpoint_interval.enabled:
+    if main_process and cfg.training.checkpoint_interval.enabled:
         print(f"✓ Saving final interval checkpoint at step {global_step}")
         saved_files = save_interval_checkpoint(
             diffusion, optimizer, global_step, cfg, run_dir,
@@ -1169,10 +1182,11 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         )
         # No cleanup on final save
     
-    logger.dumpkvs(global_step, accumulator='train')
-    logger.clear_accumulators(accumulator='train')
+    if main_process:
+        logger.dumpkvs(global_step, accumulator='train')
+        logger.clear_accumulators(accumulator='train')
     
     print(f"Step-based training complete at step {global_step}.")
-    if best_metric_step is not None:
+    if main_process and best_metric_step is not None:
         print(f"Best model saved at step {best_metric_step} with {cfg.training.checkpoint_best.metric_name} = {best_metric_value:.4f}")
 
