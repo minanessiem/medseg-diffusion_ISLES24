@@ -2,6 +2,7 @@
 defaults:
   - _self_
   - environment: isles_local
+  - distribution: dp
   - model: medsegdiff_32_1l_8c_2x2a_128t_1btl_debug
   - dataset: isles24
   - augmentation: none

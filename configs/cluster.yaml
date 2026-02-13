@@ -3,6 +3,7 @@
 defaults:
   - _self_
   - environment: isles_cluster
+  - distribution: dp
   - model: medsegdiff_256_4l_16c_6x4a_128t_1btl_large
   - dataset: isles24
   - augmentation: none
