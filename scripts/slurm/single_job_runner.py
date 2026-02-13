@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 import os
 import yaml
@@ -299,6 +299,63 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
     
     return cfg
 
+
+def _get_override_value(overrides: List[str], key: str) -> Optional[str]:
+    """Return the last override value for an exact top-level key (e.g., distribution)."""
+    value = None
+    for override in overrides:
+        cleaned = override.lstrip("+~")
+        if "=" not in cleaned:
+            continue
+        override_key, override_value = cleaned.split("=", 1)
+        if override_key == key:
+            value = override_value
+    return value
+
+
+def _resolve_resume_strategy(resume_dir: str, overrides: List[str]) -> str:
+    """Resolve launch strategy for resume jobs from overrides or stored Hydra config."""
+    override_strategy = _get_override_value(overrides, "distribution")
+    if override_strategy in {"dp", "ddp"}:
+        return override_strategy
+
+    hydra_cfg_path = os.path.join(resume_dir, ".hydra", "config.yaml")
+    if os.path.exists(hydra_cfg_path):
+        with open(hydra_cfg_path, "r") as f:
+            stored_cfg = yaml.safe_load(f) or {}
+        strategy = (
+            stored_cfg.get("distribution", {}).get("strategy", "dp")
+            if isinstance(stored_cfg, dict)
+            else "dp"
+        )
+        if strategy in {"dp", "ddp"}:
+            return strategy
+
+    return "dp"
+
+
+def _build_training_command(
+    strategy: str,
+    gpus: int,
+    script_name: str,
+    script_args: str,
+) -> str:
+    """Build python or torchrun command based on selected distribution strategy."""
+    script_args = script_args.strip()
+    suffix = f" {script_args}" if script_args else ""
+
+    if strategy == "ddp":
+        if gpus <= 1:
+            raise ValueError(
+                f"distribution=ddp requires --gpus > 1 for this launcher, got --gpus {gpus}."
+            )
+        return (
+            f"torchrun --standalone --nnodes=1 --nproc_per_node={gpus} "
+            f"{script_name}{suffix}"
+        ).strip()
+
+    return f"python3 {script_name}{suffix}".strip()
+
 def main():
     parser = argparse.ArgumentParser(description='Submit a single SLURM job for medseg-diffusion training')
     
@@ -358,17 +415,6 @@ def main():
     # Parse overrides
     overrides = list(args.overrides)  # Make a copy to avoid modifying original
     
-    # Auto-set multi_gpu when --gpus > 1
-    # SLURM allocates GPUs, but training code needs explicit multi_gpu config
-    if args.gpus is not None and args.gpus > 1:
-        # Check if user already manually set multi_gpu
-        has_multi_gpu_override = any('environment.training.multi_gpu' in o for o in overrides)
-        if not has_multi_gpu_override:
-            # Auto-generate GPU list: [0, 1, 2, ..., n-1]
-            gpu_list = list(range(args.gpus))
-            overrides.append(f"environment.training.multi_gpu=[{','.join(map(str, gpu_list))}]")
-            print(f"[AUTO] Detected --gpus {args.gpus}, adding environment.training.multi_gpu={gpu_list}")
-    
     # Debug mode: add +debug=true to overrides for training script
     # Note: '+' prefix tells Hydra to add a new key (not override existing)
     if args.debug:
@@ -409,6 +455,9 @@ def main():
         # Set job_name (same as original run)
         job_name = args.job_name or run_name
         _debug(f"job_name: {job_name}")
+
+        strategy = _resolve_resume_strategy(resume_dir=resume_dir, overrides=overrides)
+        _debug(f"distribution strategy (resume): {strategy}")
         
         print(f"\n{'='*60}")
         print(f"RESUME MODE")
@@ -416,6 +465,7 @@ def main():
         print(f"  Resume directory: {resume_dir}")
         print(f"  Run name: {run_name}")
         print(f"  Job name: {job_name}")
+        print(f"  Distribution strategy: {strategy}")
         if overrides:
             print(f"  Overrides: {overrides}")
         print(f"{'='*60}\n")
@@ -426,9 +476,14 @@ def main():
         _debug(f"config[job_name]: {config['job_name']}")
         _debug(f"config[logdir_name]: {config['logdir_name']}")
         
-        # Build python command for resume_training.py
-        overrides_str = ' '.join(overrides) if overrides else ''
-        config["python_command"] = f"python3 resume_training.py {resume_dir} {overrides_str}".strip()
+        # Build strategy-aware command for resume_training.py
+        resume_args = f"{resume_dir} {' '.join(overrides)}".strip()
+        config["python_command"] = _build_training_command(
+            strategy=strategy,
+            gpus=int(config["gpus"]),
+            script_name="resume_training.py",
+            script_args=resume_args,
+        )
         _debug(f"python_command: {config['python_command']}")
         
         # Set container logdir to the resume directory
@@ -457,6 +512,22 @@ def main():
         cfg = load_config(args.config_name, overrides)
         pprint.pprint(cfg)  # Debug print of final config
         _debug("Config loaded successfully")
+
+        strategy = cfg.get("distribution", {}).get("strategy", "dp")
+        if strategy not in {"dp", "ddp"}:
+            raise ValueError(f"Unsupported distribution.strategy='{strategy}'. Expected 'dp' or 'ddp'.")
+        _debug(f"distribution strategy (fresh): {strategy}")
+
+        # Auto-set legacy multi_gpu only for DP strategy when --gpus > 1
+        if int(config["gpus"]) > 1 and strategy == "dp":
+            has_multi_gpu_override = any("environment.training.multi_gpu" in o for o in overrides)
+            if not has_multi_gpu_override:
+                gpu_list = list(range(int(config["gpus"])))
+                overrides.append(f"environment.training.multi_gpu=[{','.join(map(str, gpu_list))}]")
+                print(
+                    f"[AUTO] distribution=dp with --gpus {config['gpus']}, "
+                    f"adding environment.training.multi_gpu={gpu_list}"
+                )
         
         # Generate run_name using utility
         _debug("Generating run_name...")
@@ -473,6 +544,7 @@ def main():
         print(f"  Config: {args.config_name}")
         print(f"  Run name: {run_name}")
         print(f"  Job name: {job_name}")
+        print(f"  Distribution strategy: {strategy}")
         if overrides:
             print(f"  Overrides: {overrides}")
         print(f"{'='*60}\n")
@@ -488,9 +560,14 @@ def main():
         all_overrides = overrides + [f"timestamp={timestamp}", f"run_name={run_name}"]
         _debug(f"all_overrides: {all_overrides}")
         
-        # Build python command for start_training.py
-        overrides_str = ' '.join(all_overrides) if all_overrides else ''
-        config["python_command"] = f"python3 start_training.py --config-name {args.config_name} {overrides_str}".strip()
+        # Build strategy-aware command for start_training.py
+        start_args = f"--config-name {args.config_name} {' '.join(all_overrides)}".strip()
+        config["python_command"] = _build_training_command(
+            strategy=strategy,
+            gpus=int(config["gpus"]),
+            script_name="start_training.py",
+            script_args=start_args,
+        )
         _debug(f"python_command: {config['python_command']}")
         
         # Update config with resolved output_root
