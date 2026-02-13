@@ -15,6 +15,11 @@ import torch
 from typing import Iterable, List, Tuple, Optional
 from omegaconf import OmegaConf, DictConfig, ListConfig
 from torch.utils.tensorboard import SummaryWriter
+from src.utils.distribution_utils import (
+    get_distribution_state,
+    resolve_process_device,
+    resolve_strategy,
+)
 
 
 # =============================================================================
@@ -93,12 +98,14 @@ def setup_device(cfg: DictConfig) -> torch.device:
     Returns:
         torch.device configured for training
     """
-    # Device configuration (auto-detect with cfg override)
-    if cfg.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        device = torch.device(cfg.device)
-    print(f'Using device: {device}')
+    strategy = resolve_strategy(cfg)
+    device = resolve_process_device(cfg.device, strategy=strategy)
+    dist_state = get_distribution_state(strategy)
+    print(
+        f"Using device: {device} "
+        f"(strategy={strategy}, rank={dist_state.rank}, "
+        f"local_rank={dist_state.local_rank}, world_size={dist_state.world_size})"
+    )
     return device
 
 

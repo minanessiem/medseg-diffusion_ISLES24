@@ -67,6 +67,11 @@ import hydra
 from hydra import compose, initialize_config_dir, initialize
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
+from src.utils.distribution_utils import (
+    destroy_process_group_if_needed,
+    init_process_group_if_needed,
+    resolve_strategy,
+)
 
 
 def main():
@@ -234,16 +239,28 @@ def main():
     # Import here to avoid circular imports and ensure Hydra is initialized first
     from src.utils.train_utils import setup_config_aliases, setup_seeds, setup_and_resume_training
     
-    # Set up config aliases (same as start_training.py)
-    cfg = setup_config_aliases(cfg)
-    
-    # Set seeds for reproducibility
-    setup_seeds(cfg)
-    
-    # Run resumed training (pass legacy_mode flag)
-    setup_and_resume_training(cfg, run_dir=run_dir, resume_step=args.step, legacy_mode=legacy_mode)
-    
-    print(f"\n✓ Training resumed and completed successfully")
+    strategy = resolve_strategy(cfg)
+    dist_cfg = getattr(cfg, "distribution", None)
+    backend = str(getattr(dist_cfg, "backend", "nccl"))
+    dist_state = init_process_group_if_needed(strategy=strategy, backend=backend)
+    print(
+        f"[Distribution] strategy={strategy} rank={dist_state.rank} "
+        f"local_rank={dist_state.local_rank} world_size={dist_state.world_size}"
+    )
+
+    try:
+        # Set up config aliases (same as start_training.py)
+        cfg = setup_config_aliases(cfg)
+        
+        # Set seeds for reproducibility
+        setup_seeds(cfg)
+        
+        # Run resumed training (pass legacy_mode flag)
+        setup_and_resume_training(cfg, run_dir=run_dir, resume_step=args.step, legacy_mode=legacy_mode)
+        
+        print(f"\n✓ Training resumed and completed successfully")
+    finally:
+        destroy_process_group_if_needed()
 
 
 if __name__ == '__main__':
