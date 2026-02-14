@@ -55,8 +55,10 @@ from datetime import datetime
 
 from src.utils.run_name import generate_run_name
 from src.utils.distribution_utils import (
+    barrier_if_needed,
     destroy_process_group_if_needed,
     init_process_group_if_needed,
+    is_main_process,
     resolve_strategy,
 )
 from src.utils.train_utils import (
@@ -143,10 +145,15 @@ def main(cfg: DictConfig):
         OmegaConf.set_struct(cfg, True)
         debug_print("STEP 6: Hydra run.dir updated")
         
-        # Move early Hydra logs (e.g., main.log) from original location to run_dir
+        # Move early Hydra logs (e.g., main.log) from original location to run_dir.
+        # In DDP, only rank 0 should own artifact moves to avoid filesystem races.
         debug_print("STEP 7: Moving Hydra artifacts...")
-        _move_hydra_artifacts(original_hydra_dir, run_output_dir)
-        debug_print("STEP 7: Hydra artifacts moved")
+        if is_main_process():
+            _move_hydra_artifacts(original_hydra_dir, run_output_dir)
+            debug_print("STEP 7: Hydra artifacts moved")
+        else:
+            debug_print("STEP 7: Non-main rank skipped Hydra artifact move")
+        barrier_if_needed()
         
         debug_print(f"STEP 8: Mode = {cfg.mode}")
         
@@ -191,6 +198,13 @@ def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
     else:
         print(f"   [WARN] Temp dir does not exist: {temp_log_dir}")
     
+    def _copy_dir_replace(src: str, dst: str) -> None:
+        """Copy directory tree into dst, replacing prior dst if it exists."""
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+
     # Move main.log
     early_log = f"{temp_log_dir}/main.log"
     if os.path.exists(early_log):
@@ -199,8 +213,14 @@ def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
         # Remove target if it exists to avoid conflict
         if os.path.exists(target_log):
             os.remove(target_log)
-        shutil.move(early_log, target_log)
-        print(f"   [OK] Moved main.log -> {run_output_dir}")
+        try:
+            shutil.move(early_log, target_log)
+            print(f"   [OK] Moved main.log -> {run_output_dir}")
+        except OSError:
+            # Cross-device moves can fail under container mounts; copy+remove is safe.
+            shutil.copy2(early_log, target_log)
+            os.remove(early_log)
+            print(f"   [OK] Copied main.log (cross-device) -> {run_output_dir}")
     else:
         print(f"   [INFO] No main.log found at {early_log}")
     
@@ -212,12 +232,13 @@ def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
         print(f"   .hydra/ contents: {hydra_contents}")
         
         target_hydra = f"{run_output_dir}/.hydra"
-        # Remove target if it exists to avoid nested directories
-        if os.path.exists(target_hydra):
-            shutil.rmtree(target_hydra)
-            print(f"   [INFO] Removed existing {target_hydra}")
-        shutil.move(hydra_dir, target_hydra)
-        print(f"   [OK] Moved .hydra/ -> {target_hydra}")
+        _copy_dir_replace(hydra_dir, target_hydra)
+        print(f"   [OK] Copied .hydra/ -> {target_hydra}")
+        # Best-effort cleanup of source .hydra; ignore if already removed/locked.
+        try:
+            shutil.rmtree(hydra_dir)
+        except OSError:
+            pass
         
         # Verify the move
         if os.path.exists(target_hydra):
@@ -237,9 +258,7 @@ def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
             print(f"      Contents: {hydra_contents}")
             
             target_hydra = f"{run_output_dir}/.hydra"
-            if os.path.exists(target_hydra):
-                shutil.rmtree(target_hydra)
-            shutil.copytree(cwd_hydra, target_hydra)
+            _copy_dir_replace(cwd_hydra, target_hydra)
             print(f"   [OK] Copied .hydra/ from CWD -> {target_hydra}")
 
 
