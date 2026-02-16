@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -63,6 +63,46 @@ def get_local_rank() -> int:
 def get_world_size() -> int:
     """Read world size from environment (defaults to 1)."""
     return int(os.environ.get("WORLD_SIZE", "1"))
+
+
+def get_world_size_for_strategy(strategy: str) -> int:
+    """Return effective world size for strategy, using distributed state when available."""
+    if strategy != "ddp":
+        return 1
+    if dist.is_available() and dist.is_initialized():
+        return int(dist.get_world_size())
+    return get_world_size()
+
+
+def resolve_train_batch_sizes(global_batch_size: int, strategy: str) -> Tuple[int, int]:
+    """
+    Resolve global/per-rank training batch sizes.
+
+    `environment.dataset.train_batch_size` is treated as global batch size.
+    Under DDP, it is split evenly across ranks.
+    """
+    if global_batch_size <= 0:
+        raise ValueError(f"train_batch_size must be > 0, got {global_batch_size}.")
+
+    world_size = get_world_size_for_strategy(strategy)
+    if world_size <= 0:
+        raise RuntimeError(f"Invalid world_size={world_size}.")
+
+    if strategy == "ddp":
+        if global_batch_size < world_size:
+            raise ValueError(
+                "Global train_batch_size must be >= world_size for DDP. "
+                f"Got train_batch_size={global_batch_size}, world_size={world_size}."
+            )
+        if global_batch_size % world_size != 0:
+            raise ValueError(
+                "Global train_batch_size must be divisible by world_size in DDP mode. "
+                f"Got train_batch_size={global_batch_size}, world_size={world_size}."
+            )
+        per_rank_batch_size = global_batch_size // world_size
+        return global_batch_size, per_rank_batch_size
+
+    return global_batch_size, global_batch_size
 
 
 def get_distribution_state(strategy: str) -> DistributionState:

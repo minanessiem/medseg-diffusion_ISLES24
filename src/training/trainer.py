@@ -27,7 +27,12 @@ print("[DEBUG:trainer.py] logger done", flush=True)
 
 from src.utils.train_utils import calc_grad_norm, calc_param_norm, _parse_multi_gpu_flag
 print("[DEBUG:trainer.py] train_utils done", flush=True)
-from src.utils.distribution_utils import barrier_if_needed, is_main_process
+from src.utils.distribution_utils import (
+    barrier_if_needed,
+    is_main_process,
+    resolve_strategy,
+    resolve_train_batch_sizes,
+)
 
 from torch import no_grad
 from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
@@ -531,14 +536,20 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     accumulation_steps = cfg.training.gradient.accumulation_steps
     if accumulation_steps is None:
         accumulation_steps = 1
-    physical_batch_size = cfg.environment.dataset.train_batch_size
-    effective_batch_size = physical_batch_size * accumulation_steps
+    strategy = resolve_strategy(cfg)
+    global_physical_batch_size, local_physical_batch_size = resolve_train_batch_sizes(
+        int(cfg.environment.dataset.train_batch_size),
+        strategy=strategy,
+    )
+    global_effective_batch_size = global_physical_batch_size * accumulation_steps
+    world_size = max(1, global_physical_batch_size // local_physical_batch_size)
     accumulation_counter = 0
     
     print(f"\nGradient Accumulation Configuration:")
-    print(f"  Physical batch size: {physical_batch_size}")
+    print(f"  Global batch size: {global_physical_batch_size}")
+    print(f"  Per-rank batch size: {local_physical_batch_size} (world_size={world_size})")
     print(f"  Accumulation steps: {accumulation_steps}")
-    print(f"  Effective batch size: {effective_batch_size}")
+    print(f"  Global effective batch size: {global_effective_batch_size}")
     
     # ==========================================================================
     # AMP (Automatic Mixed Precision) setup
@@ -779,7 +790,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         # Increment global_step here, after training but before logging
         global_step += 1
-        samples = global_step * effective_batch_size  # Use effective batch size
+        samples = global_step * global_effective_batch_size
         
         # Log macro-batch metrics (once per optimizer update)
         if main_process:

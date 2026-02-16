@@ -42,7 +42,7 @@ print("[DEBUG:loaders.py] modalities done", flush=True)
 import logging
 import tqdm
 import threading
-from src.utils.distribution_utils import resolve_strategy
+from src.utils.distribution_utils import resolve_strategy, resolve_train_batch_sizes
 print("[DEBUG:loaders.py] All imports complete!", flush=True)
 
 logging.getLogger('nibabel').setLevel(logging.WARNING)
@@ -377,6 +377,14 @@ def get_dataloaders(cfg):
         )
 
         strategy = resolve_strategy(cfg)
+        global_train_batch_size, per_rank_train_batch_size = resolve_train_batch_sizes(
+            int(cfg.dataset.train_batch_size),
+            strategy=strategy,
+        )
+        print(
+            f"Train batch semantics: global={global_train_batch_size}, "
+            f"per_rank={per_rank_train_batch_size}, strategy={strategy}"
+        )
         train_sampler = None
         train_shuffle = True
         if strategy == "ddp":
@@ -395,7 +403,7 @@ def get_dataloaders(cfg):
 
         train_dataloader = DataLoader(
             train_dataset, 
-            batch_size=cfg.dataset.train_batch_size, 
+            batch_size=per_rank_train_batch_size,
             shuffle=train_shuffle,
             sampler=train_sampler,
             num_workers=cfg.dataset.num_train_workers,
