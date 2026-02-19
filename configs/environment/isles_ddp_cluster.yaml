@@ -1,0 +1,11 @@
+defaults:
+  - isles_cluster
+
+dataset:
+  # Global batch semantics: train_batch_size is split per-rank under DDP.
+  train_batch_size: 32
+  test_batch_size: 4
+  # Tuned for 2-rank DDP operation while preserving strong input throughput.
+  num_train_workers: 32
+  num_valid_workers: 64
+  num_test_workers: 8
