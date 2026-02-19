@@ -39,10 +39,7 @@ def apply_override(cfg: Dict, override: str) -> Dict:
         if os.path.exists(potential_file):
             # Use load_group_config to recursively resolve all defaults
             group_cfg = load_group_config(config_group, value)
-            
-            # Resolve any interpolations in the loaded config
-            group_cfg = resolve_interpolations(group_cfg, cfg)
-            
+
             # Merge into main config
             cfg[config_group] = group_cfg
             return cfg
@@ -227,7 +224,8 @@ def _process_top_level_default(default, current_cfg: Dict) -> Dict:
     
     if isinstance(default, str):
         # Simple string reference: load another config file recursively
-        sub_cfg = load_config(default, [])
+        # Keep interpolations unresolved at nested levels; resolve once at top-level.
+        sub_cfg = load_config(default, [], resolve_final=False)
         cfg = deep_merge(cfg, sub_cfg)
     elif isinstance(default, dict):
         key, file_name = next(iter(default.items()))
@@ -255,7 +253,7 @@ def _process_top_level_default(default, current_cfg: Dict) -> Dict:
     return cfg
 
 
-def load_config(config_name: str, overrides: List[str]) -> Dict:
+def load_config(config_name: str, overrides: List[str], resolve_final: bool = True) -> Dict:
     """
     Load and merge YAML configs mimicking Hydra composition.
     
@@ -294,8 +292,11 @@ def load_config(config_name: str, overrides: List[str]) -> Dict:
     for ovr in overrides:
         cfg = apply_override(cfg, ovr)
     
-    # Resolve interpolations
-    cfg = resolve_interpolations(cfg)
+    # Resolve interpolations only once at the final top-level compose stage.
+    # Nested load_config() calls keep ${...} placeholders so later overrides
+    # (e.g., environment swaps) still influence referenced values.
+    if resolve_final:
+        cfg = resolve_interpolations(cfg)
     
     return cfg
 
