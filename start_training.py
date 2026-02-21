@@ -104,7 +104,12 @@ def main(cfg: DictConfig):
     strategy = resolve_strategy(cfg)
     dist_cfg = getattr(cfg, "distribution", None)
     backend = str(getattr(dist_cfg, "backend", "nccl"))
-    dist_state = init_process_group_if_needed(strategy=strategy, backend=backend)
+    timeout_minutes = int(cfg.distribution.timeout_minutes)
+    dist_state = init_process_group_if_needed(
+        strategy=strategy,
+        backend=backend,
+        timeout_minutes=timeout_minutes,
+    )
     print(
         f"[Distribution] strategy={strategy} rank={dist_state.rank} "
         f"local_rank={dist_state.local_rank} world_size={dist_state.world_size}"
