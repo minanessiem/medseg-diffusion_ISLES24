@@ -1,0 +1,12 @@
+# Linear warmup (10K absolute steps) + cosine annealing to 0
+# Use when matching sample-level warmup after doubling global batch size
+# (e.g., 32b@1M steps -> 64b@500K steps).
+#
+# Use with: python main.py scheduler=warmup_cosine_10Ksteps
+
+scheduler_type: warmup_cosine
+warmup_steps: 10000           # Absolute 10K steps warmup
+warmup_fraction: null         # Ignored when warmup_steps is set
+eta_min: 0                    # Anneal to 0
+step_frequency: per_step      # Step every iteration
+
