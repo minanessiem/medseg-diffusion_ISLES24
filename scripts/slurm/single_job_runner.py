@@ -314,25 +314,61 @@ def _get_override_value(overrides: List[str], key: str) -> Optional[str]:
     return value
 
 
-def _resolve_resume_strategy(resume_dir: str, overrides: List[str]) -> str:
-    """Resolve launch strategy for resume jobs from overrides or stored Hydra config."""
-    override_strategy = _get_override_value(overrides, "distribution")
-    if override_strategy in {"dp", "ddp"}:
-        return override_strategy
+def _resolve_resume_strategy(resume_dir: str, overrides: List[str], config: Dict) -> str:
+    """
+    Resolve launch strategy for resume jobs.
 
-    hydra_cfg_path = os.path.join(resume_dir, ".hydra", "config.yaml")
-    if os.path.exists(hydra_cfg_path):
+    Resolution order:
+      1) Explicit CLI override: distribution=... or distribution.strategy=...
+      2) Stored Hydra config at <run_dir>/.hydra/config.yaml (container path or mapped host path)
+
+    Fails fast if strategy cannot be resolved, to avoid silently emitting a DP launcher.
+    """
+    override_strategy = _get_override_value(overrides, "distribution")
+    if override_strategy is None:
+        override_strategy = _get_override_value(overrides, "distribution.strategy")
+    if override_strategy is not None:
+        override_strategy = str(override_strategy).strip().lower()
+        if override_strategy in {"dp", "ddp"}:
+            return override_strategy
+        raise ValueError(
+            f"Unsupported distribution override '{override_strategy}'. "
+            "Expected one of: dp, ddp."
+        )
+
+    resume_dir = resume_dir.rstrip("/")
+    candidate_resume_dirs = [resume_dir]
+
+    # Map container resume path to host path so strategy detection works on host
+    # before container launch.
+    container_outputs_base = str(config.get("container_outputs_base", "")).rstrip("/")
+    host_outputs_dir = str(config.get("host_outputs_dir", ""))
+    if container_outputs_base and host_outputs_dir and resume_dir.startswith(container_outputs_base):
+        relative = resume_dir[len(container_outputs_base):].lstrip("/")
+        candidate_resume_dirs.append(os.path.join(host_outputs_dir, relative))
+
+    for candidate in candidate_resume_dirs:
+        hydra_cfg_path = os.path.join(candidate, ".hydra", "config.yaml")
+        if not os.path.exists(hydra_cfg_path):
+            continue
+
         with open(hydra_cfg_path, "r") as f:
             stored_cfg = yaml.safe_load(f) or {}
+
         strategy = (
-            stored_cfg.get("distribution", {}).get("strategy", "dp")
+            stored_cfg.get("distribution", {}).get("strategy")
             if isinstance(stored_cfg, dict)
-            else "dp"
+            else None
         )
+        strategy = str(strategy).strip().lower() if strategy is not None else None
         if strategy in {"dp", "ddp"}:
             return strategy
 
-    return "dp"
+    raise RuntimeError(
+        "Could not resolve resume distribution strategy. "
+        "Pass an explicit override (distribution=dp|ddp), or ensure "
+        "<run_dir>/.hydra/config.yaml is readable from host path mapping."
+    )
 
 
 def _build_training_command(
@@ -457,7 +493,11 @@ def main():
         job_name = args.job_name or run_name
         _debug(f"job_name: {job_name}")
 
-        strategy = _resolve_resume_strategy(resume_dir=resume_dir, overrides=overrides)
+        strategy = _resolve_resume_strategy(
+            resume_dir=resume_dir,
+            overrides=overrides,
+            config=config,
+        )
         _debug(f"distribution strategy (resume): {strategy}")
         
         print(f"\n{'='*60}")
