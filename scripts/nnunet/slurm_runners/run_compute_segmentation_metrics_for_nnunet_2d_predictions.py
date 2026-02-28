@@ -8,7 +8,7 @@ and submits it as a non-interactive SLURM job.
 Usage:
     python scripts/nnunet/slurm_runners/run_compute_segmentation_metrics_for_nnunet_2d_predictions.py \
         [--time 00:30:00] [--cpus 32] [--mem 32G] \
-        --pred-dir <path> --gt-dir <path> \
+        --pred-dir <path> --gt-dir <path> [--foreground-only-all-metrics] \
         [--dry-run]
 
 Examples:
@@ -16,6 +16,12 @@ Examples:
     python scripts/nnunet/slurm_runners/run_compute_segmentation_metrics_for_nnunet_2d_predictions.py \
         --pred-dir /mnt/outputs/nnunet_results/predictions \
         --gt-dir /mnt/datasets/nnunet_raw/Dataset050_isles24/labelsTs
+
+    # Evaluate all metrics on foreground slices only
+    python scripts/nnunet/slurm_runners/run_compute_segmentation_metrics_for_nnunet_2d_predictions.py \
+        --pred-dir /mnt/outputs/nnunet_results/predictions \
+        --gt-dir /mnt/datasets/nnunet_raw/Dataset050_isles24/labelsTs \
+        --foreground-only-all-metrics
 
     # Custom resources
     python scripts/nnunet/slurm_runners/run_compute_segmentation_metrics_for_nnunet_2d_predictions.py \
@@ -108,6 +114,11 @@ def parse_arguments() -> argparse.Namespace:
         required=True,
         help='Directory containing ground truth label NIfTI files (*.nii.gz)'
     )
+    script_group.add_argument(
+        '--foreground-only-all-metrics',
+        action='store_true',
+        help='Compute precision/recall/F1/F2 on foreground slices only'
+    )
     
     # Control arguments (last)
     control_group = parser.add_argument_group('Control')
@@ -127,6 +138,8 @@ def build_python_command(args: argparse.Namespace) -> str:
         f'--pred-dir {args.pred_dir}',
         f'--gt-dir {args.gt_dir}',
     ]
+    if args.foreground_only_all_metrics:
+        cmd_parts.append('--foreground-only-all-metrics')
     
     return ' '.join(cmd_parts)
 
@@ -168,6 +181,7 @@ def main():
     print("=" * 60)
     print(f"  Predictions: {args.pred_dir}")
     print(f"  Ground Truth: {args.gt_dir}")
+    print(f"  Foreground-only all metrics: {args.foreground_only_all_metrics}")
     print("-" * 60)
     print("  Resources:")
     print(f"    Partition: {config['partition']}")

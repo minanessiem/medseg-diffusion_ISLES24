@@ -16,6 +16,10 @@ Metrics computed:
     - F1 Score
     - F2 Score (recall-weighted)
 
+Optional evaluation modes:
+    - Default: Dice on foreground slices only; other metrics on all slices
+    - --foreground-only-all-metrics: Evaluate all metrics on foreground slices only
+
 Usage:
     python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \
         --pred-dir ../nnUNet_exports/predictionsTs/ \
@@ -78,6 +82,11 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help='Directory containing ground truth label NIfTI files (*.nii.gz)'
+    )
+    parser.add_argument(
+        '--foreground-only-all-metrics',
+        action='store_true',
+        help='If set, compute precision/recall/F1/F2 on foreground slices only'
     )
     
     return parser.parse_args()
@@ -171,17 +180,22 @@ def load_nifti_pairs(
 
 def compute_metrics(
     predictions: List[torch.Tensor],
-    ground_truths: List[torch.Tensor]
+    ground_truths: List[torch.Tensor],
+    foreground_only_all_metrics: bool = False
 ) -> Dict:
     """
     Compute all metrics over prediction/ground truth pairs.
     
-    Tracks foreground vs empty slices separately. Dice is computed only
-    over slices with foreground (matching training behavior).
+    Tracks foreground vs empty slices separately.
+    Dice is always computed only over slices with foreground (matching training
+    behavior). Other metrics can be computed over all slices (default) or only
+    foreground slices via foreground_only_all_metrics=True.
     
     Args:
         predictions: List of prediction tensors [1, H, W]
         ground_truths: List of ground truth tensors [1, H, W]
+        foreground_only_all_metrics: If True, precision/recall/F1/F2 are
+            computed only on slices with foreground
         
     Returns:
         Dictionary with metric statistics and slice counts
@@ -217,11 +231,12 @@ def compute_metrics(
         else:
             empty_count += 1
         
-        # Other metrics computed for all slices
-        precision_values.append(precision_metric(pred, gt).item())
-        recall_values.append(recall_metric(pred, gt).item())
-        f1_values.append(f1_metric(pred, gt).item())
-        f2_values.append(f2_metric(pred, gt).item())
+        # Other metrics can be computed over all slices or foreground-only.
+        if (not foreground_only_all_metrics) or has_foreground:
+            precision_values.append(precision_metric(pred, gt).item())
+            recall_values.append(recall_metric(pred, gt).item())
+            f1_values.append(f1_metric(pred, gt).item())
+            f2_values.append(f2_metric(pred, gt).item())
     
     # Aggregate results
     results = {
@@ -230,26 +245,32 @@ def compute_metrics(
             "foreground": foreground_count,
             "empty": empty_count,
         },
+        "evaluation_mode": {
+            "all_metrics_foreground_only": foreground_only_all_metrics,
+            "non_dice_metrics_denominator": (
+                "foreground_slices_only" if foreground_only_all_metrics else "all_slices"
+            ),
+        },
         "metrics": {
             "dice_fg": {
                 "mean": float(np.mean(dice_values)) if dice_values else 0.0,
                 "std": float(np.std(dice_values)) if dice_values else 0.0,
             },
             "precision": {
-                "mean": float(np.mean(precision_values)),
-                "std": float(np.std(precision_values)),
+                "mean": float(np.mean(precision_values)) if precision_values else 0.0,
+                "std": float(np.std(precision_values)) if precision_values else 0.0,
             },
             "recall": {
-                "mean": float(np.mean(recall_values)),
-                "std": float(np.std(recall_values)),
+                "mean": float(np.mean(recall_values)) if recall_values else 0.0,
+                "std": float(np.std(recall_values)) if recall_values else 0.0,
             },
             "f1": {
-                "mean": float(np.mean(f1_values)),
-                "std": float(np.std(f1_values)),
+                "mean": float(np.mean(f1_values)) if f1_values else 0.0,
+                "std": float(np.std(f1_values)) if f1_values else 0.0,
             },
             "f2": {
-                "mean": float(np.mean(f2_values)),
-                "std": float(np.std(f2_values)),
+                "mean": float(np.mean(f2_values)) if f2_values else 0.0,
+                "std": float(np.std(f2_values)) if f2_values else 0.0,
             },
         }
     }
@@ -298,6 +319,7 @@ def save_results(
     txt_path = pred_dir / "evaluation_summary.txt"
     
     sc = results["slice_counts"]
+    em = results["evaluation_mode"]
     m = results["metrics"]
     fg_pct = 100 * sc["foreground"] / sc["total"] if sc["total"] > 0 else 0
     
@@ -312,6 +334,10 @@ def save_results(
         f"  Total:      {sc['total']}",
         f"  Foreground: {sc['foreground']} ({fg_pct:.1f}%)",
         f"  Empty:      {sc['empty']} ({100-fg_pct:.1f}%)",
+        "",
+        "Evaluation Mode:",
+        f"  All metrics foreground-only: {em['all_metrics_foreground_only']}",
+        f"  Non-Dice metrics computed over: {em['non_dice_metrics_denominator']}",
         "",
         "Metrics (micro-averaged):",
         f"  Dice (foreground only): {m['dice_fg']['mean']:.4f} (±{m['dice_fg']['std']:.4f})",
@@ -334,6 +360,7 @@ def save_results(
 def print_summary(results: Dict):
     """Print evaluation summary to console."""
     sc = results["slice_counts"]
+    em = results["evaluation_mode"]
     m = results["metrics"]
     fg_pct = 100 * sc["foreground"] / sc["total"] if sc["total"] > 0 else 0
     
@@ -342,6 +369,10 @@ def print_summary(results: Dict):
     print(f"Slices evaluated: {sc['total']}")
     print(f"  Foreground slices: {sc['foreground']} ({fg_pct:.1f}%)")
     print(f"  Empty slices: {sc['empty']} ({100-fg_pct:.1f}%)")
+    print()
+    print("Evaluation mode:")
+    print(f"  All metrics foreground-only: {em['all_metrics_foreground_only']}")
+    print(f"  Non-Dice metrics denominator: {em['non_dice_metrics_denominator']}")
     print()
     print("Metrics (micro-averaged):")
     print(f"  Dice (foreground only): {m['dice_fg']['mean']:.4f} (±{m['dice_fg']['std']:.4f})")
@@ -384,7 +415,11 @@ def main():
     
     # 2. Compute metrics
     print("\n[2/3] Computing metrics...")
-    results = compute_metrics(predictions, ground_truths)
+    results = compute_metrics(
+        predictions,
+        ground_truths,
+        foreground_only_all_metrics=args.foreground_only_all_metrics,
+    )
     
     # 3. Output results
     print_summary(results)
