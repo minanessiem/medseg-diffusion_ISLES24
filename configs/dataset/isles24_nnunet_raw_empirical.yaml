@@ -1,0 +1,20 @@
+# ISLES24 dataset config with RAW empirical modalities for nnU-Net export
+# Based on isles24_emperical.yaml but with RAW (unnormalized) values.
+#
+# Empirical modalities: CBF, CTA, NCCT, TMAX (4 channels)
+# Note: Original empirical config had 6 channels with multiple CTA/NCCT variants.
+# This simplified version uses one of each base modality in RAW mode.
+#
+# Usage:
+#   python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+#       --config-name=convert_nnunet_local \
+#       dataset=isles24_nnunet_raw_empirical \
+#       nnunet.dataset_name=ISLES24_2D_RAW_EMPIRICAL \
+#       nnunet.dataset_id=052
+
+defaults:
+  - isles24
+
+name: isles24
+modalities: ['CBF_RAW', 'CTA_RAW', 'NCCT_RAW', 'TMAX_RAW']
+num_modalities: 4

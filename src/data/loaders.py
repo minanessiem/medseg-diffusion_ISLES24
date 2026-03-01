@@ -106,6 +106,13 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
             base_modality = modality_config.split('_')[0]
             raw_data = data[base_modality]
             
+            # RAW mode: not implemented for 3D - use processors.py pipelines instead
+            if modality_config.endswith('_RAW'):
+                raise NotImplementedError(
+                    f"RAW mode '{modality_config}' is not supported for ISLES24Dataset3D. "
+                    "Use src/data/processors.py pipelines for 3D volume processing."
+                )
+            
             raw_np = raw_data.numpy()
             finite_mask = np.isfinite(raw_np)
             if not finite_mask.any():
@@ -225,6 +232,12 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         for modality_config in self.modalities:
             base_modality = modality_config.split('_')[0]
             raw_data = data_slice[base_modality]
+            
+            # RAW mode: skip normalization, passthrough raw intensity values
+            # Used for nnU-Net export where nnU-Net handles its own normalization
+            if modality_config.endswith('_RAW'):
+                processed_images[f"processed_{modality_config}"] = raw_data.float()
+                continue
             
             raw_np = raw_data.numpy()
             finite_mask = np.isfinite(raw_np)
