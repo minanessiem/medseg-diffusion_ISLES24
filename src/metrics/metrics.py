@@ -60,6 +60,8 @@ class DiceNativeCoefficient(nn.Module):
     def __init__(self, threshold=0):
         super().__init__()
         self.threshold = threshold
+        self.register_buffer('sum', torch.tensor(0.0))
+        self.register_buffer('count', torch.tensor(0))
 
     def forward(self, y_pred, y_true, debug=False):
         # Ensure inputs are on the same device
@@ -95,6 +97,9 @@ class DiceNativeCoefficient(nn.Module):
             print(f"  Intersection: {intersection if 'intersection' in locals() else 0}")
             print(f"  Calculated Dice: {dc}")
     
+        dc_tensor = dc if isinstance(dc, torch.Tensor) else torch.tensor(float(dc), device=y_pred.device)
+        self.sum += dc_tensor.detach().to(self.sum.device)
+        self.count += 1
         return dc
 
     def compute(self):

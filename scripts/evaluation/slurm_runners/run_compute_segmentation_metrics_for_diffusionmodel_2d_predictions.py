@@ -56,6 +56,17 @@ def parse_arguments() -> argparse.Namespace:
         default=10,
         help="Number of slices to process in --test mode",
     )
+    parser.add_argument(
+        "--export-reconstructed-volumes",
+        action="store_true",
+        help="Export reconstructed prediction/GT volumes as NIfTI.",
+    )
+    parser.add_argument(
+        "--max-export-volumes-per-case",
+        type=int,
+        default=None,
+        help="Optional cap for exported reconstructed volumes per analysis case.",
+    )
 
     # SLURM resources
     parser.add_argument("--gpus", type=int, default=1, help="Number of GPUs")
@@ -94,6 +105,10 @@ def build_python_command(args: argparse.Namespace) -> str:
     if args.test:
         cmd_parts.append("--test")
         cmd_parts.append(f"--test-max-slices {args.test_max_slices}")
+    if args.export_reconstructed_volumes:
+        cmd_parts.append("--export-reconstructed-volumes")
+    if args.max_export_volumes_per_case is not None:
+        cmd_parts.append(f"--max-export-volumes-per-case {args.max_export_volumes_per_case}")
 
     return " ".join(cmd_parts)
 

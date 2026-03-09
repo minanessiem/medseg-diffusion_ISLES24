@@ -1,29 +1,109 @@
 # Evaluation Package
 
-This package contains the greenfield, unified segmentation evaluation stack.
+Unified evaluation package for:
+- slice-level 2D metric aggregation,
+- volume-level 3D metric aggregation,
+- optional reconstructed volume NIfTI export for QA.
 
-Core design principles:
-- Keep source-specific loading/inference separate from metric computation.
-- Reuse existing metric implementations from `src/metrics/metrics.py`.
-- Stream samples out-of-core (no full-dataset buffering in memory).
-- Emit a canonical reporting schema across entrypoints.
+The runtime is streaming-first: slices are consumed in order, and volume metrics
+are updated when a volume boundary is reached (no full-dataset volume buffering
+required for metric computation).
 
-Implemented so far (Phase 1 through Phase 3):
-- `contracts.py`: shared typed structures between IO, engine, and reporting.
-- `metrics_registry.py`: threshold-aware wrappers copied/adapted from analysis.
-- `metrics_engine.py`: streaming accumulators for threshold/scoped metric summaries.
-- `threshold_protocol.py`: fixed/sweep threshold policy helpers.
-- `mask_builder.py`: probability/mask normalization and binary conversion utilities.
-- `io_nnunet.py`: streaming producer for post-threshold nnU-Net masks.
-- `io_diffusion.py`: streaming producer for probability predictions from model inference.
-- `reporting.py`: canonical JSON/CSV/text reporting helpers.
-- `compute_segmentation_metrics_for_nnunet_2d_predictions.py`: nnU-Net v2 entrypoint.
-- `compute_segmentation_metrics_for_diffusionmodel_2d_predictions.py`: custom-model v2 entrypoint.
-- `slurm_runners/`: SLURM submission wrappers for both v2 entrypoints.
+## Entry points
 
-Useful dev/testing options:
-- diffusion entrypoint supports `--test --test-max-slices 10` for fast iteration.
-- diffusion entrypoint supports multi-case ensembles via `--ensemble-samples 1,3,5`
-  and `--ensemble-method both`, producing case-prefixed report files.
-- canonical JSON includes `metrics.default_threshold_metrics` for threshold=0.5 when evaluated.
+- Diffusion/custom model:
+  - `python3 -m scripts.evaluation.compute_segmentation_metrics_for_diffusionmodel_2d_predictions ...`
+- nnU-Net post-threshold predictions:
+  - `python3 -m scripts.evaluation.compute_segmentation_metrics_for_nnunet_2d_predictions ...`
+
+## Key flags
+
+### Shared volume-export flags
+
+- `--export-reconstructed-volumes`
+  - Writes reconstructed 3D NIfTI per case (`pred` and `gt`).
+- `--max-export-volumes-per-case`
+  - Optional cap for exported reconstructed volumes.
+
+### Diffusion/custom flags
+
+- Threshold protocol:
+  - `--thresholds 0.05:0.95:0.05` (sweep mode)
+  - `--fixed-threshold 0.5` (fixed mode)
+  - `--optimize-metric dice`
+- Ensemble:
+  - `--ensemble-samples 1` or `--ensemble-samples 1,3,5`
+  - `--ensemble-method single|mean|soft_staple|both`
+  - `--staple-max-iters`
+  - `--staple-tolerance`
+- Quick test:
+  - `--test --test-max-slices 10`
+
+### nnU-Net flags
+
+- `--fixed-threshold 0.5`
+- `--allow-shape-mismatch`
+
+## Outputs
+
+For each analysis case (or one default case for nnU-Net), outputs include:
+
+- `canonical_results.json`
+- `metrics_per_threshold.csv` (slice-level)
+- `volume_metrics_per_threshold.csv` (volume-level)
+- `evaluation_summary.txt`
+
+If export is enabled:
+- `reconstructed_volumes/<analysis_case_key>/<volume_id>__pred.nii.gz`
+- `reconstructed_volumes/<analysis_case_key>/<volume_id>__gt.nii.gz`
+
+## Example commands
+
+### Diffusion/custom (local)
+
+```bash
+python3 -m scripts.evaluation.compute_segmentation_metrics_for_diffusionmodel_2d_predictions \
+  --run-dir /mnt/outputs/<run_dir> \
+  --model-name <checkpoint_name_without_pth> \
+  --thresholds 0.05:0.95:0.05 \
+  --optimize-metric dice \
+  --ensemble-samples 3 \
+  --ensemble-method both \
+  --export-reconstructed-volumes \
+  --max-export-volumes-per-case 10
+```
+
+### nnU-Net (local)
+
+```bash
+python3 -m scripts.evaluation.compute_segmentation_metrics_for_nnunet_2d_predictions \
+  --pred-dir /mnt/outputs/nnunet/preds \
+  --gt-dir /mnt/outputs/nnunet/labels \
+  --fixed-threshold 0.5 \
+  --export-reconstructed-volumes
+```
+
+### Diffusion/custom via SLURM runner
+
+```bash
+python3 -m scripts.evaluation.slurm_runners.run_compute_segmentation_metrics_for_diffusionmodel_2d_predictions \
+  --run-dir /mnt/outputs/<run_dir> \
+  --model-name <checkpoint_name_without_pth> \
+  --thresholds 0.05:0.95:0.05 \
+  --optimize-metric dice \
+  --ensemble-samples 3 \
+  --ensemble-method both \
+  --export-reconstructed-volumes \
+  --max-export-volumes-per-case 10
+```
+
+### nnU-Net via SLURM runner
+
+```bash
+python3 -m scripts.evaluation.slurm_runners.run_compute_segmentation_metrics_for_nnunet_2d_predictions \
+  --pred-dir /mnt/outputs/nnunet/preds \
+  --gt-dir /mnt/outputs/nnunet/labels \
+  --fixed-threshold 0.5 \
+  --export-reconstructed-volumes
+```
 

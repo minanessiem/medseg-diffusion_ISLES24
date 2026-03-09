@@ -36,6 +36,17 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Skip mismatched prediction/GT shapes",
     )
+    parser.add_argument(
+        "--export-reconstructed-volumes",
+        action="store_true",
+        help="Export reconstructed prediction/GT volumes as NIfTI.",
+    )
+    parser.add_argument(
+        "--max-export-volumes-per-case",
+        type=int,
+        default=None,
+        help="Optional cap for exported reconstructed volumes.",
+    )
 
     # SLURM resources
     parser.add_argument("--partition", type=str, default=None, help="SLURM partition override")
@@ -61,6 +72,10 @@ def build_python_command(args: argparse.Namespace) -> str:
         cmd_parts.append(f"--output-dir {args.output_dir}")
     if args.allow_shape_mismatch:
         cmd_parts.append("--allow-shape-mismatch")
+    if args.export_reconstructed_volumes:
+        cmd_parts.append("--export-reconstructed-volumes")
+    if args.max_export_volumes_per_case is not None:
+        cmd_parts.append(f"--max-export-volumes-per-case {args.max_export_volumes_per_case}")
     return " ".join(cmd_parts)
 
 

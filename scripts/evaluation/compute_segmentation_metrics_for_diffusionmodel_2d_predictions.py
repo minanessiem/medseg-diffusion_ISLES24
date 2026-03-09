@@ -17,18 +17,20 @@ from scripts.analysis.threshold_analysis import (
     load_model,
 )
 from scripts.evaluation.io_diffusion import iter_diffusion_case_slice_samples
-from scripts.evaluation.metrics_engine import StreamingMetricsEngine
+from scripts.evaluation.metrics_engine import DualLevelStreamingMetricsEngine
 from scripts.evaluation.reporting import (
     build_report_payload,
     build_text_summary,
     write_json_report,
     write_threshold_csv,
+    write_volume_threshold_csv,
 )
 from scripts.evaluation.threshold_protocol import (
     make_fixed_protocol,
     make_sweep_protocol_from_spec,
     select_primary_threshold,
 )
+from scripts.evaluation.volume_exporter import export_reconstructed_volumes
 from src.data.loaders import get_dataloaders
 
 
@@ -118,6 +120,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=10,
         help="Number of slices to process in --test mode (default: 10)",
+    )
+    parser.add_argument(
+        "--export-reconstructed-volumes",
+        action="store_true",
+        help="Export reconstructed prediction/GT 3D volumes as NIfTI.",
+    )
+    parser.add_argument(
+        "--max-export-volumes-per-case",
+        type=int,
+        default=None,
+        help="Optional cap for exported reconstructed volumes per analysis case.",
     )
     return parser
 
@@ -232,10 +245,20 @@ def main() -> None:
     model = load_model(cfg, checkpoint_path, device)
     dataloaders = get_dataloaders(cfg)
     val_loader = dataloaders["val"]
+    if hasattr(val_loader, "dataset") and hasattr(val_loader.dataset, "return_metadata"):
+        val_loader.dataset.return_metadata = True
 
     analysis_cases = _build_analysis_cases(args.ensemble_samples_list, args.ensemble_method)
     use_filename_prefix = len(analysis_cases) > 1
-    engines = {case["key"]: StreamingMetricsEngine(thresholds=protocol.thresholds) for case in analysis_cases}
+    engines = {
+        case["key"]: DualLevelStreamingMetricsEngine(
+            thresholds=protocol.thresholds,
+            assembler_case_key=str(case["key"]),
+        )
+        for case in analysis_cases
+    }
+    export_dir = output_dir / "reconstructed_volumes" if args.export_reconstructed_volumes else None
+    exported_volume_counts = {str(case["key"]): 0 for case in analysis_cases}
 
     case_samples = iter_diffusion_case_slice_samples(
         model=model,
@@ -248,14 +271,44 @@ def main() -> None:
         max_samples=args.test_max_slices if args.test else None,
     )
     for case_key, sample in case_samples:
-        engines[case_key].update(sample)
+        finalized_volumes = engines[case_key].update(sample)
+        if args.export_reconstructed_volumes and finalized_volumes:
+            remaining = _remaining_export_budget(
+                exported=exported_volume_counts[case_key],
+                max_per_case=args.max_export_volumes_per_case,
+            )
+            if remaining != 0:
+                to_export = finalized_volumes if remaining < 0 else finalized_volumes[:remaining]
+                export_reconstructed_volumes(
+                    grouped_volumes={case_key: to_export},
+                    output_dir=export_dir,
+                    max_volumes_per_case=None,
+                )
+                exported_volume_counts[case_key] += len(to_export)
 
     print("\nOutputs:")
     for case in analysis_cases:
         case_key = str(case["key"])
         case_label = str(case["label"])
         filename_prefix = f"{case_key}_" if use_filename_prefix else ""
-        finalized_results = engines[case_key].finalize()
+        trailing_volumes = engines[case_key].finalize_open_volumes()
+        if args.export_reconstructed_volumes and trailing_volumes:
+            remaining = _remaining_export_budget(
+                exported=exported_volume_counts[case_key],
+                max_per_case=args.max_export_volumes_per_case,
+            )
+            if remaining != 0:
+                to_export = trailing_volumes if remaining < 0 else trailing_volumes[:remaining]
+                export_reconstructed_volumes(
+                    grouped_volumes={case_key: to_export},
+                    output_dir=export_dir,
+                    max_volumes_per_case=None,
+                )
+                exported_volume_counts[case_key] += len(to_export)
+
+        dual_level_results = engines[case_key].finalize()
+        finalized_results = dual_level_results["slice_level"]
+        volume_results = dual_level_results["volume_level"]
         selected_threshold = select_primary_threshold(finalized_results, protocol)
 
         payload = build_report_payload(
@@ -278,6 +331,7 @@ def main() -> None:
                 "test_max_slices": int(args.test_max_slices) if args.test else None,
             },
             selected_threshold=selected_threshold,
+            volume_finalized_results=volume_results,
         )
 
         json_path = write_json_report(
@@ -290,6 +344,11 @@ def main() -> None:
             output_dir=output_dir,
             filename=f"{filename_prefix}metrics_per_threshold.csv",
         )
+        volume_csv_path = write_volume_threshold_csv(
+            volume_results,
+            output_dir=output_dir,
+            filename=f"{filename_prefix}volume_metrics_per_threshold.csv",
+        )
         summary_path = output_dir / f"{filename_prefix}evaluation_summary.txt"
         summary_text = build_text_summary(payload)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,7 +357,28 @@ def main() -> None:
         print(f"  [{case_label}]")
         print(f"    {json_path}")
         print(f"    {csv_path}")
+        print(f"    {volume_csv_path}")
         print(f"    {summary_path}")
+        if args.export_reconstructed_volumes:
+            print(
+                f"    exported_reconstructed_volumes={exported_volume_counts[case_key]} "
+                f"-> {export_dir / case_key}"
+            )
+
+
+def _remaining_export_budget(exported: int, max_per_case: int | None) -> int:
+    """
+    Remaining export slots for one case.
+
+    Returns:
+        -1 when unlimited.
+        0 when cap reached.
+        >0 when that many slots remain.
+    """
+    if max_per_case is None:
+        return -1
+    remaining = int(max_per_case) - int(exported)
+    return max(remaining, 0)
 
 
 if __name__ == "__main__":

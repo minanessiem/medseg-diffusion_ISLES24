@@ -11,6 +11,7 @@ from torch import Tensor
 
 from scripts.evaluation.contracts import SliceSample
 from scripts.evaluation.mask_builder import build_ground_truth_mask, build_prediction_mask
+from scripts.evaluation.provenance import parse_nnunet_slice_identity
 
 
 def iter_nnunet_slice_samples(
@@ -41,13 +42,16 @@ def iter_nnunet_slice_samples(
         raise FileNotFoundError(f"No .nii.gz files found in prediction directory: {pred_dir}")
 
     for gt_file in gt_files:
-        case_id = gt_file.name.replace(".nii.gz", "")
-        pred_file = pred_lookup.get(case_id)
+        case_key = gt_file.name.replace(".nii.gz", "")
+        pred_file = pred_lookup.get(case_key)
         if pred_file is None:
             continue
+        volume_id, slice_index = parse_nnunet_slice_identity(case_key)
+        case_id = volume_id
+        slice_id = f"{volume_id}_s{slice_index:04d}"
 
-        gt_tensor = _load_nifti_slice_tensor(gt_file)
-        pred_tensor = _load_nifti_slice_tensor(pred_file)
+        gt_tensor, gt_affine = _load_nifti_slice_tensor_with_affine(gt_file)
+        pred_tensor, _ = _load_nifti_slice_tensor_with_affine(pred_file)
 
         if gt_tensor.shape != pred_tensor.shape:
             if strict_shape:
@@ -58,13 +62,20 @@ def iter_nnunet_slice_samples(
 
         yield SliceSample(
             case_id=case_id,
-            slice_id=case_id,
+            slice_id=slice_id,
+            volume_id=volume_id,
+            slice_index=slice_index,
             prediction_mask=build_prediction_mask(prediction_mask=pred_tensor),
             ground_truth_mask=build_ground_truth_mask(gt_tensor),
             metadata={
                 "source": "nnunet_post_threshold",
                 "pred_path": str(pred_file),
                 "gt_path": str(gt_file),
+                "case_key": case_key,
+                "source_affine": gt_affine.tolist(),
+                "slice_axis": 2,
+                "pre_resize_shape_hw": [int(gt_tensor.shape[-2]), int(gt_tensor.shape[-1])],
+                "post_resize_shape_hw": [int(gt_tensor.shape[-2]), int(gt_tensor.shape[-1])],
             },
         )
 
@@ -81,6 +92,18 @@ def _load_nifti_slice_tensor(path: Path) -> Tensor:
     data = nib.load(path).get_fdata()
     tensor = torch.from_numpy(data).float()
     return _to_channel_first_slice(tensor, path=path)
+
+
+def _load_nifti_slice_tensor_with_affine(path: Path) -> Tuple[Tensor, Tensor]:
+    """
+    Load NIfTI slice tensor plus affine.
+    """
+    nii = nib.load(path)
+    data = nii.get_fdata()
+    tensor = torch.from_numpy(data).float()
+    slice_tensor = _to_channel_first_slice(tensor, path=path)
+    affine = torch.from_numpy(nii.affine).float()
+    return slice_tensor, affine
 
 
 def _to_channel_first_slice(tensor: Tensor, path: Path) -> Tensor:

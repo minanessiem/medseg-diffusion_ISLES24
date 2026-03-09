@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from scripts.evaluation.contracts import SliceSample
 from scripts.evaluation.mask_builder import build_ground_truth_mask
+from scripts.evaluation.provenance import parse_diffusion_slice_identity
 from src.utils.ensemble import mean_ensemble, soft_staple
 
 BatchType = Any
@@ -104,7 +105,7 @@ def iter_diffusion_case_slice_samples(
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(batch_iterable):
-            image, mask, paths = _unpack_batch(batch)
+            image, mask, paths, metas = _unpack_batch(batch)
             image = image.to(device)
 
             sample_stack = _generate_sample_stack(
@@ -125,7 +126,9 @@ def iter_diffusion_case_slice_samples(
                 if max_samples is not None and yielded_base_samples >= max_samples:
                     return
 
-                case_id, slice_id = _resolve_sample_identity(paths, batch_idx, item_idx)
+                case_id, slice_id, volume_id, slice_index = _resolve_sample_identity(
+                    paths, batch_idx, item_idx
+                )
                 gt_mask = build_ground_truth_mask(mask[item_idx].cpu())
 
                 for case in analysis_cases:
@@ -133,19 +136,25 @@ def iter_diffusion_case_slice_samples(
                     case_method = str(case["method"])
                     case_num_samples = int(case["num_samples"])
                     pred = predictions_by_case[case_key][item_idx].cpu()
+                    sample_meta: Dict[str, object] = {
+                        "source": "diffusion_probability",
+                        "batch_index": batch_idx,
+                        "item_index": item_idx,
+                        "ensemble_num_samples": case_num_samples,
+                        "ensemble_method": case_method,
+                        "case_key": case_key,
+                    }
+                    extra_meta = _resolve_item_meta(metas, item_idx)
+                    if extra_meta is not None:
+                        sample_meta.update(extra_meta)
                     yield case_key, SliceSample(
                         case_id=case_id,
                         slice_id=slice_id,
+                        volume_id=volume_id,
+                        slice_index=slice_index,
                         prediction_prob=pred,
                         ground_truth_mask=gt_mask,
-                        metadata={
-                            "source": "diffusion_probability",
-                            "batch_index": batch_idx,
-                            "item_index": item_idx,
-                            "ensemble_num_samples": case_num_samples,
-                            "ensemble_method": case_method,
-                            "case_key": case_key,
-                        },
+                        metadata=sample_meta,
                     )
                 yielded_base_samples += 1
 
@@ -231,7 +240,9 @@ def _normalize_probability_tensor(prediction: Tensor) -> Tensor:
     return pred.clamp(0, 1)
 
 
-def _unpack_batch(batch: BatchType) -> Tuple[Tensor, Tensor, Optional[Sequence[str]]]:
+def _unpack_batch(
+    batch: BatchType,
+) -> Tuple[Tensor, Tensor, Optional[Sequence[str]], Optional[Sequence[Dict[str, object]]]]:
     if not isinstance(batch, (tuple, list)) or len(batch) < 2:
         raise ValueError(
             "Batch must be tuple/list like (image, mask, [path])."
@@ -239,21 +250,48 @@ def _unpack_batch(batch: BatchType) -> Tuple[Tensor, Tensor, Optional[Sequence[s
     image = batch[0]
     mask = batch[1]
     paths = batch[2] if len(batch) > 2 else None
-    return image, mask, paths
+    metas = batch[3] if len(batch) > 3 else None
+    return image, mask, paths, metas
+
+
+def _resolve_item_meta(
+    metas: Optional[object],
+    item_idx: int,
+) -> Optional[Dict[str, object]]:
+    if metas is None:
+        return None
+    if isinstance(metas, dict):
+        item_meta: Dict[str, object] = {}
+        for key, value in metas.items():
+            try:
+                if isinstance(value, (list, tuple)):
+                    item_meta[str(key)] = value[item_idx]
+                else:
+                    item_meta[str(key)] = value
+            except Exception:
+                continue
+        return item_meta
+    if item_idx >= len(metas):
+        return None
+    item_meta = metas[item_idx]
+    if not isinstance(item_meta, dict):
+        return None
+    return dict(item_meta)
 
 
 def _resolve_sample_identity(
     paths: Optional[Sequence[str]],
     batch_idx: int,
     item_idx: int,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, Optional[str], Optional[int]]:
     if paths is not None and item_idx < len(paths):
         raw = str(paths[item_idx])
-        case_id = raw
-        slice_id = raw
-        return case_id, slice_id
+        volume_id, slice_index = parse_diffusion_slice_identity(raw)
+        case_id = volume_id
+        slice_id = f"{volume_id}_slice{slice_index}"
+        return case_id, slice_id, volume_id, slice_index
     fallback = f"batch{batch_idx}_item{item_idx}"
-    return fallback, fallback
+    return fallback, fallback, None, None
 
 
 def _safe_len(iterable: Iterable[Any]) -> Optional[int]:

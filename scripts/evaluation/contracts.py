@@ -28,6 +28,8 @@ class SliceSample:
     ground_truth_mask: Tensor
     prediction_prob: Optional[Tensor] = None
     prediction_mask: Optional[Tensor] = None
+    volume_id: Optional[str] = None
+    slice_index: Optional[int] = None
     metadata: Dict[str, object] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -40,6 +42,18 @@ class SliceSample:
             raise ValueError(
                 "SliceSample must not provide both prediction_prob and prediction_mask."
             )
+        if self.volume_id is None and self.slice_index is not None:
+            raise ValueError(
+                "SliceSample with slice_index must also provide volume_id."
+            )
+        if self.volume_id is not None and self.slice_index is None:
+            raise ValueError(
+                "SliceSample with volume_id must also provide slice_index."
+            )
+        if self.volume_id is not None and not self.volume_id.strip():
+            raise ValueError("SliceSample volume_id must not be empty.")
+        if self.slice_index is not None and int(self.slice_index) < 0:
+            raise ValueError("SliceSample slice_index must be >= 0.")
 
 
 @dataclass(frozen=True)
@@ -109,4 +123,40 @@ class ScopedRunningStats:
             "all_slices": self.all_slices.to_dict(),
             "foreground_only": self.foreground_only.to_dict(),
         }
+
+
+@dataclass
+class VolumeSample:
+    """
+    One reconstructed 3D volume sample assembled from slice-level samples.
+
+    Tensors are expected in channel-first format [C, H, W, D].
+    """
+
+    case_id: str
+    volume_id: str
+    prediction_volume: Tensor
+    ground_truth_volume: Tensor
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        """Validate basic volume sample invariants."""
+        if not self.volume_id.strip():
+            raise ValueError("VolumeSample volume_id must not be empty.")
+        if self.prediction_volume.ndim != 4:
+            raise ValueError(
+                "VolumeSample prediction_volume must be 4D [C,H,W,D], "
+                f"got shape={tuple(self.prediction_volume.shape)}."
+            )
+        if self.ground_truth_volume.ndim != 4:
+            raise ValueError(
+                "VolumeSample ground_truth_volume must be 4D [C,H,W,D], "
+                f"got shape={tuple(self.ground_truth_volume.shape)}."
+            )
+        if tuple(self.prediction_volume.shape) != tuple(self.ground_truth_volume.shape):
+            raise ValueError(
+                "VolumeSample prediction and ground truth shape mismatch: "
+                f"pred={tuple(self.prediction_volume.shape)} "
+                f"gt={tuple(self.ground_truth_volume.shape)}."
+            )
 
