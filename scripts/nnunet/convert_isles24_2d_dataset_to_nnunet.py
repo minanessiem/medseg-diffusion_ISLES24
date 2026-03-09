@@ -58,6 +58,7 @@ from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.train_utils import setup_seeds
 from src.data.loaders import get_dataloaders
@@ -131,8 +132,46 @@ def count_files_in_directory(directory: Path, pattern: str = "*.nii.gz") -> int:
     return len(list(directory.glob(pattern)))
 
 
-def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path, 
-                         num_channels: int) -> str:
+def _build_export_affine(slice_meta: Dict[str, Any], out_h: int, out_w: int, slice_idx: int) -> np.ndarray:
+    """
+    Build slice-export affine that preserves source geometry and includes index-aware z-offset.
+    """
+    source_affine = np.asarray(slice_meta.get("source_affine", np.eye(4)), dtype=np.float64)
+    if source_affine.shape != (4, 4):
+        source_affine = np.eye(4, dtype=np.float64)
+    pre_hw = slice_meta.get("pre_resize_shape_hw", [out_h, out_w])
+    try:
+        pre_h = max(int(pre_hw[0]), 1)
+        pre_w = max(int(pre_hw[1]), 1)
+    except Exception:
+        pre_h, pre_w = out_h, out_w
+    out_h = max(int(out_h), 1)
+    out_w = max(int(out_w), 1)
+    scale_h = float(pre_h / out_h)
+    scale_w = float(pre_w / out_w)
+
+    export_affine = np.array(source_affine, dtype=np.float64, copy=True)
+    export_affine[:3, 0] = source_affine[:3, 0] * scale_h
+    export_affine[:3, 1] = source_affine[:3, 1] * scale_w
+    export_affine[:3, 3] = source_affine[:3, 3] + source_affine[:3, 2] * float(slice_idx)
+    return export_affine
+
+
+def _write_nifti_with_affine(data: np.ndarray, affine: np.ndarray, output_path: Path) -> None:
+    nii_img = nib.Nifti1Image(data, affine=affine)
+    nii_img.set_qform(affine, code=1)
+    nii_img.set_sform(affine, code=1)
+    nib.save(nii_img, output_path)
+
+
+def process_single_slice(
+    idx: int,
+    dataset,
+    images_dir: Path,
+    labels_dir: Path,
+    num_channels: int,
+    split_name: str,
+) -> Dict[str, Any]:
     """
     Process and save a single slice to nnU-Net format.
     
@@ -144,9 +183,14 @@ def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path,
         num_channels: Number of modality channels
     
     Returns:
-        Case identifier string
+        Slice export record for provenance manifest.
     """
-    image, label, virtual_path = dataset[idx]
+    sample = dataset[idx]
+    if len(sample) == 4:
+        image, label, virtual_path, slice_meta = sample
+    else:
+        image, label, virtual_path = sample
+        slice_meta = {}
     # image: [C, H, W], label: [1, H, W]
     
     # Parse case_id and slice_idx from virtual_path
@@ -156,6 +200,10 @@ def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path,
     
     # Create case identifier for nnU-Net
     safe_case_id = f"{case_id}_s{slice_idx:04d}"
+    out_h = int(image.shape[-2])
+    out_w = int(image.shape[-1])
+    export_affine = _build_export_affine(slice_meta, out_h=out_h, out_w=out_w, slice_idx=slice_idx)
+    image_files: List[str] = []
     
     # Save each channel as separate file
     for ch_idx in range(num_channels):
@@ -163,18 +211,34 @@ def process_single_slice(idx: int, dataset, images_dir: Path, labels_dir: Path,
         
         # Create 2D NIfTI (shape [H, W, 1] for 2D)
         nii_data = ch_data[..., np.newaxis].astype(np.float32)
-        nii_img = nib.Nifti1Image(nii_data, affine=np.eye(4))
-        
         filename = f"{safe_case_id}_{ch_idx:04d}.nii.gz"
-        nib.save(nii_img, images_dir / filename)
+        _write_nifti_with_affine(nii_data, export_affine, images_dir / filename)
+        image_files.append(filename)
     
     # Save label (as uint8 for segmentation)
     label_data = label[0].numpy()  # [H, W]
     label_nii = label_data[..., np.newaxis].astype(np.uint8)
-    label_img = nib.Nifti1Image(label_nii, affine=np.eye(4))
-    nib.save(label_img, labels_dir / f"{safe_case_id}.nii.gz")
-    
-    return safe_case_id
+    label_filename = f"{safe_case_id}.nii.gz"
+    _write_nifti_with_affine(label_nii, export_affine, labels_dir / label_filename)
+
+    return {
+        "split": split_name,
+        "safe_case_id": safe_case_id,
+        "case_id": str(case_id),
+        "slice_index": int(slice_idx),
+        "virtual_path": str(virtual_path),
+        "image_files": image_files,
+        "label_file": label_filename,
+        "source_path": str(slice_meta.get("source_path", "")),
+        "source_affine": slice_meta.get("source_affine", np.eye(4).tolist()),
+        "source_spacing_xyz": slice_meta.get("source_spacing_xyz", [1.0, 1.0, 1.0]),
+        "source_axcodes": slice_meta.get("source_axcodes", ["R", "A", "S"]),
+        "source_volume_shape": slice_meta.get("source_volume_shape", [out_h, out_w, 1]),
+        "slice_axis": int(slice_meta.get("slice_axis", 2)),
+        "pre_resize_shape_hw": slice_meta.get("pre_resize_shape_hw", [out_h, out_w]),
+        "post_resize_shape_hw": [out_h, out_w],
+        "export_affine": export_affine.tolist(),
+    }
 
 
 def export_dataset(
@@ -183,8 +247,9 @@ def export_dataset(
     labels_dir: Path, 
     num_channels: int, 
     desc: str,
-    max_slices: int = None
-) -> set:
+    max_slices: int = None,
+    split_name: str = "unknown",
+) -> Tuple[set, List[Dict[str, Any]]]:
     """
     Export a dataset to nnU-Net format sequentially.
     
@@ -200,6 +265,7 @@ def export_dataset(
         Set of exported case identifiers
     """
     case_ids = set()
+    records: List[Dict[str, Any]] = []
     
     # Determine number of slices to process
     total_slices = len(dataset)
@@ -207,10 +273,13 @@ def export_dataset(
     
     # Sequential iteration by index
     for idx in tqdm(range(num_to_process), desc=desc):
-        case_id = process_single_slice(idx, dataset, images_dir, labels_dir, num_channels)
-        case_ids.add(case_id)
+        record = process_single_slice(
+            idx, dataset, images_dir, labels_dir, num_channels, split_name=split_name
+        )
+        case_ids.add(record["safe_case_id"])
+        records.append(record)
     
-    return case_ids
+    return case_ids, records
 
 
 def export_dataset_parallel(
@@ -220,8 +289,9 @@ def export_dataset_parallel(
     num_channels: int, 
     desc: str,
     max_slices: int = None,
-    num_workers: int = 32
-) -> set:
+    num_workers: int = 32,
+    split_name: str = "unknown",
+) -> Tuple[set, List[Dict[str, Any]]]:
     """
     Export a dataset to nnU-Net format using parallel threads.
     
@@ -245,6 +315,7 @@ def export_dataset_parallel(
     num_to_process = min(max_slices, total_slices) if max_slices else total_slices
     
     case_ids = set()
+    records: List[Dict[str, Any]] = []
     
     # Create partial function with fixed arguments
     process_fn = partial(
@@ -252,7 +323,8 @@ def export_dataset_parallel(
         dataset=dataset,
         images_dir=images_dir,
         labels_dir=labels_dir,
-        num_channels=num_channels
+        num_channels=num_channels,
+        split_name=split_name,
     )
     
     # Process slices in parallel using ThreadPoolExecutor
@@ -262,10 +334,22 @@ def export_dataset_parallel(
         
         # Collect results with progress bar
         for future in tqdm(as_completed(futures), total=num_to_process, desc=desc):
-            case_id = future.result()
-            case_ids.add(case_id)
+            record = future.result()
+            case_ids.add(record["safe_case_id"])
+            records.append(record)
     
-    return case_ids
+    return case_ids, records
+
+
+def write_provenance_jsonl(records: List[Dict[str, Any]], output_path: Path) -> None:
+    """
+    Write one JSON record per line for exported slice provenance.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=True))
+            handle.write("\n")
 
 
 @hydra.main(config_path="../../configs", config_name="convert_nnunet_local", version_base=None)
@@ -333,6 +417,13 @@ def main(cfg: DictConfig):
     # Access underlying datasets (bypasses dataloader shuffle)
     train_dataset = dataloaders['train'].dataset
     val_dataset = dataloaders['val'].dataset
+    # Ensure export path gets per-slice metadata and no augmentation side-effects.
+    train_dataset.return_metadata = True
+    val_dataset.return_metadata = True
+    if hasattr(train_dataset, "augmentation"):
+        train_dataset.augmentation = None
+    if hasattr(val_dataset, "augmentation"):
+        val_dataset.augmentation = None
     
     num_channels = len(cfg.dataset.modalities)
     
@@ -350,6 +441,7 @@ def main(cfg: DictConfig):
     # Clean separation: train → imagesTr/labelsTr, val → imagesTs/labelsTs
     train_case_ids = set()
     val_case_ids = set()
+    provenance_records: List[Dict[str, Any]] = []
     
     if export_train:
         # Clear stale files from previous runs
@@ -357,18 +449,21 @@ def main(cfg: DictConfig):
         clear_directory(labelsTr, "training labels")
         
         if use_parallel:
-            train_case_ids = export_dataset_parallel(
+            train_case_ids, train_records = export_dataset_parallel(
                 train_dataset, imagesTr, labelsTr, 
                 num_channels, "Exporting training set",
                 max_slices=max_slices,
-                num_workers=num_workers
+                num_workers=num_workers,
+                split_name="train",
             )
         else:
-            train_case_ids = export_dataset(
+            train_case_ids, train_records = export_dataset(
                 train_dataset, imagesTr, labelsTr, 
                 num_channels, "Exporting training set",
-                max_slices=max_slices
+                max_slices=max_slices,
+                split_name="train",
             )
+        provenance_records.extend(train_records)
     else:
         print("Skipping training set export (export_train=false)")
     
@@ -385,18 +480,21 @@ def main(cfg: DictConfig):
         clear_directory(labelsTs, "test labels")
         
         if use_parallel:
-            val_case_ids = export_dataset_parallel(
+            val_case_ids, val_records = export_dataset_parallel(
                 val_dataset, imagesTs, labelsTs,
                 num_channels, "Exporting test set (validation fold)",
                 max_slices=max_slices,
-                num_workers=num_workers
+                num_workers=num_workers,
+                split_name="test",
             )
         else:
-            val_case_ids = export_dataset(
+            val_case_ids, val_records = export_dataset(
                 val_dataset, imagesTs, labelsTs,
                 num_channels, "Exporting test set (validation fold)",
-                max_slices=max_slices
+                max_slices=max_slices,
+                split_name="test",
             )
+        provenance_records.extend(val_records)
     else:
         print("Skipping test set export (export_test=false)")
     
@@ -443,6 +541,8 @@ def main(cfg: DictConfig):
     
     with open(dataset_folder / "dataset.json", "w") as f:
         json.dump(dataset_json, f, indent=2)
+    provenance_path = dataset_folder / "slice_provenance.jsonl"
+    write_provenance_jsonl(provenance_records, provenance_path)
     
     # === 10. Summary ===
     print(f"\n{'='*60}")
@@ -456,6 +556,7 @@ def main(cfg: DictConfig):
     print(f"\nOutput structure:")
     print(f"  {dataset_folder}/")
     print(f"  ├── dataset.json")
+    print(f"  ├── slice_provenance.jsonl ({len(provenance_records)} records)")
     print(f"  ├── imagesTr/  ({num_training * num_channels} files)")
     print(f"  ├── labelsTr/  ({num_training} files)")
     print(f"  ├── imagesTs/  ({num_test * num_channels} files)")
