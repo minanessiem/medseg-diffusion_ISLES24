@@ -9,17 +9,14 @@
 defaults:
   - environment: isles_cluster
   - model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple  # For image_size
-  - dataset: isles24_team1
+  - data_profile: isles24_2d_online_team1
+  - data_runtime: cluster
   - augmentation: none  # No augmentation for clean export
   - validation: default  # Needed for val_batch_size in get_dataloaders
   - nnunet: cluster
-  - _self_  # Must be last so local overrides (dataset_id, dataset_name) take precedence
+  - _self_  # Keep last so local file-level overrides take precedence
 
 random_seed: 42
-
-nnunet:
-  dataset_id: '052'
-  dataset_name: isles24_team1
 
 hydra:
   run:

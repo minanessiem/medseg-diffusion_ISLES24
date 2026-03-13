@@ -14,7 +14,7 @@
 defaults:
   - cluster                              # base cluster environment
   - override /model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple
-  - override /dataset: isles24_emperical
+  - override /data_profile: isles24_2d_online_emperical
   - override /loss: multitask_equal
   - override /augmentation: aggressive_2d
   - override /training: train_800Kms_ampbfloat16
@@ -23,10 +23,10 @@ defaults:
   - override /logging: ddim_50steps
   - override /validation: ensemble
 
-# Override environment settings for single-GPU training
-environment:
-  dataset:
+# Override runtime settings for single-GPU training
+data_runtime:
     train_batch_size: 24
+environment:
   training:
     output_root: '/mnt/outputs/medsegdiff_1M_sweep/'
     max_steps: 1000000

@@ -110,35 +110,29 @@ def setup_device(cfg: DictConfig) -> torch.device:
     return device
 
 
-def setup_config_aliases(cfg: DictConfig) -> DictConfig:
+def apply_environment_runtime_context(cfg: DictConfig) -> DictConfig:
     """
-    Set up config aliases for backwards compatibility.
+    Apply environment-provided runtime context for training bootstrap.
     
-    Copies environment-specific settings to their expected locations
-    in the config tree for components that expect them there.
+    Data contract fields are read directly from dataset/data_mode/data_io/data_runtime.
+    This function only maps execution context values that are intentionally sourced
+    from the environment group (training paths + device).
     
     Args:
         cfg: Hydra config object
     
     Returns:
-        Modified config with aliases set
+        Modified config with runtime context applied
     """
     OmegaConf.set_struct(cfg, False)
     
-    # Environment aliases (training paths)
+    # Environment runtime context (training paths)
     cfg.training.output_root = cfg.environment.training.output_root
     cfg.training.model_save_dir = cfg.environment.training.model_save_dir
     cfg.training.multi_gpu = cfg.environment.training.multi_gpu
     
-    # Environment aliases (top-level and dataset)
+    # Environment runtime context (top-level only)
     cfg.device = cfg.environment.device
-    cfg.dataset.dir = cfg.environment.dataset.dir
-    cfg.dataset.json_list = cfg.environment.dataset.json_list
-    cfg.dataset.num_train_workers = cfg.environment.dataset.num_train_workers
-    cfg.dataset.num_valid_workers = cfg.environment.dataset.num_valid_workers
-    cfg.dataset.num_test_workers = cfg.environment.dataset.num_test_workers
-    cfg.dataset.train_batch_size = cfg.environment.dataset.train_batch_size
-    cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
     
     OmegaConf.set_struct(cfg, True)
     return cfg
@@ -275,7 +269,7 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     Handles all component initialization and runs training.
     
     Args:
-        cfg: Hydra config (with aliases already set up)
+        cfg: Hydra config (runtime context already applied)
         run_dir: Path to run output directory (with trailing slash)
     """
     import sys
@@ -325,10 +319,9 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     dataloaders = get_dataloaders(cfg)
     _debug(f"Dataloaders ready: {list(dataloaders.keys())}")
     
-    # Dataset-specific validation
-    if cfg.dataset.name == 'isles24':
-        assert cfg.model.image_channels == len(cfg.dataset.modalities), \
-            "Model image_channels must match number of modalities"
+    # Contract validation: model channels must match configured modality count.
+    assert cfg.model.image_channels == len(cfg.dataset.modalities), \
+        "Model image_channels must match number of modalities"
     
     _debug("Getting optimizer and scheduler...")
     optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
@@ -360,7 +353,7 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     Loads checkpoint and restores all training state before continuing.
     
     Args:
-        cfg: Hydra config (with aliases already set up)
+        cfg: Hydra config (runtime context already applied)
         run_dir: Path to run directory to resume from (with trailing slash)
         resume_step: Step to resume from (int as string or 'latest')
         legacy_mode: If True, this is a legacy run without .hydra/ or training_state.
@@ -394,10 +387,9 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     # Get dataloaders
     dataloaders = get_dataloaders(cfg)
     
-    # Dataset-specific validation
-    if cfg.dataset.name == 'isles24':
-        assert cfg.model.image_channels == len(cfg.dataset.modalities), \
-            "Model image_channels must match number of modalities"
+    # Contract validation: model channels must match configured modality count.
+    assert cfg.model.image_channels == len(cfg.dataset.modalities), \
+        "Model image_channels must match number of modalities"
     
     optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
     

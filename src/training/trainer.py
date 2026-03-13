@@ -538,7 +538,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         accumulation_steps = 1
     strategy = resolve_strategy(cfg)
     global_physical_batch_size, local_physical_batch_size = resolve_train_batch_sizes(
-        int(cfg.environment.dataset.train_batch_size),
+        int(cfg.data_runtime.train_batch_size),
         strategy=strategy,
     )
     global_effective_batch_size = global_physical_batch_size * accumulation_steps

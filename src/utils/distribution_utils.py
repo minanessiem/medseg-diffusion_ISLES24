@@ -78,7 +78,7 @@ def resolve_train_batch_sizes(global_batch_size: int, strategy: str) -> Tuple[in
     """
     Resolve global/per-rank training batch sizes.
 
-    `environment.dataset.train_batch_size` is treated as global batch size.
+    `data_runtime.train_batch_size` is treated as global batch size.
     Under DDP, it is split evenly across ranks.
     """
     if global_batch_size <= 0:

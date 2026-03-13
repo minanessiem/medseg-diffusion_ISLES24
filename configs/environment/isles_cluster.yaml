@@ -1,14 +1,9 @@
 dataset:
-  dir: '/mnt/datasets/isles24_combined'
-  json_list: '/mnt/datasets/isles24_combined/isles24_multimodal_5fold_NIHSSstratified.json'
-  num_train_workers: 72
-  num_valid_workers: 48
-  num_test_workers: 8
-  train_batch_size: 4
-  test_batch_size: 4
+  data_root: '/mnt/datasets/isles24_combined'
+  split_file: '/mnt/datasets/isles24_combined/isles24_multimodal_5fold_NIHSSstratified.json'
+  nnunet_root: null
 training:
   output_root: '/mnt/outputs/medsegdiff_outputs/'
   model_save_dir: 'models/'
-  # DEPRECATED: use distribution.*
   multi_gpu: false
 device: cuda

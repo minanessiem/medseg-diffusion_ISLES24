@@ -15,11 +15,11 @@ defaults:
   - override /logging: ddim_50steps
   - override /validation: default # multigpu_128batch
 
-# Override environment settings for 4-GPU training
-environment:
-  dataset:
+# Override runtime settings for 4-GPU training
+data_runtime:
     train_batch_size: 64
     num_valid_workers: 64
+environment:
   training:
     output_root: '/mnt/outputs/medsegdiff_4gpu_sweep_120226/'
 

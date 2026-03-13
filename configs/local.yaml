@@ -4,7 +4,8 @@ defaults:
   - environment: isles_local
   - distribution: dp
   - model: medsegdiff_32_1l_8c_2x2a_128t_1btl_debug
-  - dataset: isles24
+  - data_profile: isles24_2d_online_baseline
+  - data_runtime: local
   - augmentation: none
   - training: train_100Kms_50Ks_9999e
   - optimizer: adamw_2e4lr_wd00

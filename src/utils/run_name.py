@@ -467,12 +467,21 @@ def generate_batch_string(cfg):
         - Makes accumulation visible in run names for debugging and comparison
         - Distinguishes b4x4 (with accumulation) from b16x1 (without) even though both are effective batch 16
     """
-    # Access config (fail-fast, no defaults)
+    # Access config (fail-fast, no defaults).
+    # Run naming uses the explicit data contract at data_runtime.train_batch_size.
     if isinstance(cfg, dict):
-        batch_size = cfg['environment']['dataset']['train_batch_size']
+        if 'data_runtime' not in cfg or 'train_batch_size' not in cfg['data_runtime']:
+            raise KeyError(
+                "Missing required key: 'data_runtime.train_batch_size'."
+            )
+        batch_size = cfg['data_runtime']['train_batch_size']
         accum = cfg['training']['gradient']['accumulation_steps']
     else:
-        batch_size = cfg.environment.dataset.train_batch_size
+        if not hasattr(cfg, 'data_runtime') or not hasattr(cfg.data_runtime, 'train_batch_size'):
+            raise ValueError(
+                "Missing required config: data_runtime.train_batch_size."
+            )
+        batch_size = cfg.data_runtime.train_batch_size
         accum = cfg.training.gradient.accumulation_steps
     
     # None or 1 means no accumulation (show clean format)

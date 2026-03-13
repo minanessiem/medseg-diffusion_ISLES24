@@ -39,26 +39,23 @@ def run_visualization(aug_config_name):
         # Override augmentation and ensure minimal resources for testing
         overrides = [
             f"augmentation={aug_config_name}",
-            "dataset.num_train_workers=0",
-            "dataset.num_valid_workers=0",
-            "dataset.num_test_workers=0",
-            "dataset.train_batch_size=1",
-            "dataset.test_batch_size=1",
+            "data_runtime.num_train_workers=0",
+            "data_runtime.num_valid_workers=0",
+            "data_runtime.num_test_workers=0",
+            "data_runtime.train_batch_size=1",
+            "data_runtime.test_batch_size=1",
             "validation.val_batch_size=1",
             "training.max_steps=1"  # Minimal steps just to load config
         ]
         
         try:
             cfg = hydra.compose(config_name="local", overrides=overrides)
-            # Allow adding new keys (needed for get_dataloaders aliasing)
-            OmegaConf.set_struct(cfg, False)
         except Exception as e:
             print(f"Failed to compose config: {e}")
             return
 
     # Get dataloader with augmentation
-    # Use environment path for printing since dataset.dir isn't aliased yet
-    data_path = cfg.environment.dataset.dir if 'environment' in cfg else 'UNKNOWN'
+    data_path = cfg.environment.dataset.data_root if 'environment' in cfg else 'UNKNOWN'
     print(f"Loading dataset from {data_path}...")
     try:
         dataloaders = get_dataloaders(cfg)

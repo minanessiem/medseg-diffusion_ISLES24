@@ -1,0 +1,5 @@
+defaults:
+  - isles_local
+
+dataset:
+  nnunet_root: './nnunet_raw'

@@ -237,7 +237,7 @@ def main():
     
     # Import and run training
     # Import here to avoid circular imports and ensure Hydra is initialized first
-    from src.utils.train_utils import setup_config_aliases, setup_seeds, setup_and_resume_training
+    from src.utils.train_utils import apply_environment_runtime_context, setup_seeds, setup_and_resume_training
     
     strategy = resolve_strategy(cfg)
     dist_cfg = getattr(cfg, "distribution", None)
@@ -254,8 +254,8 @@ def main():
     )
 
     try:
-        # Set up config aliases (same as start_training.py)
-        cfg = setup_config_aliases(cfg)
+        # Apply runtime context (same as start_training.py)
+        cfg = apply_environment_runtime_context(cfg)
         
         # Set seeds for reproducibility
         setup_seeds(cfg)

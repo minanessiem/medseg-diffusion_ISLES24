@@ -1,0 +1,6 @@
+# Cluster baseline using precomputed nnUNet 2D slices as training input.
+defaults:
+  - cluster
+  - override /environment: isles24_nnunet2d_cluster
+  - override /data_profile: isles24_2d_nnunet_baseline
+  - override /data_runtime: cluster

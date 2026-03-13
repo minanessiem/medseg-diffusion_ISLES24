@@ -63,7 +63,7 @@ from src.utils.distribution_utils import (
 )
 from src.utils.train_utils import (
     setup_seeds,
-    setup_config_aliases,
+    apply_environment_runtime_context,
     setup_output_directory,
     setup_and_start_training,
     setup_device,
@@ -88,7 +88,7 @@ def main(cfg: DictConfig):
     Main entry point for training.
     
     Handles:
-    - Config alias setup for backwards compatibility
+    - Runtime context setup from environment config
     - Random seed initialization
     - Output directory creation
     - Moving Hydra logs to run directory
@@ -116,10 +116,10 @@ def main(cfg: DictConfig):
     )
 
     try:
-        # Set up config aliases for compatibility
-        debug_print("STEP 1: Setting up config aliases...")
-        cfg = setup_config_aliases(cfg)
-        debug_print("STEP 1: Config aliases done")
+        # Apply runtime context sourced from environment group
+        debug_print("STEP 1: Applying environment runtime context...")
+        cfg = apply_environment_runtime_context(cfg)
+        debug_print("STEP 1: Runtime context applied")
         
         # Set seeds for reproducibility
         debug_print("STEP 2: Setting up seeds...")

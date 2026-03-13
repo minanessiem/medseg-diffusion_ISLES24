@@ -21,10 +21,10 @@ defaults:
   - override /logging: ddim_50steps
   - override /validation: default
 
-# Override environment settings for single-GPU training
-environment:
-  dataset:
+# Override runtime settings for single-GPU training
+data_runtime:
     train_batch_size: 24
+environment:
   training:
     output_root: '/mnt/outputs/medsegdiff_800K_sweep/'
 

@@ -1,12 +1,13 @@
 # DDP 1M-step config.
 # Carries over cluster_1M_sweep architecture/training choices, but uses:
-# - dataset: isles24 (from cluster base)
+# - data_profile: isles24_2d_online_baseline (from cluster base)
 # - distribution: ddp
-# - global train batch size: 32 (defined in environment/isles_ddp_cluster)
+# - global train batch size: 32 (defined in data_runtime/ddp_cluster)
 
 defaults:
   - cluster
-  - override /environment: isles_ddp_cluster
+  - override /environment: isles_cluster
+  - override /data_runtime: ddp_cluster
   - override /distribution: ddp
   - override /optimizer: adamw_75e5lr_wd00
   - override /model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple

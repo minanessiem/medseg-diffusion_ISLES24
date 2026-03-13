@@ -1,0 +1,3 @@
+loader_mode: nnunet_slices_2d
+dim: 2d
+preprocessing_mode: nnunet_precomputed_2d_slices

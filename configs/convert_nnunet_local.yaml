@@ -1,5 +1,5 @@
 # Configuration for nnU-Net dataset conversion - Local environment
-# Usage: python scripts/convert_to_nnunet.py --config-name=convert_nnunet_local
+# Usage: python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet --config-name=convert_nnunet_local
 #
 # Override examples:
 #   Full export:     nnunet.test=false
@@ -10,7 +10,8 @@ defaults:
   - _self_
   - environment: isles_local
   - model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple  # For image_size
-  - dataset: isles24
+  - data_profile: isles24_2d_online_baseline
+  - data_runtime: local
   - augmentation: none  # No augmentation for clean export
   - validation: default  # Needed for val_batch_size in get_dataloaders
   - nnunet: local

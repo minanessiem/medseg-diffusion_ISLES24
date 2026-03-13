@@ -8,7 +8,7 @@
 # This avoids the instability seen in 8x8 attention (medsegdiff_256_4l_32c_8x8a_256t_2btl_medium.yaml)
 # which caused OOMs and gradient explosions.
 #
-# Memory: Fits batch_size=16 on single GPU with AMP BF16
+# Memory: Fits train_batch_size=24 on single GPU with AMP BF16 (32 OOMs, 16 too conservative)
 # Use with: scheduler=warmup_cosine_10pct, optimizer=adamw_5e5lr_wd00 (lower LR for stability)
 
 image_size: 256

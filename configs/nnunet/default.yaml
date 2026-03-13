@@ -1,10 +1,10 @@
 # nnU-Net export configuration
-# Used by scripts/convert_to_nnunet.py
+# Used by scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py
 
 # Output settings
 output_dir: './nnunet_raw'           # Base output directory (nnUNet_raw equivalent)
-dataset_id: '050'                     # 3-digit nnU-Net dataset ID (001-010 reserved for MSD)
-dataset_name: ${dataset.name}         # Dataset name suffix
+dataset_id: ${dataset.nnunet.dataset_id}      # 3-digit nnU-Net dataset ID from dataset profile
+dataset_name: ${dataset.nnunet.dataset_name}  # Dataset name suffix from dataset profile
 
 # Test mode - for quick validation of the export pipeline
 test: true                            # Set to false for full export

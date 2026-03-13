@@ -61,29 +61,80 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.train_utils import setup_seeds
-from src.data.loaders import get_dataloaders
+from src.data.loaders import get_dataloaders, validate_dataset_contract
 
 
-def setup_export_config_aliases(cfg: DictConfig) -> DictConfig:
+def _is_set(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return len(value.strip()) > 0
+    return True
+
+
+def validate_converter_contract(cfg: DictConfig) -> None:
     """
-    Set up minimal config aliases needed for data loading during export.
-    
-    Only sets dataset-related aliases required by get_dataloaders().
-    Does not require training config.
+    Validate converter-specific requirements on top of the global data contract.
+
+    This converter exports from the online 3D->2D slicing path and is intentionally
+    not generic over all loader modes.
     """
-    OmegaConf.set_struct(cfg, False)
-    
-    # Dataset aliases (needed by get_dataloaders)
-    cfg.dataset.dir = cfg.environment.dataset.dir
-    cfg.dataset.json_list = cfg.environment.dataset.json_list
-    cfg.dataset.num_train_workers = cfg.environment.dataset.num_train_workers
-    cfg.dataset.num_valid_workers = cfg.environment.dataset.num_valid_workers
-    cfg.dataset.num_test_workers = cfg.environment.dataset.num_test_workers
-    cfg.dataset.train_batch_size = cfg.environment.dataset.train_batch_size
-    cfg.dataset.test_batch_size = cfg.environment.dataset.test_batch_size
-    
-    OmegaConf.set_struct(cfg, True)
-    return cfg
+    validate_dataset_contract(cfg)
+
+    loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
+    dim = OmegaConf.select(cfg, "data_mode.dim")
+    data_root = OmegaConf.select(cfg, "data_io.paths.data_root")
+    split_file = OmegaConf.select(cfg, "data_io.paths.split_file")
+    dataset_id = OmegaConf.select(cfg, "dataset.id", default=OmegaConf.select(cfg, "dataset.name"))
+    modalities = OmegaConf.select(cfg, "dataset.modalities")
+    num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
+
+    if loader_mode != "online_slices_3d_to_2d":
+        raise ValueError(
+            "nnUNet converter requires data_mode.loader_mode='online_slices_3d_to_2d'. "
+            f"Got '{loader_mode}'."
+        )
+    if dim != "2d":
+        raise ValueError(f"nnUNet converter requires data_mode.dim='2d'. Got '{dim}'.")
+    if dataset_id != "isles24":
+        raise ValueError(f"nnUNet converter currently supports dataset.id='isles24' only. Got '{dataset_id}'.")
+    if not _is_set(data_root):
+        raise ValueError("nnUNet converter requires data_io.paths.data_root.")
+    if not _is_set(split_file):
+        raise ValueError("nnUNet converter requires data_io.paths.split_file.")
+    if not isinstance(modalities, (list, tuple)) or len(modalities) == 0:
+        raise ValueError("nnUNet converter requires dataset.modalities to be a non-empty list.")
+    if int(num_modalities) != len(modalities):
+        raise ValueError(
+            "nnUNet converter requires len(dataset.modalities) == dataset.num_modalities. "
+            f"Got {len(modalities)} vs {num_modalities}."
+        )
+
+    nn_dataset_id = OmegaConf.select(cfg, "nnunet.dataset_id")
+    nn_dataset_name = OmegaConf.select(cfg, "nnunet.dataset_name")
+    output_dir = OmegaConf.select(cfg, "nnunet.output_dir")
+    test_mode = bool(OmegaConf.select(cfg, "nnunet.test"))
+    test_max_slices = OmegaConf.select(cfg, "nnunet.test_max_slices")
+
+    if not _is_set(nn_dataset_id):
+        raise ValueError("nnUNet converter requires nnunet.dataset_id.")
+    if not _is_set(nn_dataset_name):
+        raise ValueError("nnUNet converter requires nnunet.dataset_name.")
+    if not _is_set(output_dir):
+        raise ValueError("nnUNet converter requires nnunet.output_dir.")
+    if test_mode and (test_max_slices is None or int(test_max_slices) <= 0):
+        raise ValueError("When nnunet.test=true, nnunet.test_max_slices must be > 0.")
+
+
+def _resolve_dataset_label(cfg: DictConfig) -> str:
+    return str(OmegaConf.select(cfg, "dataset.id", default=OmegaConf.select(cfg, "dataset.name", default="unknown")))
+
+
+def _resolve_augmentation_label(cfg: DictConfig) -> str:
+    label = OmegaConf.select(cfg, "augmentation._name_")
+    if _is_set(label):
+        return str(label)
+    return "custom"
 
 
 def clear_directory(directory: Path, description: str = "") -> int:
@@ -360,9 +411,9 @@ def main(cfg: DictConfig):
     Reuses existing config infrastructure and data loading.
     All settings come from config - no defaults in code.
     """
-    # === 1. Setup config (minimal aliases for data loading) ===
-    cfg = setup_export_config_aliases(cfg)
+    # === 1. Setup ===
     setup_seeds(cfg)
+    validate_converter_contract(cfg)
     
     # === 2. Build output paths from config ===
     # Clean train/test split:
@@ -403,11 +454,11 @@ def main(cfg: DictConfig):
         print(f"Max slices per split: {max_slices}")
     print(f"Export splits: {'train' if export_train else ''}{' + ' if export_train and export_test else ''}{'test' if export_test else ''}")
     print(f"Parallel: {'enabled (' + str(num_workers) + ' threads)' if use_parallel else 'disabled'}")
-    print(f"Source dataset: {cfg.dataset.name}")
+    print(f"Source dataset: {_resolve_dataset_label(cfg)}")
     print(f"Modalities: {list(cfg.dataset.modalities)}")
     print(f"Image size: {cfg.model.image_size}")
     print(f"Validation fold: {cfg.dataset.fold}")
-    print(f"Augmentation: {cfg.augmentation._name_}")
+    print(f"Augmentation: {_resolve_augmentation_label(cfg)}")
     print(f"Output: {dataset_folder}")
     print(f"{'='*60}\n")
     
@@ -530,7 +581,7 @@ def main(cfg: DictConfig):
         "description": f"ISLES24 2D slices preprocessed with MedSegDiff pipeline",
         "reference": "Converted from MedSegDiff preprocessing",
         "source_config": {
-            "dataset": cfg.dataset.name,
+            "dataset": _resolve_dataset_label(cfg),
             "modalities": list(cfg.dataset.modalities),
             "image_size": cfg.model.image_size,
             "fold": cfg.dataset.fold,

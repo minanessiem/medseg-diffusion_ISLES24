@@ -8,7 +8,8 @@
 
 defaults:
   - cluster
-  - override /environment: isles_ddp_cluster
+  - override /environment: isles_cluster
+  - override /data_runtime: ddp_cluster
   - override /distribution: ddp
   - override /optimizer: adamw_75e5lr_wd00
   - override /model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple
@@ -20,10 +21,10 @@ defaults:
   - override /logging: ddim_50steps
   - override /validation: default
 
-environment:
-  dataset:
+data_runtime:
     train_batch_size: 64
     num_train_workers: 24
+environment:
   training:
     output_root: '/mnt/outputs/medsegdiff_500K_64b_4gpu_ddp_210226/'
 

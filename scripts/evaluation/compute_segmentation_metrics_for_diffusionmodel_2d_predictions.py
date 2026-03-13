@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 from scripts.analysis.threshold_analysis import (
     find_checkpoint,
@@ -31,7 +32,42 @@ from scripts.evaluation.threshold_protocol import (
     select_primary_threshold,
 )
 from scripts.evaluation.volume_exporter import export_reconstructed_volumes
-from src.data.loaders import get_dataloaders
+from src.data.loaders import get_dataloaders, validate_dataset_contract
+
+
+def _is_set(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return len(value.strip()) > 0
+    return True
+
+
+def validate_eval_config_contract(cfg: DictConfig) -> None:
+    """
+    Validate config preconditions for 2D diffusion/custom evaluation.
+    """
+    validate_dataset_contract(cfg)
+
+    loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
+    dim = OmegaConf.select(cfg, "data_mode.dim")
+    supported_loader_modes = {"online_slices_3d_to_2d", "nnunet_slices_2d"}
+
+    if dim != "2d":
+        raise ValueError(
+            "Diffusion/custom 2D evaluation requires data_mode.dim='2d'. "
+            f"Got '{dim}'."
+        )
+    if loader_mode not in supported_loader_modes:
+        allowed = ", ".join(sorted(supported_loader_modes))
+        raise ValueError(
+            "Diffusion/custom 2D evaluation requires a slice-based loader_mode. "
+            f"Expected one of [{allowed}], got '{loader_mode}'."
+        )
+    if not _is_set(OmegaConf.select(cfg, "validation.val_batch_size")):
+        raise ValueError(
+            "Missing required key for evaluation: validation.val_batch_size."
+        )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -241,6 +277,7 @@ def main() -> None:
     print("=" * 60)
 
     cfg = load_config_from_run_dir(str(args.run_dir))
+    validate_eval_config_contract(cfg)
     checkpoint_path = find_checkpoint(str(args.run_dir), args.model_name, use_ema=args.ema)
     model = load_model(cfg, checkpoint_path, device)
     dataloaders = get_dataloaders(cfg)

@@ -1,0 +1,5 @@
+defaults:
+  - isles_cluster
+
+dataset:
+  nnunet_root: '/mnt/datasets/nnunet_raw'

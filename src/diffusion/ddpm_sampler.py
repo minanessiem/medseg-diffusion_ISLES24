@@ -7,7 +7,6 @@ from tqdm import tqdm
 
 from src.models.MedSegDiff.unet_util import normalize_to_neg_one_to_one, unnormalize_to_zero_to_one, default, identity, ModelPrediction
 from src.utils.general import device_grad_decorator
-from omegaconf import OmegaConf
 
 from .diffusion import Diffusion
 from .noise_scheduler import NoiseScheduler  # Will be implemented separately
@@ -37,13 +36,7 @@ class DDPMSampler(Diffusion):
             device (torch.device): Device to run the model (CPU or GPU).
         """
         super().__init__(model, cfg, device)
-        OmegaConf.set_struct(cfg, False)
-        # Temporary aliases for config transition
-        cfg.training.timesteps = cfg.diffusion.timesteps
-        cfg.training.noise_schedule = cfg.diffusion.noise_schedule
-        OmegaConf.set_struct(cfg, True)
-
-        self._setup_diffusion_parameters(cfg.training.timesteps, cfg.training.noise_schedule)
+        self._setup_diffusion_parameters(cfg.diffusion.timesteps, cfg.diffusion.noise_schedule)
 
     def _setup_diffusion_parameters(self, timesteps, noise_schedule):
         """

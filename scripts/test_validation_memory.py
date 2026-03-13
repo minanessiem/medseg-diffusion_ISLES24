@@ -34,15 +34,15 @@ def main(cfg: DictConfig):
     # Setup
     from src.utils.train_utils import (
         setup_device,
-        setup_config_aliases,
+        apply_environment_runtime_context,
         build_model_and_diffusion,
         _parse_multi_gpu_flag,
     )
     from src.data.loaders import get_dataloaders
     from src.metrics.metrics import get_metric
     
-    # Apply config aliases
-    cfg = setup_config_aliases(cfg)
+    # Apply runtime context sourced from environment group.
+    cfg = apply_environment_runtime_context(cfg)
     device = setup_device(cfg)
     
     # Parse GPU config

@@ -1,0 +1,3 @@
+loader_mode: full_volumes_3d
+dim: 3d
+preprocessing_mode: volume_level_preprocessed

@@ -1,0 +1,17 @@
+train_batch_size: 16
+test_batch_size: 2
+num_train_workers: 16
+num_valid_workers: 4
+num_test_workers: 4
+use_caching: false
+use_shared_cache: false
+train_prefetch_factor: 2
+test_prefetch_factor: 2
+persistent_workers:
+  train: false
+  val: false
+  test: false
+pin_memory:
+  train: false
+  val: false
+  test: false
