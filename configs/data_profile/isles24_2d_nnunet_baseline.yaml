@@ -1,3 +1,5 @@
+# @package _global_
+
 defaults:
   - /dataset: isles24_modalities_baseline
   - /data_mode: nnunet_slices_2d

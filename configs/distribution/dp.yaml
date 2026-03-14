@@ -1,2 +1,3 @@
 strategy: dp
+timeout_minutes: 60
 

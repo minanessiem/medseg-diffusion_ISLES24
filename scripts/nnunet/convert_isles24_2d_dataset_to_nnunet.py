@@ -102,7 +102,8 @@ def validate_converter_contract(cfg: DictConfig) -> None:
         raise ValueError("nnUNet converter requires data_io.paths.data_root.")
     if not _is_set(split_file):
         raise ValueError("nnUNet converter requires data_io.paths.split_file.")
-    if not isinstance(modalities, (list, tuple)) or len(modalities) == 0:
+    modalities_is_sequence = isinstance(modalities, (list, tuple)) or OmegaConf.is_list(modalities)
+    if not modalities_is_sequence or len(modalities) == 0:
         raise ValueError("nnUNet converter requires dataset.modalities to be a non-empty list.")
     if int(num_modalities) != len(modalities):
         raise ValueError(

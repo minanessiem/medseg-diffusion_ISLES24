@@ -19,9 +19,6 @@ print("[DEBUG:trainer.py] optimizer_factory done", flush=True)
 from src.utils.general import device_grad_decorator
 print("[DEBUG:trainer.py] general done", flush=True)
 
-from src.evaluation.evaluator import sample_and_visualize  # For visualization in train_and_evaluate
-print("[DEBUG:trainer.py] evaluator done", flush=True)
-
 from src.utils.logger import Logger
 print("[DEBUG:trainer.py] logger done", flush=True)
 

@@ -625,7 +625,9 @@ def validate_dataset_contract(cfg):
     if dataset_id != "isles24":
         raise ValueError(f"Only dataset.id/name='isles24' is currently supported, got: {dataset_id}")
 
-    if not isinstance(modalities, (list, tuple)) or len(modalities) == 0:
+    # Accept plain Python sequences and Hydra ListConfig for modality contracts.
+    modalities_is_sequence = isinstance(modalities, (list, tuple)) or OmegaConf.is_list(modalities)
+    if not modalities_is_sequence or len(modalities) == 0:
         raise ValueError("dataset.modalities must be a non-empty list.")
     if int(num_modalities) != len(modalities):
         raise ValueError(

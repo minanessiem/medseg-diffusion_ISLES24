@@ -1,3 +1,5 @@
+# @package _global_
+
 defaults:
   - isles24_2d_online_baseline
   - override /dataset: isles24_modalities_emperical

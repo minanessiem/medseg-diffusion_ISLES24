@@ -23,6 +23,72 @@ def deep_merge(dict1: Dict, dict2: Dict) -> Dict:
             dict1[key] = value
     return dict1
 
+
+def _load_yaml_with_package(config_path: str) -> tuple[Dict, Optional[str]]:
+    """
+    Load YAML and extract optional Hydra package directive from leading comments.
+
+    Recognized directive format:
+      # @package _global_
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = f.read()
+
+    package = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if stripped.startswith("# @package "):
+                package = stripped[len("# @package "):].strip()
+            continue
+        # Stop scanning once real YAML content starts.
+        break
+
+    cfg = yaml.safe_load(raw) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Expected dict YAML at {config_path}, got {type(cfg)}")
+    return cfg, package
+
+
+def _is_global_package(package: Optional[str]) -> bool:
+    return package == "_global_"
+
+
+def _normalize_default_section_key(raw_key: str) -> tuple[str, bool]:
+    """
+    Normalize Hydra defaults key syntax.
+
+    Supports:
+      - /section
+      - section
+      - override /section
+
+    Rejects non-Hydra-compliant override syntax (e.g. "override section").
+    """
+    key = str(raw_key).strip()
+    if key.startswith("override "):
+        if not key.startswith("override /"):
+            raise ValueError(
+                f"Invalid defaults override syntax '{raw_key}'. "
+                "Expected 'override /<section>: <name>'."
+            )
+        section = key[len("override /"):].strip()
+        if not section:
+            raise ValueError(f"Invalid defaults key '{raw_key}': empty override section.")
+        return section, True
+
+    if key.startswith("/"):
+        section = key[1:].strip()
+    else:
+        section = key
+
+    if not section:
+        raise ValueError(f"Invalid defaults key '{raw_key}': empty section.")
+    return section, False
+
+
 def apply_override(cfg: Dict, override: str) -> Dict:
     """Apply a single key=value override, supporting dotted paths and config group references."""
     if '=' not in override:
@@ -38,10 +104,13 @@ def apply_override(cfg: Dict, override: str) -> Dict:
         
         if os.path.exists(potential_file):
             # Use load_group_config to recursively resolve all defaults
-            group_cfg = load_group_config(config_group, value)
+            group_cfg, group_package = load_group_config(config_group, value)
 
             # Merge into main config
-            cfg[config_group] = group_cfg
+            if _is_global_package(group_package):
+                cfg = deep_merge(cfg, group_cfg)
+            else:
+                cfg[config_group] = group_cfg
             return cfg
     
     # Standard dotted path override (existing logic)
@@ -133,24 +202,21 @@ def _process_group_default(default, group: str) -> tuple:
         group: The current config group directory
         
     Returns:
-        Tuple of (section_key, loaded_config) where section_key is None
+        Tuple of (section_key, loaded_config, package) where section_key is None
         for same-group merges or the section name for cross-group merges
     """
     if isinstance(default, str):
-        sub_cfg = load_group_config(group, default)
-        return None, sub_cfg
+        sub_cfg, package = load_group_config(group, default)
+        return None, sub_cfg, package
     elif isinstance(default, dict):
         key, file_name = next(iter(default.items()))
-        if key.startswith('override /'):
-            section = key[len('override /'):].strip()
-        else:
-            section = key
-        sub_cfg = load_group_config(section, file_name)
-        return section, sub_cfg
-    return None, {}
+        section, _ = _normalize_default_section_key(key)
+        sub_cfg, package = load_group_config(section, file_name)
+        return section, sub_cfg, package
+    return None, {}, None
 
 
-def load_group_config(group: str, name: str) -> Dict:
+def load_group_config(group: str, name: str) -> tuple[Dict, Optional[str]]:
     """
     Load a config file from a config group, recursively resolving its defaults.
     
@@ -164,14 +230,13 @@ def load_group_config(group: str, name: str) -> Dict:
         name: Config file name without .yaml extension
         
     Returns:
-        Fully resolved config dict with all defaults merged
+        Tuple of (fully resolved config dict, package directive if present)
     """
     config_path = f"configs/{group}/{name}.yaml"
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     
-    with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg, package = _load_yaml_with_package(config_path)
     
     # Recursively resolve defaults within this config
     if 'defaults' in cfg:
@@ -186,8 +251,8 @@ def load_group_config(group: str, name: str) -> Dict:
         # Step 1: Merge defaults BEFORE _self_ (local values will override these)
         cfg = {}
         for default in before_self:
-            section, sub_cfg = _process_group_default(default, group)
-            if section is not None:
+            section, sub_cfg, sub_package = _process_group_default(default, group)
+            if section is not None and not _is_global_package(sub_package):
                 cfg[section] = sub_cfg
             else:
                 cfg = deep_merge(cfg, sub_cfg)
@@ -197,13 +262,13 @@ def load_group_config(group: str, name: str) -> Dict:
         
         # Step 3: Merge defaults AFTER _self_ (these override local values)
         for default in after_self:
-            section, sub_cfg = _process_group_default(default, group)
-            if section is not None:
+            section, sub_cfg, sub_package = _process_group_default(default, group)
+            if section is not None and not _is_global_package(sub_package):
                 cfg[section] = sub_cfg
             else:
                 cfg = deep_merge(cfg, sub_cfg)
     
-    return cfg
+    return cfg, package
 
 
 def _process_top_level_default(default, current_cfg: Dict) -> Dict:
@@ -230,19 +295,16 @@ def _process_top_level_default(default, current_cfg: Dict) -> Dict:
     elif isinstance(default, dict):
         key, file_name = next(iter(default.items()))
         
-        # Handle Hydra's 'override /section: file' syntax
-        is_override = False
-        if key.startswith('override /'):
-            is_override = True
-            section = key[len('override /'):].strip()
-        else:
-            section = key
+        # Handle Hydra defaults key syntax (strict, no non-Hydra tolerance)
+        section, is_override = _normalize_default_section_key(key)
         
         # Use load_group_config to recursively resolve defaults
-        sub_cfg = load_group_config(section, file_name)
+        sub_cfg, package = load_group_config(section, file_name)
         
-        # Override replaces, normal default merges
-        if is_override:
+        # Global-packaged groups merge at root; otherwise section assignment/merge.
+        if _is_global_package(package):
+            cfg = deep_merge(cfg, sub_cfg)
+        elif is_override:
             cfg[section] = sub_cfg
         else:
             if section in cfg and isinstance(cfg[section], dict):
@@ -263,8 +325,7 @@ def load_config(config_name: str, overrides: List[str], resolve_final: bool = Tr
     - If _self_ is absent: treated as last (local values win)
     """
     config_path = f"configs/{config_name}.yaml"  # Relative from project root
-    with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg, _ = _load_yaml_with_package(config_path)
     
     # Merge defaults with nesting (recursively)
     if 'defaults' in cfg:
