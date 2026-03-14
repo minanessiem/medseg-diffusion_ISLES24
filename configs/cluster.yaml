@@ -4,7 +4,7 @@ defaults:
   - _self_
   - environment: isles_cluster
   - distribution: ddp
-  - model: medsegdiff_256_4l_16c_6x4a_128t_1btl_large
+  - model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple
   - data_profile: isles24_2d_online_baseline
   - data_runtime: ddp_cluster
   - augmentation: none
