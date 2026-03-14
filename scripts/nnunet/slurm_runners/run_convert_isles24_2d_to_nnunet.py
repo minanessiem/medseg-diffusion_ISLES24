@@ -33,6 +33,7 @@ Examples:
 import argparse
 import os
 import sys
+import re
 from datetime import datetime
 
 # Add project root to path
@@ -42,6 +43,7 @@ if PROJECT_ROOT not in sys.path:
 
 from scripts.slurm.base_run_config import BASE_CONFIG, SLURM_TEMPLATE, update_logdir_paths
 from scripts.slurm.job_runner import SlurmJobRunner
+from scripts.slurm.single_job_runner import load_config
 
 
 # Default resource configuration for dataset conversion
@@ -51,6 +53,38 @@ CONVERT_DEFAULTS = {
     "cpus_per_task": 64,
     "mem": "64G",
 }
+
+
+def _sanitize_job_token(value: str) -> str:
+    """Sanitize a token for safe SLURM job-name usage."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value).strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "unknown"
+
+
+def _resolve_dataset_identity(config_name: str, hydra_overrides: list[str]) -> tuple[str, str]:
+    """
+    Resolve nnUNet dataset identity from composed config.
+
+    Uses the same custom YAML composer as SLURM training launch so this works
+    without Hydra/OmegaConf on the login node.
+    """
+    composed = load_config(config_name, hydra_overrides, resolve_final=True)
+
+    nnunet_cfg = composed.get("nnunet", {}) if isinstance(composed, dict) else {}
+    dataset_cfg = composed.get("dataset", {}) if isinstance(composed, dict) else {}
+    dataset_nnunet = dataset_cfg.get("nnunet", {}) if isinstance(dataset_cfg, dict) else {}
+
+    dataset_id = nnunet_cfg.get("dataset_id") or dataset_nnunet.get("dataset_id")
+    dataset_name = nnunet_cfg.get("dataset_name") or dataset_nnunet.get("dataset_name")
+
+    if not dataset_id or not dataset_name:
+        raise ValueError(
+            "Could not resolve nnUNet dataset identity from config. "
+            "Expected nnunet.dataset_id and nnunet.dataset_name (or dataset.nnunet.*)."
+        )
+
+    return _sanitize_job_token(str(dataset_id)), _sanitize_job_token(str(dataset_name))
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -140,6 +174,13 @@ def main():
     
     # Build the Python command
     python_command = build_python_command(args)
+
+    # Resolve dataset identity for traceable job naming.
+    try:
+        dataset_id, dataset_name = _resolve_dataset_identity(args.config_name, args.hydra_overrides)
+    except Exception as exc:
+        print(f"[WARN] Could not resolve dataset identity for job name: {exc}")
+        dataset_id, dataset_name = "unknown", "unknown"
     
     # Create job configuration
     config = BASE_CONFIG.copy()
@@ -157,12 +198,13 @@ def main():
     
     # Create job name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    config['job_name'] = f'nnunet_convert_{timestamp}'
+    dataset_tag = f"d{dataset_id}_{dataset_name}"
+    config['job_name'] = f'nnunet_convert_{dataset_tag}_{timestamp}'
     
     # Set up log directory
     config['logdir_name'] = os.path.join(
         'nnunet_jobs', 'convert', 
-        f'convert_{timestamp}'
+        f'convert_{dataset_tag}_{timestamp}'
     )
     config = update_logdir_paths(config)
     
