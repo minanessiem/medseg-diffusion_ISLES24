@@ -10,3 +10,8 @@ defaults:
   - override /augmentation: aggressive_2d
   - override /training: train_1Mms_ampbfloat16
   - override /scheduler: warmup_cosine_20Ksteps
+
+
+environment:
+  training:
+    output_root: '/mnt/outputs/medsegdiff_nnunet2d_precomputed_140326/'
