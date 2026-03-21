@@ -11,6 +11,7 @@ from typing import Dict, List
 
 import torch
 from omegaconf import DictConfig, OmegaConf
+import yaml
 
 from scripts.analysis.threshold_analysis import (
     find_checkpoint,
@@ -41,6 +42,68 @@ def _is_set(value: object) -> bool:
     if isinstance(value, str):
         return len(value.strip()) > 0
     return True
+
+
+# TODO(minanessiem): Extract override helpers into a shared utility module
+# so multiple evaluation entrypoints can reuse the exact same behavior.
+def _parse_override_value(raw_value: str) -> object:
+    """Parse override value into Python scalar/list/dict when possible."""
+    try:
+        return yaml.safe_load(raw_value)
+    except yaml.YAMLError:
+        return raw_value
+
+
+def _resolve_config_group_override(key: str, value: str) -> DictConfig | None:
+    """
+    Resolve top-level group override like `distribution=dp` to configs/<group>/<name>.yaml.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    cfg_path = project_root / "configs" / key / f"{value}.yaml"
+    if not cfg_path.exists():
+        return None
+    return OmegaConf.load(cfg_path)
+
+
+def apply_cli_overrides(cfg: DictConfig, overrides: List[str]) -> DictConfig:
+    """
+    Apply Hydra-style `key=value` overrides to a loaded run config.
+
+    Supported:
+    - group overrides: `distribution=dp` -> loads `configs/distribution/dp.yaml`
+    - dotted-path overrides: `distribution.timeout_minutes=60`
+    - top-level scalar overrides: `device=cpu`
+    """
+    if not overrides:
+        return cfg
+
+    OmegaConf.set_struct(cfg, False)
+    try:
+        for override in overrides:
+            if "=" not in override:
+                raise ValueError(
+                    f"Invalid override '{override}'. Expected format key=value."
+                )
+            raw_key, raw_value = override.split("=", 1)
+            key = raw_key.strip()
+            value = raw_value.strip()
+            if not key:
+                raise ValueError(
+                    f"Invalid override '{override}'. Override key must not be empty."
+                )
+
+            if "." not in key:
+                # Config-group style override (mirrors single_job_runner behavior).
+                group_cfg = _resolve_config_group_override(key, value)
+                if group_cfg is not None:
+                    OmegaConf.update(cfg, key, group_cfg, merge=False)
+                    continue
+
+            parsed_value = _parse_override_value(value)
+            OmegaConf.update(cfg, key, parsed_value, merge=True)
+    finally:
+        OmegaConf.set_struct(cfg, True)
+    return cfg
 
 
 def validate_eval_config_contract(cfg: DictConfig) -> None:
@@ -168,6 +231,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional cap for exported reconstructed volumes per analysis case.",
     )
+    parser.add_argument(
+        "--overrides",
+        nargs="*",
+        default=[],
+        help=(
+            "Optional config overrides applied to <run-dir>/.hydra/config.yaml. "
+            "Examples: distribution=dp distribution.timeout_minutes=60"
+        ),
+    )
     return parser
 
 
@@ -274,9 +346,15 @@ def main() -> None:
     )
     if args.test:
         print(f"Test mode: enabled (max_slices={args.test_max_slices})")
+    if args.overrides:
+        print(f"Config overrides: {args.overrides}")
     print("=" * 60)
 
     cfg = load_config_from_run_dir(str(args.run_dir))
+    cfg = apply_cli_overrides(cfg, args.overrides)
+    effective_strategy = OmegaConf.select(cfg, "distribution.strategy")
+    if effective_strategy is not None:
+        print(f"Effective distribution.strategy: {effective_strategy}")
     validate_eval_config_contract(cfg)
     checkpoint_path = find_checkpoint(str(args.run_dir), args.model_name, use_ema=args.ema)
     model = load_model(cfg, checkpoint_path, device)

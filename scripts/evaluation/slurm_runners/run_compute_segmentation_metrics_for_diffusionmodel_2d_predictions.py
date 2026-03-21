@@ -5,6 +5,7 @@ Submit evaluation-v2 custom model metrics computation as a SLURM job.
 
 import argparse
 import os
+import shlex
 import sys
 from datetime import datetime
 
@@ -67,6 +68,15 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional cap for exported reconstructed volumes per analysis case.",
     )
+    parser.add_argument(
+        "--overrides",
+        nargs="*",
+        default=[],
+        help=(
+            "Optional config overrides forwarded to eval script. "
+            "Examples: distribution=dp distribution.timeout_minutes=60"
+        ),
+    )
 
     # SLURM resources
     parser.add_argument("--gpus", type=int, default=1, help="Number of GPUs")
@@ -85,11 +95,11 @@ def parse_arguments() -> argparse.Namespace:
 def build_python_command(args: argparse.Namespace) -> str:
     cmd_parts = [
         "python3 -m scripts.evaluation.compute_segmentation_metrics_for_diffusionmodel_2d_predictions",
-        f"--run-dir {args.run_dir}",
-        f"--model-name {args.model_name}",
-        f"--optimize-metric {args.optimize_metric}",
-        f"--ensemble-samples {args.ensemble_samples}",
-        f"--ensemble-method {args.ensemble_method}",
+        f"--run-dir {shlex.quote(args.run_dir)}",
+        f"--model-name {shlex.quote(args.model_name)}",
+        f"--optimize-metric {shlex.quote(args.optimize_metric)}",
+        f"--ensemble-samples {shlex.quote(args.ensemble_samples)}",
+        f"--ensemble-method {shlex.quote(args.ensemble_method)}",
         f"--staple-max-iters {args.staple_max_iters}",
         f"--staple-tolerance {args.staple_tolerance}",
     ]
@@ -99,9 +109,9 @@ def build_python_command(args: argparse.Namespace) -> str:
     if args.fixed_threshold is not None:
         cmd_parts.append(f"--fixed-threshold {args.fixed_threshold}")
     else:
-        cmd_parts.append(f"--thresholds {args.thresholds}")
+        cmd_parts.append(f"--thresholds {shlex.quote(args.thresholds)}")
     if args.output_dir:
-        cmd_parts.append(f"--output-dir {args.output_dir}")
+        cmd_parts.append(f"--output-dir {shlex.quote(args.output_dir)}")
     if args.test:
         cmd_parts.append("--test")
         cmd_parts.append(f"--test-max-slices {args.test_max_slices}")
@@ -109,6 +119,9 @@ def build_python_command(args: argparse.Namespace) -> str:
         cmd_parts.append("--export-reconstructed-volumes")
     if args.max_export_volumes_per_case is not None:
         cmd_parts.append(f"--max-export-volumes-per-case {args.max_export_volumes_per_case}")
+    if args.overrides:
+        cmd_parts.append("--overrides")
+        cmd_parts.extend(shlex.quote(override) for override in args.overrides)
 
     return " ".join(cmd_parts)
 
@@ -148,6 +161,8 @@ def main() -> None:
     print(f"  Ensemble:   n={args.ensemble_samples}, method={args.ensemble_method}")
     if args.test:
         print(f"  Test mode:  enabled (max_slices={args.test_max_slices})")
+    if args.overrides:
+        print(f"  Overrides:  {args.overrides}")
     print("-" * 60)
     print(f"  Command:    {python_command}")
     print("=" * 60)
