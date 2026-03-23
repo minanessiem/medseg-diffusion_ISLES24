@@ -1,0 +1,5 @@
+defaults:
+  - nnunet_slices_2d
+
+per_side_context_slices: 2
+channel_layout: slice_major

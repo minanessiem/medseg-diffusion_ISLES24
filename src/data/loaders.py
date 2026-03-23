@@ -390,6 +390,8 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
         cache_lock=None,
         aug_cfg=None,
         is_training=False,
+        per_side_context_slices=0,
+        channel_layout="slice_major",
     ):
         super().__init__()
         self.nnunet_root = os.path.expanduser(str(nnunet_root))
@@ -403,9 +405,20 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
         self.use_caching = bool(use_caching)
         self.return_metadata = False
         self._cache_prefix = "ts" if self.test_flag else "tr"
+        self.per_side_context_slices = int(per_side_context_slices)
+        self.channel_layout = str(channel_layout)
+        self.num_effective_slices = (2 * self.per_side_context_slices) + 1
+        self.effective_input_channels = self.num_modalities * self.num_effective_slices
 
         if self.num_modalities <= 0:
             raise ValueError("ISLES24NNUNet2D requires a non-empty modalities list.")
+        if self.per_side_context_slices < 0:
+            raise ValueError("per_side_context_slices must be >= 0 for ISLES24NNUNet2D.")
+        if self.channel_layout not in {"slice_major", "modality_major"}:
+            raise ValueError(
+                "channel_layout must be one of {'slice_major', 'modality_major'} "
+                f"for ISLES24NNUNet2D, got: {self.channel_layout}"
+            )
 
         dataset_dir_name = f"Dataset{self.dataset_id}_{self.dataset_name}"
         self.dataset_dir = os.path.join(self.nnunet_root, dataset_dir_name)
@@ -467,6 +480,20 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
                 }
             )
 
+        # Fast lookup for neighboring slices within the same volume.
+        self._sample_lookup = {}
+        self._volume_slice_bounds = {}
+        for sample in self.samples:
+            volume_id = sample["volume_id"]
+            slice_index = int(sample["slice_index"])
+            key = (volume_id, slice_index)
+            self._sample_lookup[key] = sample
+            if volume_id not in self._volume_slice_bounds:
+                self._volume_slice_bounds[volume_id] = [slice_index, slice_index]
+            else:
+                self._volume_slice_bounds[volume_id][0] = min(self._volume_slice_bounds[volume_id][0], slice_index)
+                self._volume_slice_bounds[volume_id][1] = max(self._volume_slice_bounds[volume_id][1], slice_index)
+
         self.aug_cfg = aug_cfg
         self.is_training = bool(is_training)
         self.augmentation = None
@@ -489,9 +516,24 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.samples)
 
-    def _load_raw_sample(self, sample):
-        image_tensors = []
-        sample_shape = None
+    def _resolve_neighbor_sample(self, sample, relative_offset):
+        volume_id = sample["volume_id"]
+        center_idx = int(sample["slice_index"])
+        target_idx = center_idx + int(relative_offset)
+        min_idx, max_idx = self._volume_slice_bounds[volume_id]
+        if target_idx < min_idx or target_idx > max_idx:
+            return None
+        neighbor = self._sample_lookup.get((volume_id, target_idx))
+        if neighbor is None:
+            raise ValueError(
+                f"Missing neighbor sample for volume '{volume_id}' at slice index "
+                f"{target_idx} while building context for '{sample['slice_stem']}'."
+            )
+        return neighbor
+
+    def _load_modality_stack(self, sample, expected_shape_hw=None):
+        modality_tensors = []
+        sample_shape = tuple(expected_shape_hw) if expected_shape_hw is not None else None
 
         for image_path in sample["image_paths"]:
             image_np = nibabel.load(image_path).get_fdata().astype(np.float32)
@@ -503,21 +545,61 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
                     f"Channel geometry mismatch for '{sample['slice_stem']}'. "
                     f"Expected {sample_shape}, got {tuple(image_np.shape)} at {image_path}."
                 )
-            image_tensors.append(torch.from_numpy(image_np))
-
-        label_nib = nibabel.load(sample["label_path"])
-        label_np = label_nib.get_fdata().astype(np.float32)
-        label_np = _normalize_nnunet_slice_array(label_np, sample["label_path"])
+            modality_tensors.append(torch.from_numpy(image_np))
 
         if sample_shape is None:
             raise RuntimeError(f"No image channels loaded for sample '{sample['slice_stem']}'.")
-        if tuple(label_np.shape) != sample_shape:
+        image = torch.stack(modality_tensors, dim=0).float()
+        return image, sample_shape
+
+    def _flatten_context_channels(self, context_modalities):
+        if self.channel_layout == "slice_major":
+            return torch.cat(context_modalities, dim=0)
+
+        stacked = torch.stack(context_modalities, dim=0)  # [S, M, H, W]
+        stacked = stacked.permute(1, 0, 2, 3).contiguous()  # [M, S, H, W]
+        return stacked.view(
+            self.num_modalities * self.num_effective_slices,
+            stacked.shape[-2],
+            stacked.shape[-1],
+        )
+
+    def _load_raw_sample(self, sample):
+        label_nib = nibabel.load(sample["label_path"])
+        label_np = label_nib.get_fdata().astype(np.float32)
+        label_np = _normalize_nnunet_slice_array(label_np, sample["label_path"])
+        sample_shape = tuple(label_np.shape)
+
+        center_modalities, center_shape = self._load_modality_stack(
+            sample, expected_shape_hw=sample_shape
+        )
+        if tuple(center_shape) != sample_shape:
             raise ValueError(
                 f"Image/label geometry mismatch for '{sample['slice_stem']}'. "
-                f"image={sample_shape}, label={tuple(label_np.shape)}."
+                f"image={tuple(center_shape)}, label={sample_shape}."
             )
 
-        image = torch.stack(image_tensors, dim=0).float()
+        context_modalities = []
+        for relative_offset in range(-self.per_side_context_slices, self.per_side_context_slices + 1):
+            if relative_offset == 0:
+                context_modalities.append(center_modalities)
+                continue
+
+            neighbor_sample = self._resolve_neighbor_sample(sample, relative_offset)
+            if neighbor_sample is None:
+                zero_modalities = torch.zeros(
+                    (self.num_modalities, sample_shape[0], sample_shape[1]),
+                    dtype=torch.float32,
+                )
+                context_modalities.append(zero_modalities)
+                continue
+
+            neighbor_modalities, _ = self._load_modality_stack(
+                neighbor_sample, expected_shape_hw=sample_shape
+            )
+            context_modalities.append(neighbor_modalities)
+
+        image = self._flatten_context_channels(context_modalities)
         label = torch.from_numpy(label_np).float().unsqueeze(0)
 
         zooms = label_nib.header.get_zooms()
@@ -535,6 +617,10 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
             "source_axcodes": axcodes,
             "source_volume_shape": [pre_h, pre_w, 1],
             "slice_axis": 2,
+            "per_side_context_slices": int(self.per_side_context_slices),
+            "num_effective_slices": int(self.num_effective_slices),
+            "effective_input_channels": int(self.effective_input_channels),
+            "channel_layout": self.channel_layout,
             "pre_resize_shape_hw": [pre_h, pre_w],
             "post_resize_shape_hw": [self.image_size, self.image_size],
             "source_identity": sample["slice_stem"],
@@ -611,6 +697,8 @@ def validate_dataset_contract(cfg):
     """Validate explicit data contract before constructing datasets/dataloaders."""
     loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
     dim = OmegaConf.select(cfg, "data_mode.dim")
+    per_side_context_slices = OmegaConf.select(cfg, "data_mode.per_side_context_slices")
+    channel_layout = OmegaConf.select(cfg, "data_mode.channel_layout")
     modalities = OmegaConf.select(cfg, "dataset.modalities")
     num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
     dataset_id = OmegaConf.select(cfg, "dataset.id", default=OmegaConf.select(cfg, "dataset.name"))
@@ -658,6 +746,16 @@ def validate_dataset_contract(cfg):
             raise ValueError("online_slices_3d_to_2d requires data_io.paths.data_root.")
         if not _is_set(OmegaConf.select(cfg, "data_io.paths.split_file")):
             raise ValueError("online_slices_3d_to_2d requires data_io.paths.split_file.")
+        if per_side_context_slices is not None and int(per_side_context_slices) != 0:
+            raise ValueError(
+                "data_mode.per_side_context_slices is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
+        if _is_set(channel_layout):
+            raise ValueError(
+                "data_mode.channel_layout is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
 
     elif loader_mode == "nnunet_slices_2d":
         if dim != "2d":
@@ -668,6 +766,19 @@ def validate_dataset_contract(cfg):
             raise ValueError("nnunet_slices_2d requires dataset.nnunet.dataset_id.")
         if not _is_set(OmegaConf.select(cfg, "dataset.nnunet.dataset_name")):
             raise ValueError("nnunet_slices_2d requires dataset.nnunet.dataset_name.")
+        if per_side_context_slices is None:
+            raise ValueError("nnunet_slices_2d requires data_mode.per_side_context_slices.")
+        if int(per_side_context_slices) < 0:
+            raise ValueError(
+                "nnunet_slices_2d requires data_mode.per_side_context_slices >= 0."
+            )
+        if not _is_set(channel_layout):
+            raise ValueError("nnunet_slices_2d requires data_mode.channel_layout.")
+        if str(channel_layout) not in {"slice_major", "modality_major"}:
+            raise ValueError(
+                "nnunet_slices_2d requires data_mode.channel_layout in "
+                "{slice_major, modality_major}."
+            )
 
     elif loader_mode == "full_volumes_3d":
         if dim != "3d":
@@ -676,6 +787,16 @@ def validate_dataset_contract(cfg):
             raise ValueError("full_volumes_3d requires data_io.paths.data_root.")
         if not _is_set(OmegaConf.select(cfg, "data_io.paths.split_file")):
             raise ValueError("full_volumes_3d requires data_io.paths.split_file.")
+        if per_side_context_slices is not None and int(per_side_context_slices) != 0:
+            raise ValueError(
+                "data_mode.per_side_context_slices is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
+        if _is_set(channel_layout):
+            raise ValueError(
+                "data_mode.channel_layout is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
 
 
 def get_dataloaders(cfg):
@@ -693,6 +814,12 @@ def get_dataloaders(cfg):
         print("No augmentation configured (using baseline)")
 
     loader_mode = cfg.data_mode.loader_mode
+    per_side_context_slices = int(
+        OmegaConf.select(cfg, "data_mode.per_side_context_slices", default=0) or 0
+    )
+    channel_layout = str(
+        OmegaConf.select(cfg, "data_mode.channel_layout", default="slice_major") or "slice_major"
+    )
     data_root = cfg.data_io.paths.data_root
     split_file = cfg.data_io.paths.split_file
 
@@ -713,6 +840,8 @@ def get_dataloaders(cfg):
             cache_lock=cache_lock,
             aug_cfg=aug_cfg,
             is_training=True,
+            per_side_context_slices=per_side_context_slices,
+            channel_layout=channel_layout,
         )
         test_dataset = ISLES24NNUNet2D(
             nnunet_root=cfg.data_io.paths.nnunet_root,
@@ -727,6 +856,8 @@ def get_dataloaders(cfg):
             cache_lock=cache_lock,
             aug_cfg=None,
             is_training=False,
+            per_side_context_slices=per_side_context_slices,
+            channel_layout=channel_layout,
         )
 
     elif loader_mode == "online_slices_3d_to_2d":

@@ -490,6 +490,41 @@ def generate_batch_string(cfg):
     else:
         return f"b{batch_size}x{accum}"
 
+
+def generate_context_string(cfg):
+    """Generate nnUNet 2D context-window token for run name.
+
+    Adds context metadata only for the nnUNet 2D loader mode:
+    - ctxps{k}: per-side context slices
+    - slmaj|mdmaj: channel flattening order
+
+    Returns empty string for all other loader modes to avoid changing
+    unrelated run-name formats.
+    """
+    if isinstance(cfg, dict):
+        data_mode = cfg.get('data_mode', {})
+        loader_mode = data_mode.get('loader_mode', None)
+        if loader_mode != 'nnunet_slices_2d':
+            return ""
+        per_side_context_slices = int(data_mode.get('per_side_context_slices', 0))
+        channel_layout = str(data_mode.get('channel_layout', 'slice_major'))
+    else:
+        if not hasattr(cfg, 'data_mode'):
+            return ""
+        data_mode = cfg.data_mode
+        loader_mode = data_mode.get('loader_mode', None)
+        if loader_mode != 'nnunet_slices_2d':
+            return ""
+        per_side_context_slices = int(data_mode.get('per_side_context_slices', 0))
+        channel_layout = str(data_mode.get('channel_layout', 'slice_major'))
+
+    per_side_context_slices = max(0, per_side_context_slices)
+    layout_token = {
+        'slice_major': 'slmaj',
+        'modality_major': 'mdmaj',
+    }.get(channel_layout, 'slmaj')
+    return f"ctxps{per_side_context_slices}_{layout_token}"
+
 def generate_run_name(cfg, timestamp: str = None) -> str:
     """Generate the run name string based on the resolved config.
 
@@ -599,6 +634,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)
+    context_str = generate_context_string(cfg)
     
     # AMP string (only added if enabled with FP16/BF16)
     amp_str = generate_amp_string(cfg)
@@ -665,6 +701,8 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Insert amp_str after batch_str (only if non-empty)
     # Insert clip_str after optimizer_str (only if non-empty)
     parts = [model_str, batch_str]
+    if context_str:
+        parts.append(context_str)
     if amp_str:  # Only add AMP string if enabled (FP16/BF16)
         parts.append(amp_str)
     parts.append(optimizer_str)

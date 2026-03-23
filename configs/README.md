@@ -67,6 +67,34 @@ Run the project with Hydra, overriding groups as needed:
 
 Interpolation is used (e.g., ${environment.training.output_root} in training templates).
 
+## nnUNet 2D Context Window
+
+The `nnunet_slices_2d` data mode supports optional neighboring-slice context:
+
+- `data_mode.per_side_context_slices` (default `0`)
+- `data_mode.channel_layout` (`slice_major` or `modality_major`)
+
+Definitions:
+
+- `num_effective_slices = 2 * per_side_context_slices + 1`
+- `effective_input_channels = dataset.num_modalities * num_effective_slices`
+
+Important:
+
+- `model.image_channels` is auto-synced from the active data contract at runtime.
+- Manual `model.image_channels` override is optional (for explicitness only).
+- Boundary neighbors are zero-padded.
+- `dim` remains `2d` and loader mode remains `nnunet_slices_2d`.
+
+Example override:
+
+```bash
+python3 -m start_training \
+  --config-name local_nnunet2d_baseline \
+  data_mode.per_side_context_slices=1 \
+  data_mode.channel_layout=slice_major
+```
+
 ## Checkpoint Configuration
 
 The training system supports two independent checkpoint strategies:

@@ -4,6 +4,7 @@ print("[DEBUG:trainer.py] Starting imports...", flush=True)
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 print("[DEBUG:trainer.py] os, torch, nn done", flush=True)
 
 from tqdm import tqdm
@@ -32,6 +33,7 @@ from src.utils.distribution_utils import (
 )
 
 from torch import no_grad
+from torchvision.utils import make_grid
 from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one, normalize_to_neg_one_to_one
 print("[DEBUG:trainer.py] unet_util done", flush=True)
 
@@ -271,6 +273,123 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
     return results
 
 
+def _resolve_context_window_cfg(cfg):
+    loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode", default=None)
+    per_side_context_slices = int(
+        OmegaConf.select(cfg, "data_mode.per_side_context_slices", default=0) or 0
+    )
+    channel_layout = str(
+        OmegaConf.select(cfg, "data_mode.channel_layout", default="slice_major") or "slice_major"
+    )
+    return loader_mode, per_side_context_slices, channel_layout
+
+
+def _resolve_modality_names_for_channels(cfg, num_channels):
+    modality_names = (
+        list(cfg.dataset.modalities)
+        if hasattr(cfg, "dataset") and hasattr(cfg.dataset, "modalities")
+        else []
+    )
+    if len(modality_names) == num_channels:
+        return modality_names
+    return [f"Ch{i}" for i in range(num_channels)]
+
+
+def _should_use_context_modalities_panel(cfg, num_channels):
+    loader_mode, per_side_context_slices, _ = _resolve_context_window_cfg(cfg)
+    if loader_mode != "nnunet_slices_2d" or per_side_context_slices <= 0:
+        return False
+
+    num_modalities = len(
+        list(cfg.dataset.modalities)
+        if hasattr(cfg, "dataset") and hasattr(cfg.dataset, "modalities")
+        else []
+    )
+    if num_modalities <= 0:
+        return False
+    num_effective_slices = (2 * per_side_context_slices) + 1
+    return num_channels == (num_modalities * num_effective_slices)
+
+
+def _context_grid_channel_index(
+    modality_idx, slice_idx, num_modalities, num_effective_slices, channel_layout
+):
+    if channel_layout == "slice_major":
+        return (slice_idx * num_modalities) + modality_idx
+    return (modality_idx * num_effective_slices) + slice_idx
+
+
+def _build_context_modalities_panel(sample_img_chw, cfg):
+    """Create one compact panel with a [modalities x effective_slices] mini-grid."""
+    if sample_img_chw.dim() != 3:
+        raise ValueError(
+            f"Expected sample image tensor with shape [C,H,W], got {tuple(sample_img_chw.shape)}."
+        )
+
+    channel_count, height, width = sample_img_chw.shape
+    modality_names = list(cfg.dataset.modalities)
+    num_modalities = len(modality_names)
+    _, per_side_context_slices, channel_layout = _resolve_context_window_cfg(cfg)
+    num_effective_slices = (2 * per_side_context_slices) + 1
+    expected_channels = num_modalities * num_effective_slices
+    if channel_count != expected_channels:
+        raise ValueError(
+            "Cannot build context modalities panel: channel count mismatch. "
+            f"Expected {expected_channels} from data contract, got {channel_count}."
+        )
+
+    cells = []
+    for modality_idx in range(num_modalities):
+        for slice_idx in range(num_effective_slices):
+            channel_idx = _context_grid_channel_index(
+                modality_idx=modality_idx,
+                slice_idx=slice_idx,
+                num_modalities=num_modalities,
+                num_effective_slices=num_effective_slices,
+                channel_layout=channel_layout,
+            )
+            channel = normalize_to_neg_one_to_one(sample_img_chw[channel_idx:channel_idx + 1])
+            cells.append(channel)
+
+    mini_grid = make_grid(cells, nrow=num_effective_slices, padding=0, normalize=False)
+    if mini_grid.dim() != 3:
+        raise RuntimeError(f"Unexpected mini-grid shape: {tuple(mini_grid.shape)}")
+
+    if mini_grid.shape[0] > 1:
+        mini_grid = mini_grid.mean(dim=0, keepdim=True)
+
+    # Preserve legacy left-block footprint: height=H, width=num_modalities*W.
+    target_width = num_modalities * width
+    mini_grid = F.interpolate(
+        mini_grid.unsqueeze(0),
+        size=(height, target_width),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0)
+    return mini_grid
+
+
+def _context_panel_label(cfg):
+    _, per_side_context_slices, channel_layout = _resolve_context_window_cfg(cfg)
+    return f"Input Context Grid k={per_side_context_slices} ({channel_layout})"
+
+
+def _concat_row_panels(panels):
+    """Concatenate 1-channel panels into a single row image [1, H, W_total]."""
+    normalized = []
+    for panel in panels:
+        if panel.dim() == 4 and panel.shape[0] == 1:
+            panel = panel.squeeze(0)
+        if panel.dim() == 2:
+            panel = panel.unsqueeze(0)
+        if panel.dim() != 3:
+            raise ValueError(f"Expected panel with shape [C,H,W], got {tuple(panel.shape)}.")
+        if panel.shape[0] > 1:
+            panel = panel.mean(dim=0, keepdim=True)
+        normalized.append(panel)
+    return torch.cat(normalized, dim=-1)
+
+
 @device_grad_decorator(no_grad=True)
 def log_ensembled_segmentation(diffusion, val_dl, logger, global_step, cfg):
     """
@@ -339,12 +458,14 @@ def log_ensembled_segmentation(diffusion, val_dl, logger, global_step, cfg):
     sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
     sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
     num_samples = sample_imgs.shape[0]
-    num_modalities = sample_imgs.shape[1]
+    num_input_channels = sample_imgs.shape[1]
+    use_context_panel = _should_use_context_modalities_panel(cfg, num_input_channels)
+    modality_names = _resolve_modality_names_for_channels(cfg, num_input_channels)
+    num_modalities = len(modality_names) if not use_context_panel else len(cfg.dataset.modalities)
     
     # Build grid
     all_images = []
     labels = []
-    modality_names = cfg.dataset.modalities if hasattr(cfg.dataset, 'modalities') else [f"Mod{i}" for i in range(num_modalities)]
     
     for i in range(num_samples):
         # Generate ensemble prediction for this slice
@@ -360,24 +481,30 @@ def log_ensembled_segmentation(diffusion, val_dl, logger, global_step, cfg):
         # Ensemble the predictions
         ensembled_pred = ensemble_predictions(samples, ensemble_cfg)  # [1, 1, H, W]
         
-        # Add modality channels
-        for c in range(num_modalities):
-            mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])
-            all_images.append(mod_channel)
-            labels.append(f"Modality: {modality_names[c]}")
-        
-        # Add ground truth
-        gt_norm = normalize_to_neg_one_to_one(sample_masks[i])
-        all_images.append(gt_norm)
-        labels.append("Ground Truth")
-        
-        # Add ensembled prediction
-        pred_norm = normalize_to_neg_one_to_one(ensembled_pred[0])
-        all_images.append(pred_norm)
-        labels.append(f"Ensemble ({num_ensemble_samples} avg)")
+        # Add modality input section (legacy strip or compact context panel)
+        if use_context_panel:
+            context_panel = _build_context_modalities_panel(sample_imgs[i], cfg)
+            gt_norm = normalize_to_neg_one_to_one(sample_masks[i])
+            pred_norm = normalize_to_neg_one_to_one(ensembled_pred[0])
+            row_image = _concat_row_panels([context_panel, gt_norm, pred_norm])
+            all_images.append(row_image)
+            labels.append("Context Grid | Ground Truth | Ensemble")
+        else:
+            for c in range(num_modalities):
+                mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])
+                all_images.append(mod_channel)
+                labels.append(f"Modality: {modality_names[c]}")
+            # Add ground truth
+            gt_norm = normalize_to_neg_one_to_one(sample_masks[i])
+            all_images.append(gt_norm)
+            labels.append("Ground Truth")
+            # Add ensembled prediction
+            pred_norm = normalize_to_neg_one_to_one(ensembled_pred[0])
+            all_images.append(pred_norm)
+            labels.append(f"Ensemble ({num_ensemble_samples} avg)")
     
     # Calculate grid dimensions
-    per_sample_ncol = num_modalities + 2  # modalities + GT + ensemble pred
+    per_sample_ncol = 1 if use_context_panel else (num_modalities + 2)
     
     # Log the grid
     logger.log_image_grid(
@@ -946,7 +1073,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     all_images = []
                     labels = []
                     metrics = {}
-                    num_modalities = len(cfg.dataset.modalities)
+                    num_input_channels = intermediates['img'].shape[1]
+                    modality_names = _resolve_modality_names_for_channels(cfg, num_input_channels)
+                    num_modalities = len(modality_names)
+                    use_context_panel = _should_use_context_modalities_panel(
+                        cfg, num_input_channels
+                    )
                     
                     # Check if discriminative mode (no diffusion intermediates)
                     is_discriminative = cfg.diffusion.type == "Discriminative"
@@ -954,36 +1086,67 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     if is_discriminative:
                         # Discriminative: simpler grid (modalities, prediction, target)
                         for i in range(num_samples):
-                            # Modality channels (each channel separately)
-                            for c in range(num_modalities):
-                                all_images.append(intermediates['img'][i, c:c+1])
-                                labels.append(f"Modality: {cfg.dataset.modalities[c]}")
-                            
-                            # Prediction
-                            all_images.append(intermediates['pred'][i])
-                            labels.append("Prediction")
-                            
-                            # Target
-                            all_images.append(intermediates['mask'][i])
-                            labels.append("Target")
+                            if use_context_panel:
+                                context_panel = _build_context_modalities_panel(intermediates['img'][i], cfg)
+                                row_image = _concat_row_panels(
+                                    [context_panel, intermediates['pred'][i], intermediates['mask'][i]]
+                                )
+                                all_images.append(row_image)
+                                labels.append("Context Grid | Prediction | Target")
+                            else:
+                                # Modality channels (each channel separately)
+                                for c in range(num_modalities):
+                                    all_images.append(intermediates['img'][i, c:c+1])
+                                    labels.append(f"Modality: {modality_names[c]}")
+                                # Prediction
+                                all_images.append(intermediates['pred'][i])
+                                labels.append("Prediction")
+                                # Target
+                                all_images.append(intermediates['mask'][i])
+                                labels.append("Target")
                         
-                        per_sample_ncol = num_modalities + 2  # modalities + pred + target
+                        per_sample_ncol = 1 if use_context_panel else (num_modalities + 2)
                     else:
-                        pass
+                        # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
+                        for i in range(num_samples):
+                            if use_context_panel:
+                                input_panel = _build_context_modalities_panel(intermediates['img'][i], cfg)
+                                row_image = _concat_row_panels(
+                                    [
+                                        input_panel,
+                                        intermediates['mask'][i],
+                                        intermediates['x_t'][i],
+                                        intermediates['noise'][i],
+                                        intermediates['noise_hat'][i],
+                                        intermediates['pred_x0'][i],
+                                    ]
+                                )
+                                sample_images = [row_image]
+                                noisy_label = f"Noise Mask t={t[i].item()}"
+                                base_labels = [f"Context Grid | Target | {noisy_label} | True Noise | Pred Noise | Recon"]
+                            else:
+                                sample_images = [
+                                    intermediates['img'][i],
+                                    intermediates['mask'][i],
+                                    intermediates['x_t'][i],
+                                    intermediates['noise'][i],
+                                    intermediates['noise_hat'][i],
+                                    intermediates['pred_x0'][i],
+                                ]
+                                modality_labels = [f"Modality: {name}" for name in modality_names]
+                                noisy_label = f"Noise Mask t={t[i].item()}"
+                                base_labels = modality_labels + [
+                                    "Target Mask",
+                                    noisy_label,
+                                    "True Noise",
+                                    "Predicted Noise",
+                                    "Reconstructed Mask",
+                                ]
 
-                    # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
-                    for i in range(num_samples):
-                        sample_images = [intermediates['img'][i], intermediates['mask'][i], intermediates['x_t'][i], intermediates['noise'][i], intermediates['noise_hat'][i], intermediates['pred_x0'][i]]
-                        all_images.extend(sample_images)
-                        
-                        modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
-                        noisy_label = f"Noise Mask t={t[i].item()}"
-                        base_labels = modality_labels + ["Target Mask", noisy_label, "True Noise", "Predicted Noise", "Reconstructed Mask"]
-                        labels.extend(base_labels)
-                        
-                        metrics[i] = sample_mses[i].item()
-                    
-                        per_sample_ncol = len(base_labels)
+                            all_images.extend(sample_images)
+                            labels.extend(base_labels)
+                            metrics[i] = sample_mses[i].item()
+                            per_sample_ncol = len(base_labels)
                     
                     logger.log_image_grid(f'Training/Forward_Step_{global_step}', all_images, global_step, metrics, 'horizontal', labels=labels, per_sample_ncol=per_sample_ncol)
             barrier_if_needed()
@@ -1023,7 +1186,12 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     # Build composite grid
                     all_images = []
                     labels = []
-                    num_modalities = sample_imgs.shape[1]
+                    num_input_channels = sample_imgs.shape[1]
+                    modality_names = _resolve_modality_names_for_channels(cfg, num_input_channels)
+                    num_modalities = len(modality_names)
+                    use_context_panel = _should_use_context_modalities_panel(
+                        cfg, num_input_channels
+                    )
                     # Determine timesteps that sample_with_snapshots will yield
                     snapshots_per_sample = []
                     snapshot_timesteps = []  # Track actual timesteps for labels
@@ -1036,25 +1204,34 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     num_snapshots = len(snapshots_per_sample[0])
                     
                     # Labels per category
-                    modality_labels = [f"Modality: {cfg.dataset.modalities[j]}" for j in range(num_modalities)]
+                    modality_labels = [f"Modality: {name}" for name in modality_names]
                     # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
                     snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
-                    row_len = num_modalities + num_snapshots + 1  # +1 for target
+                    row_len = (1 if use_context_panel else num_modalities) + num_snapshots + 1
                     
                     for i in range(num_samples):
-                        # append each modality channel individually
-                        for c in range(num_modalities):
-                            mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
-                            all_images.append(mod_channel)
-                            labels.append(modality_labels[c])
-                        # snapshots
-                        for snap in snapshots_per_sample[i]:
-                            all_images.append(snap)
-                        labels.extend(snapshot_labels)
-                        # target mask (normalize to match forward)
-                        target_norm = normalize_to_neg_one_to_one(sample_masks[i])
-                        all_images.append(target_norm)
-                        labels.append("Target")
+                        if use_context_panel:
+                            context_panel = _build_context_modalities_panel(sample_imgs[i], cfg)
+                            row_panels = [context_panel]
+                            row_panels.extend(snapshots_per_sample[i])
+                            target_norm = normalize_to_neg_one_to_one(sample_masks[i])
+                            row_panels.append(target_norm)
+                            all_images.append(_concat_row_panels(row_panels))
+                            labels.append("Context Grid | Snapshots | Target")
+                        else:
+                            # append each modality channel individually
+                            for c in range(num_modalities):
+                                mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
+                                all_images.append(mod_channel)
+                                labels.append(modality_labels[c])
+                            # snapshots
+                            for snap in snapshots_per_sample[i]:
+                                all_images.append(snap)
+                            labels.extend(snapshot_labels)
+                            # target mask (normalize to match forward)
+                            target_norm = normalize_to_neg_one_to_one(sample_masks[i])
+                            all_images.append(target_norm)
+                            labels.append("Target")
                     
                     logger.log_image_grid(
                         f"Sampling/Snapshots_Step_{global_step}",
@@ -1063,7 +1240,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                         metrics=None,
                         grid_layout='horizontal',
                         labels=labels,
-                        per_sample_ncol=row_len,
+                        per_sample_ncol=1 if use_context_panel else row_len,
                     )
             barrier_if_needed()
         

@@ -1,3 +1,5 @@
 loader_mode: nnunet_slices_2d
 dim: 2d
 preprocessing_mode: nnunet_precomputed_2d_slices
+per_side_context_slices: 0  # k; effective slices = 2k+1
+channel_layout: slice_major  # {slice_major, modality_major}

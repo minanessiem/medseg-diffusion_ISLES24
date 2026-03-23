@@ -229,6 +229,9 @@ def build_model_and_diffusion(cfg: DictConfig, device: torch.device):
     """
     from src.models import build_model
     from src.diffusion.diffusion import Diffusion
+
+    # Keep model channels aligned with the active data contract before model build.
+    sync_model_image_channels_with_data_contract(cfg)
     
     # Build model
     unet = build_model(cfg).to(device)
@@ -255,6 +258,71 @@ def build_model_and_diffusion(cfg: DictConfig, device: torch.device):
         print(f"  Diffusion built with multi-GPU UNet")
     
     return diffusion
+
+
+def _resolve_expected_image_channels(cfg: DictConfig) -> int:
+    """Resolve expected model image channels from the active data contract."""
+    loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
+    num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
+    if num_modalities is None:
+        modalities = OmegaConf.select(cfg, "dataset.modalities")
+        if modalities is None:
+            raise ValueError(
+                "Missing dataset channel contract: expected dataset.num_modalities "
+                "or dataset.modalities."
+            )
+        num_modalities = len(modalities)
+    num_modalities = int(num_modalities)
+
+    if loader_mode == "nnunet_slices_2d":
+        per_side_context_slices = int(
+            OmegaConf.select(cfg, "data_mode.per_side_context_slices", default=0) or 0
+        )
+        num_effective_slices = (2 * per_side_context_slices) + 1
+        return num_modalities * num_effective_slices
+
+    return num_modalities
+
+
+def sync_model_image_channels_with_data_contract(cfg: DictConfig) -> int:
+    """Auto-sync model.image_channels from the active data contract."""
+    expected_channels = _resolve_expected_image_channels(cfg)
+    current_channels = OmegaConf.select(cfg, "model.image_channels")
+    previous = None if current_channels is None else int(current_channels)
+
+    if previous != expected_channels:
+        OmegaConf.set_struct(cfg, False)
+        OmegaConf.update(cfg, "model.image_channels", int(expected_channels), merge=False)
+        OmegaConf.set_struct(cfg, True)
+        if previous is None:
+            print(
+                "[Data Contract] Set model.image_channels from data contract: "
+                f"{expected_channels}."
+            )
+        else:
+            print(
+                "[Data Contract] Updated model.image_channels to match data contract: "
+                f"{previous} -> {expected_channels}."
+            )
+
+    return int(expected_channels)
+
+
+def validate_model_channel_contract(cfg: DictConfig) -> None:
+    """Fail fast when model input channels disagree with data contract."""
+    expected_channels = _resolve_expected_image_channels(cfg)
+    configured_channels = int(OmegaConf.select(cfg, "model.image_channels"))
+    if configured_channels != expected_channels:
+        loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
+        per_side_context_slices = int(
+            OmegaConf.select(cfg, "data_mode.per_side_context_slices", default=0) or 0
+        )
+        raise ValueError(
+            "Model image channel contract mismatch. "
+            f"Expected model.image_channels={expected_channels} from data contract "
+            f"(loader_mode={loader_mode}, per_side_context_slices={per_side_context_slices}), "
+            f"got model.image_channels={configured_channels}."
+        )
 
 
 # =============================================================================
@@ -306,6 +374,9 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     _debug("Setting up device...")
     device = setup_device(cfg)
     _debug(f"Device: {device}")
+
+    # Sync before logger prints resolved config for accurate channel visibility.
+    sync_model_image_channels_with_data_contract(cfg)
     
     _debug("Setting up logger...")
     logger, writer = setup_logger(cfg, run_dir, mode='train')
@@ -319,9 +390,8 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
     dataloaders = get_dataloaders(cfg)
     _debug(f"Dataloaders ready: {list(dataloaders.keys())}")
     
-    # Contract validation: model channels must match configured modality count.
-    assert cfg.model.image_channels == len(cfg.dataset.modalities), \
-        "Model image_channels must match number of modalities"
+    # Contract validation: model channels must match active data contract.
+    validate_model_channel_contract(cfg)
     
     _debug("Getting optimizer and scheduler...")
     optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
@@ -364,6 +434,8 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     from src.training.checkpoint_utils import load_checkpoint, load_model_state_dict_compat
     
     device = setup_device(cfg)
+    # Sync before logger prints resolved config for accurate channel visibility.
+    sync_model_image_channels_with_data_contract(cfg)
     
     # Load checkpoint first to get step info
     resume_state = load_checkpoint(run_dir, resume_step, cfg, device)
@@ -387,9 +459,8 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     # Get dataloaders
     dataloaders = get_dataloaders(cfg)
     
-    # Contract validation: model channels must match configured modality count.
-    assert cfg.model.image_channels == len(cfg.dataset.modalities), \
-        "Model image_channels must match number of modalities"
+    # Contract validation: model channels must match active data contract.
+    validate_model_channel_contract(cfg)
     
     optimizer, scheduler = get_optimizer_and_scheduler(cfg, diffusion)
     
