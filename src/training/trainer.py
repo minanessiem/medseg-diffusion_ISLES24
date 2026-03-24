@@ -320,7 +320,7 @@ def _context_grid_channel_index(
 
 
 def _build_context_modalities_panel(sample_img_chw, cfg):
-    """Create one compact panel with a [modalities x effective_slices] mini-grid."""
+    """Create one compact context panel honoring channel_layout semantics."""
     if sample_img_chw.dim() != 3:
         raise ValueError(
             f"Expected sample image tensor with shape [C,H,W], got {tuple(sample_img_chw.shape)}."
@@ -339,19 +339,36 @@ def _build_context_modalities_panel(sample_img_chw, cfg):
         )
 
     cells = []
-    for modality_idx in range(num_modalities):
+    if channel_layout == "slice_major":
+        # Display as [num_effective_slices rows, num_modalities cols].
         for slice_idx in range(num_effective_slices):
-            channel_idx = _context_grid_channel_index(
-                modality_idx=modality_idx,
-                slice_idx=slice_idx,
-                num_modalities=num_modalities,
-                num_effective_slices=num_effective_slices,
-                channel_layout=channel_layout,
-            )
-            channel = normalize_to_neg_one_to_one(sample_img_chw[channel_idx:channel_idx + 1])
-            cells.append(channel)
+            for modality_idx in range(num_modalities):
+                channel_idx = _context_grid_channel_index(
+                    modality_idx=modality_idx,
+                    slice_idx=slice_idx,
+                    num_modalities=num_modalities,
+                    num_effective_slices=num_effective_slices,
+                    channel_layout=channel_layout,
+                )
+                channel = normalize_to_neg_one_to_one(sample_img_chw[channel_idx:channel_idx + 1])
+                cells.append(channel)
+        nrow = num_modalities
+    else:
+        # Display as [num_modalities rows, num_effective_slices cols].
+        for modality_idx in range(num_modalities):
+            for slice_idx in range(num_effective_slices):
+                channel_idx = _context_grid_channel_index(
+                    modality_idx=modality_idx,
+                    slice_idx=slice_idx,
+                    num_modalities=num_modalities,
+                    num_effective_slices=num_effective_slices,
+                    channel_layout=channel_layout,
+                )
+                channel = normalize_to_neg_one_to_one(sample_img_chw[channel_idx:channel_idx + 1])
+                cells.append(channel)
+        nrow = num_effective_slices
 
-    mini_grid = make_grid(cells, nrow=num_effective_slices, padding=0, normalize=False)
+    mini_grid = make_grid(cells, nrow=nrow, padding=0, normalize=False)
     if mini_grid.dim() != 3:
         raise RuntimeError(f"Unexpected mini-grid shape: {tuple(mini_grid.shape)}")
 
