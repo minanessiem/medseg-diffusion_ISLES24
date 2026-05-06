@@ -50,6 +50,7 @@ from src.training.checkpoint_utils import (
 print("[DEBUG:trainer.py] checkpoint_utils done", flush=True)
 
 import gc
+from contextlib import contextmanager
 from omegaconf import OmegaConf
 
 # AMP (Automatic Mixed Precision) support
@@ -62,6 +63,44 @@ from src.utils.ensemble import (
     should_log_ensembled_image,
 )
 print("[DEBUG:trainer.py] All imports complete!", flush=True)
+
+
+@contextmanager
+def _rank0_inference_unwrapped_model(diffusion, strategy):
+    """
+    Temporarily unwrap DDP model for rank-0-only inference blocks.
+
+    Why:
+    During validation/image logging we run heavy sampling only on main process
+    and park non-main ranks at a barrier. If the model stays wrapped in DDP,
+    forward/sampling may trigger distributed collectives that other ranks never
+    enter, leading to NCCL watchdog timeouts.
+    """
+    original_model = getattr(diffusion, "model", None)
+    original_wrapped_model = getattr(diffusion, "wrapped_model", None)
+    swapped = False
+
+    if (
+        strategy == "ddp"
+        and is_main_process()
+        and isinstance(original_model, nn.parallel.DistributedDataParallel)
+    ):
+        base_model = original_model.module
+        diffusion.model = base_model
+        if original_wrapped_model is not None:
+            from src.models.wrappers.conditional_wrapper import ConditionalModelWrapper
+
+            condition_key = getattr(original_wrapped_model, "condition_key", "conditioned_image")
+            diffusion.wrapped_model = ConditionalModelWrapper(base_model, condition_key=condition_key)
+        swapped = True
+
+    try:
+        yield
+    finally:
+        if swapped:
+            diffusion.model = original_model
+            if original_wrapped_model is not None:
+                diffusion.wrapped_model = original_wrapped_model
 
 def get_optimizer_and_scheduler(cfg, model):
     """
@@ -984,15 +1023,16 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     and len(gpu_ids) > 1
                 )
                 
-                if use_multi_gpu_val:
-                    from src.utils.valid_utils import validate_one_epoch_multigpu
-                    val_results = validate_one_epoch_multigpu(
-                        diffusion, val_dataloader, metrics, logger, global_step, cfg, gpu_ids
-                    )
-                else:
-                    val_results = validate_one_epoch(
-                        diffusion, val_dataloader, metrics, logger, global_step, cfg
-                    )
+                with _rank0_inference_unwrapped_model(diffusion, strategy):
+                    if use_multi_gpu_val:
+                        from src.utils.valid_utils import validate_one_epoch_multigpu
+                        val_results = validate_one_epoch_multigpu(
+                            diffusion, val_dataloader, metrics, logger, global_step, cfg, gpu_ids
+                        )
+                    else:
+                        val_results = validate_one_epoch(
+                            diffusion, val_dataloader, metrics, logger, global_step, cfg
+                        )
                 
                 logger.log_metrics_dict("val", val_results, global_step, accumulator='val')
                 logger.dumpkvs(global_step, accumulator='val')
@@ -1047,9 +1087,10 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         # Ensembled segmentation image logging
         if should_log_ensembled_image(cfg, global_step):
             if main_process:
-                log_ensembled_segmentation(
-                    diffusion, val_dataloader, logger, global_step, cfg
-                )
+                with _rank0_inference_unwrapped_model(diffusion, strategy):
+                    log_ensembled_segmentation(
+                        diffusion, val_dataloader, logger, global_step, cfg
+                    )
                 gc.collect()
                 torch.cuda.empty_cache()
             barrier_if_needed()
@@ -1059,7 +1100,7 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
             if main_process:
                 print(f"Starting forward image logging at step {global_step}")
                 # Log forward process (accumulate fresh batches from dataloader)
-                with torch.no_grad():
+                with _rank0_inference_unwrapped_model(diffusion, strategy), torch.no_grad():
                     collected_masks = []
                     collected_imgs = []
                     dl_iter = iter(train_dataloader)  # Use iterator
@@ -1172,93 +1213,93 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         if cfg.logging.enable_sampling_snapshots and global_step % cfg.logging.sampling_log_interval == 0 and global_step >= cfg.logging.min_log_step:
             if main_process:
                 print(f"Starting sampling logging at step {global_step}")
-                
-                # Select dataloader
-                if sample_dataloader is None and cfg.logging.log_test_samples:
-                    print("Warning: sample_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
-                dl = sample_dataloader if cfg.logging.log_test_samples and sample_dataloader is not None else train_dataloader
-                if dl is None:
-                    print("Warning: No dataloader available for sampling – skipping snapshot logging.")
-                else:
-                    # Accumulate samples (images + masks) until we have num_log_samples
-                    collected_imgs, collected_masks = [], []
-                    remaining = cfg.logging.num_log_samples
-                    dl_iter = iter(dl)  # Use iterator to avoid recreating loader each time
-                    while len(collected_imgs) < cfg.logging.num_log_samples:
-                        try:
-                            b_img, b_mask, *_ = next(dl_iter)
-                        except StopIteration:
-                            dl_iter = iter(dl)  # Restart if exhausted
-                            b_img, b_mask, *_ = next(dl_iter)
-                        for j in range(b_img.shape[0]):
-                            if len(collected_imgs) >= cfg.logging.num_log_samples:
-                                break
-                            if b_mask[j].sum() > 0:  # Only add non-empty
-                                collected_imgs.append(b_img[j:j+1])
-                                collected_masks.append(b_mask[j:j+1])
-                    sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
-                    sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
-                    num_samples = sample_imgs.shape[0]
-                    
-                    # Build composite grid
-                    all_images = []
-                    labels = []
-                    num_input_channels = sample_imgs.shape[1]
-                    modality_names = _resolve_modality_names_for_channels(cfg, num_input_channels)
-                    num_modalities = len(modality_names)
-                    use_context_panel = _should_use_context_modalities_panel(
-                        cfg, num_input_channels
-                    )
-                    # Determine timesteps that sample_with_snapshots will yield
-                    snapshots_per_sample = []
-                    snapshot_timesteps = []  # Track actual timesteps for labels
-                    for i in range(num_samples):
-                        snaps = list(diffusion.sample_with_snapshots(sample_imgs[i:i+1], cfg.logging.snapshot_step_interval))
-                        # snaps is list of (t, mask); keep order as yielded (descending t) then final 0
-                        if i == 0:  # Extract timesteps from first sample (same for all)
-                            snapshot_timesteps = [int(t) for t, _ in snaps]
-                        snapshots_per_sample.append([normalize_to_neg_one_to_one(m[1]) for m in snaps])  # Normalize snapshots to -1/1
-                    num_snapshots = len(snapshots_per_sample[0])
-                    
-                    # Labels per category
-                    modality_labels = [f"Modality: {name}" for name in modality_names]
-                    # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
-                    snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
-                    row_len = (1 if use_context_panel else num_modalities) + num_snapshots + 1
-                    
-                    for i in range(num_samples):
-                        if use_context_panel:
-                            context_panel = _build_context_modalities_panel(sample_imgs[i], cfg)
-                            row_panels = [context_panel]
-                            row_panels.extend(snapshots_per_sample[i])
-                            target_norm = normalize_to_neg_one_to_one(sample_masks[i])
-                            row_panels.append(target_norm)
-                            all_images.append(_concat_row_panels(row_panels))
-                            labels.append("Context Grid | Snapshots | Target")
-                        else:
-                            # append each modality channel individually
-                            for c in range(num_modalities):
-                                mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
-                                all_images.append(mod_channel)
-                                labels.append(modality_labels[c])
-                            # snapshots
-                            for snap in snapshots_per_sample[i]:
-                                all_images.append(snap)
-                            labels.extend(snapshot_labels)
-                            # target mask (normalize to match forward)
-                            target_norm = normalize_to_neg_one_to_one(sample_masks[i])
-                            all_images.append(target_norm)
-                            labels.append("Target")
-                    
-                    logger.log_image_grid(
-                        f"Sampling/Snapshots_Step_{global_step}",
-                        all_images,
-                        global_step,
-                        metrics=None,
-                        grid_layout='horizontal',
-                        labels=labels,
-                        per_sample_ncol=1 if use_context_panel else row_len,
-                    )
+                with _rank0_inference_unwrapped_model(diffusion, strategy):
+                    # Select dataloader
+                    if sample_dataloader is None and cfg.logging.log_test_samples:
+                        print("Warning: sample_dataloader is None but log_test_samples=true; falling back to train_dataloader.")
+                    dl = sample_dataloader if cfg.logging.log_test_samples and sample_dataloader is not None else train_dataloader
+                    if dl is None:
+                        print("Warning: No dataloader available for sampling – skipping snapshot logging.")
+                    else:
+                        # Accumulate samples (images + masks) until we have num_log_samples
+                        collected_imgs, collected_masks = [], []
+                        remaining = cfg.logging.num_log_samples
+                        dl_iter = iter(dl)  # Use iterator to avoid recreating loader each time
+                        while len(collected_imgs) < cfg.logging.num_log_samples:
+                            try:
+                                b_img, b_mask, *_ = next(dl_iter)
+                            except StopIteration:
+                                dl_iter = iter(dl)  # Restart if exhausted
+                                b_img, b_mask, *_ = next(dl_iter)
+                            for j in range(b_img.shape[0]):
+                                if len(collected_imgs) >= cfg.logging.num_log_samples:
+                                    break
+                                if b_mask[j].sum() > 0:  # Only add non-empty
+                                    collected_imgs.append(b_img[j:j+1])
+                                    collected_masks.append(b_mask[j:j+1])
+                        sample_imgs = torch.cat(collected_imgs, dim=0).to(cfg.device)
+                        sample_masks = torch.cat(collected_masks, dim=0).to(cfg.device)
+                        num_samples = sample_imgs.shape[0]
+                        
+                        # Build composite grid
+                        all_images = []
+                        labels = []
+                        num_input_channels = sample_imgs.shape[1]
+                        modality_names = _resolve_modality_names_for_channels(cfg, num_input_channels)
+                        num_modalities = len(modality_names)
+                        use_context_panel = _should_use_context_modalities_panel(
+                            cfg, num_input_channels
+                        )
+                        # Determine timesteps that sample_with_snapshots will yield
+                        snapshots_per_sample = []
+                        snapshot_timesteps = []  # Track actual timesteps for labels
+                        for i in range(num_samples):
+                            snaps = list(diffusion.sample_with_snapshots(sample_imgs[i:i+1], cfg.logging.snapshot_step_interval))
+                            # snaps is list of (t, mask); keep order as yielded (descending t) then final 0
+                            if i == 0:  # Extract timesteps from first sample (same for all)
+                                snapshot_timesteps = [int(t) for t, _ in snaps]
+                            snapshots_per_sample.append([normalize_to_neg_one_to_one(m[1]) for m in snaps])  # Normalize snapshots to -1/1
+                        num_snapshots = len(snapshots_per_sample[0])
+                        
+                        # Labels per category
+                        modality_labels = [f"Modality: {name}" for name in modality_names]
+                        # Use actual timesteps from sample_with_snapshots (works correctly for DDIM respacing)
+                        snapshot_labels = [f"t={t}" for t in snapshot_timesteps]
+                        row_len = (1 if use_context_panel else num_modalities) + num_snapshots + 1
+                        
+                        for i in range(num_samples):
+                            if use_context_panel:
+                                context_panel = _build_context_modalities_panel(sample_imgs[i], cfg)
+                                row_panels = [context_panel]
+                                row_panels.extend(snapshots_per_sample[i])
+                                target_norm = normalize_to_neg_one_to_one(sample_masks[i])
+                                row_panels.append(target_norm)
+                                all_images.append(_concat_row_panels(row_panels))
+                                labels.append("Context Grid | Snapshots | Target")
+                            else:
+                                # append each modality channel individually
+                                for c in range(num_modalities):
+                                    mod_channel = normalize_to_neg_one_to_one(sample_imgs[i, c:c+1])  # Normalize to -1/1 for black empty
+                                    all_images.append(mod_channel)
+                                    labels.append(modality_labels[c])
+                                # snapshots
+                                for snap in snapshots_per_sample[i]:
+                                    all_images.append(snap)
+                                labels.extend(snapshot_labels)
+                                # target mask (normalize to match forward)
+                                target_norm = normalize_to_neg_one_to_one(sample_masks[i])
+                                all_images.append(target_norm)
+                                labels.append("Target")
+                        
+                        logger.log_image_grid(
+                            f"Sampling/Snapshots_Step_{global_step}",
+                            all_images,
+                            global_step,
+                            metrics=None,
+                            grid_layout='horizontal',
+                            labels=labels,
+                            per_sample_ncol=1 if use_context_panel else row_len,
+                        )
             barrier_if_needed()
         
         # Training-metric-based checkpoint (if check_interval is set and not using validation)
