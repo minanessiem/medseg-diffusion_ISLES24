@@ -62,6 +62,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.train_utils import setup_seeds
 from src.data.loaders import get_dataloaders, validate_dataset_contract
+from src.data.loader_stack.factory import resolve_loader_contract
 
 
 def _is_set(value: object) -> bool:
@@ -85,7 +86,8 @@ def validate_converter_contract(cfg: DictConfig) -> None:
     dim = OmegaConf.select(cfg, "data_mode.dim")
     data_root = OmegaConf.select(cfg, "data_io.paths.data_root")
     split_file = OmegaConf.select(cfg, "data_io.paths.split_file")
-    dataset_id = OmegaConf.select(cfg, "dataset.id", default=OmegaConf.select(cfg, "dataset.name"))
+    dataset_id = OmegaConf.select(cfg, "dataset.id")
+    dataset_name = OmegaConf.select(cfg, "dataset.name")
     modalities = OmegaConf.select(cfg, "dataset.modalities")
     num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
 
@@ -96,8 +98,18 @@ def validate_converter_contract(cfg: DictConfig) -> None:
         )
     if dim != "2d":
         raise ValueError(f"nnUNet converter requires data_mode.dim='2d'. Got '{dim}'.")
-    if dataset_id != "isles24":
-        raise ValueError(f"nnUNet converter currently supports dataset.id='isles24' only. Got '{dataset_id}'.")
+    resolution = resolve_loader_contract(
+        dataset_id=dataset_id,
+        dataset_name=dataset_name,
+        loader_mode=loader_mode,
+    )
+    if resolution.capabilities.loader_module != "src.data.loader_stack.isles24_loader":
+        raise ValueError(
+            "scripts.nnunet.convert_isles24_2d_dataset_to_nnunet currently supports "
+            "dataset routes backed by src.data.loader_stack.isles24_loader only. "
+            f"Got dataset='{resolution.dataset_id}', "
+            f"loader_module='{resolution.capabilities.loader_module}'."
+        )
     if not _is_set(data_root):
         raise ValueError("nnUNet converter requires data_io.paths.data_root.")
     if not _is_set(split_file):

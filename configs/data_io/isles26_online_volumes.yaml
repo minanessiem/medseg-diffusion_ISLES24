@@ -1,0 +1,4 @@
+paths:
+  data_root: ${environment.dataset.data_root}
+  split_file: ${environment.dataset.split_file}
+  nnunet_root: null

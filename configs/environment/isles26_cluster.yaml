@@ -1,0 +1,9 @@
+dataset:
+  data_root: '/mnt/datasets/isles26_combined/atlas21_training_raw/Training_Raw'
+  split_file: '/mnt/datasets/isles26_combined/atlas21_training_raw/isles26_stratified_15pct.json'
+  nnunet_root: null
+training:
+  output_root: '/mnt/outputs/medsegdiff_isles26_outputs/'
+  model_save_dir: 'models/'
+  multi_gpu: false
+device: cuda
