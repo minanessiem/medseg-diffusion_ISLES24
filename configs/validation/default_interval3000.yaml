@@ -1,0 +1,4 @@
+defaults:
+  - default
+
+validation_interval: 3000

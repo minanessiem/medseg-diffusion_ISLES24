@@ -15,7 +15,8 @@ defaults:
   - override /scheduler: warmup_cosine_20Ksteps
   - override /diffusion: openai_ddim_50steps
   - override /logging: ddim_50steps
-  - override /validation: default
+  - override /validation: default_interval3000
+  - override /distribution: ddp_timeout500
 
 data_runtime:
   train_batch_size: 32
