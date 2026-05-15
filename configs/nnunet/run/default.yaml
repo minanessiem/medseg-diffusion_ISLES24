@@ -1,0 +1,20 @@
+# @package _global_
+#
+# Generic nnU-Net command-runner defaults (environment-agnostic).
+# Keep this group focused on nnU-Net command semantics only.
+
+nnunet_run:
+  default_fold: all
+  default_checkpoint: checkpoint_final.pth
+  save_probabilities: false
+
+  # Optional fallback process counts for runner use when CLI/config does not set them.
+  fallback_processes:
+    preprocess: null
+    predict_preprocessing: null
+    predict_segmentation: null
+
+  # Optional dimension to nnU-Net configuration mapping.
+  configuration_by_dim:
+    "2d": 2d
+    "3d": 3d_fullres

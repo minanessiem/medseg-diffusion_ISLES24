@@ -1,0 +1,12 @@
+# @package _global_
+#
+# ISLES26 conversion preset (cluster environment, T1 raw modality).
+# Canonical usage:
+#   python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+#       --config-name=nnunet/convert/isles26_cluster_t1raw
+
+defaults:
+  - cluster
+  - /environment: isles26_cluster
+  - /data_profile: isles26_2d_online_t1raw
+  - _self_

@@ -1,40 +1,48 @@
 #!/usr/bin/env python3
 """
-Convert ISLES24 2D dataset to nnU-Net v2 format using our preprocessing pipeline.
+Convert 2D online-slice datasets to nnU-Net v2 format.
 
-This script is specifically designed for ISLES24Dataset2D, which provides
-preprocessed 2D axial slices. It exports these slices to nnU-Net format
-for benchmarking against our diffusion-based segmentation method.
+This script currently supports ISLES24/ISLES26 online 3D->2D routes loaded via
+get_dataloaders(). It exports each slice to nnU-Net-compatible 2D NIfTI files
+for benchmarking against diffusion-based segmentation methods.
 
-Dataset-specific assumptions:
-    - Uses ISLES24Dataset2D via get_dataloaders()
-    - Parses slice paths in format "{caseID}_slice{idx}"
+Dataset assumptions:
+    - Uses data_mode.loader_mode = online_slices_3d_to_2d
+    - Parses virtual paths in format "{caseID}_slice{idx}"
     - Outputs 2D NIfTI files with shape [H, W, 1]
 
-For 3D volumes or other datasets, create a new converter script
-(e.g., convert_isles24_3d_dataset_to_nnunet.py).
+For full-volume 3D export routes, use the generic conversion entrypoint once
+introduced by the nnU-Net pipeline refactor.
 
 Usage:
     # Local environment - test mode (default - processes limited slices)
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
-        --config-name=convert_nnunet_local
+        --config-name=nnunet/convert/isles24_local
     
     # Cluster environment
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
-        --config-name=convert_nnunet_cluster
+        --config-name=nnunet/convert/isles24_cluster_baseline
+
+    # ISLES26 (local, T1 raw)
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=nnunet/convert/isles26_local_t1raw
+
+    # ISLES26 (cluster, T1 raw)
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=nnunet/convert/isles26_cluster_t1raw
     
     # Full export
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
-        --config-name=convert_nnunet_local nnunet.test=false
+        --config-name=nnunet/convert/isles24_local nnunet.test=false
     
     # Override output location
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
-        --config-name=convert_nnunet_local \
+        --config-name=nnunet/convert/isles24_local \
         nnunet.output_dir=/mnt/data/nnUNet_raw
     
     # Different fold
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
-        --config-name=convert_nnunet_local \
+        --config-name=nnunet/convert/isles24_local \
         dataset.fold=2
 """
 
@@ -77,8 +85,8 @@ def validate_converter_contract(cfg: DictConfig) -> None:
     """
     Validate converter-specific requirements on top of the global data contract.
 
-    This converter exports from the online 3D->2D slicing path and is intentionally
-    not generic over all loader modes.
+    This converter exports from the online 3D->2D slicing path and currently
+    supports ISLES24/ISLES26 loader routes that emit "{case_id}_slice{index}".
     """
     validate_dataset_contract(cfg)
 
@@ -103,10 +111,14 @@ def validate_converter_contract(cfg: DictConfig) -> None:
         dataset_name=dataset_name,
         loader_mode=loader_mode,
     )
-    if resolution.capabilities.loader_module != "src.data.loader_stack.isles24_loader":
+    supported_loader_modules = {
+        "src.data.loader_stack.isles24_loader",
+        "src.data.loader_stack.isles26_loader",
+    }
+    if resolution.capabilities.loader_module not in supported_loader_modules:
         raise ValueError(
             "scripts.nnunet.convert_isles24_2d_dataset_to_nnunet currently supports "
-            "dataset routes backed by src.data.loader_stack.isles24_loader only. "
+            "dataset routes backed by ISLES24/ISLES26 online slice loaders only. "
             f"Got dataset='{resolution.dataset_id}', "
             f"loader_module='{resolution.capabilities.loader_module}'."
         )
@@ -416,7 +428,7 @@ def write_provenance_jsonl(records: List[Dict[str, Any]], output_path: Path) -> 
             handle.write("\n")
 
 
-@hydra.main(config_path="../../configs", config_name="convert_nnunet_local", version_base=None)
+@hydra.main(config_path="../../configs", config_name="nnunet/convert/isles24_local", version_base=None)
 def main(cfg: DictConfig):
     """
     Main conversion entry point.
@@ -460,7 +472,7 @@ def main(cfg: DictConfig):
     
     # === 6. Print configuration summary ===
     print(f"\n{'='*60}")
-    print(f"ISLES24 2D Dataset → nnU-Net Conversion")
+    print(f"{_resolve_dataset_label(cfg)} 2D Dataset → nnU-Net Conversion")
     print(f"{'='*60}")
     print(f"Mode: {'TEST (limited slices)' if is_test_mode else 'FULL EXPORT'}")
     if is_test_mode:

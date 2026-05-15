@@ -8,7 +8,7 @@ as a non-interactive SLURM job.
 Usage:
     python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
         [--time 02:00:00] [--cpus 64] [--mem 64G] \
-        [--config-name convert_nnunet_cluster] \
+        [--config-name nnunet/convert/isles24_cluster_baseline] \
         [hydra_overrides...] \
         [--dry-run]
 
@@ -133,8 +133,8 @@ def parse_arguments() -> argparse.Namespace:
     config_group.add_argument(
         '--config-name',
         type=str,
-        default='convert_nnunet_cluster',
-        help='Hydra config name (default: convert_nnunet_cluster)'
+        default='nnunet/convert/isles24_cluster_baseline',
+        help='Hydra config name (default: nnunet/convert/isles24_cluster_baseline)'
     )
     
     # Hydra overrides as positional (third)

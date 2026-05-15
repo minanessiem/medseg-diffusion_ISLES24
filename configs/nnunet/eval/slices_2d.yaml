@@ -1,0 +1,10 @@
+# @package _global_
+#
+# nnU-Net evaluation policy preset for 2D slice-form predictions.
+
+defaults:
+  - /nnunet/eval: default
+  - _self_
+
+nnunet_eval:
+  input_format: slices_2d

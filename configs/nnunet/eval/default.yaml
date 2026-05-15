@@ -1,0 +1,20 @@
+# @package _global_
+#
+# Generic nnU-Net evaluation policy defaults.
+# Runtime scripts should compose this with dataset/environment configs.
+
+nnunet_eval:
+  # One of: auto, slices_2d, volumes_3d.
+  input_format: auto
+
+  # Supported levels: slice, volume.
+  # Keep both enabled by default for comprehensive reporting.
+  levels:
+    - slice
+    - volume
+
+  # Fixed threshold for post-threshold metrics.
+  threshold: 0.5
+
+  # If true, skip pairs with mismatched shapes instead of raising.
+  allow_shape_mismatch: false

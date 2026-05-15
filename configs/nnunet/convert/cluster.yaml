@@ -1,0 +1,23 @@
+# @package _global_
+#
+# Generic nnU-Net conversion base preset (cluster runtime profile).
+# Compose this with dataset-specific presets that define environment/data_profile.
+#
+# Override examples:
+#   Full export:     nnunet.test=false
+#   Different fold:  dataset.fold=2
+#   Custom output:   nnunet.output_dir=/mnt/data/nnUNet_raw
+
+defaults:
+  - /model: medsegdiff_256_4l_32c_6x4a_128t_1btl_medium_simple  # For image_size
+  - /data_runtime: cluster
+  - /augmentation: none  # No augmentation for clean export
+  - /validation: default  # Needed for val_batch_size in get_dataloaders
+  - /nnunet: cluster
+  - _self_
+
+random_seed: 42
+
+hydra:
+  run:
+    dir: '.'
