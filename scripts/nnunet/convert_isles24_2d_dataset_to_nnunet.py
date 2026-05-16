@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-Convert 2D online-slice datasets to nnU-Net v2 format.
+Convert nnU-Net datasets from config-driven data loader routes.
 
-This script currently supports ISLES24/ISLES26 online 3D->2D routes loaded via
-get_dataloaders(). It exports each slice to nnU-Net-compatible 2D NIfTI files
-for benchmarking against diffusion-based segmentation methods.
+Supported conversion modes:
+    - data_mode.loader_mode = online_slices_3d_to_2d (2D slice export)
+    - data_mode.loader_mode = full_volumes_3d (3D volume export)
 
-Dataset assumptions:
-    - Uses data_mode.loader_mode = online_slices_3d_to_2d
-    - Parses virtual paths in format "{caseID}_slice{idx}"
-    - Outputs 2D NIfTI files with shape [H, W, 1]
-
-For full-volume 3D export routes, use the generic conversion entrypoint once
-introduced by the nnU-Net pipeline refactor.
+Supported dataset routes currently include ISLES24/ISLES26 through existing
+loader stack contracts.
 
 Usage:
     # Local environment - test mode (default - processes limited slices)
@@ -30,6 +25,14 @@ Usage:
     # ISLES26 (cluster, T1 raw)
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
         --config-name=nnunet/convert/isles26_cluster_t1raw
+
+    # ISLES24 3D (local, baseline modalities)
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=nnunet/convert/isles24_local_3d_baseline
+
+    # ISLES26 3D (cluster, T1 raw)
+    python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+        --config-name=nnunet/convert/isles26_cluster_3d_t1raw
     
     # Full export
     python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \

@@ -78,6 +78,9 @@ class SliceExportStrategy:
     Export strategy for online 3D-to-2D slice datasets.
     """
 
+    sample_unit_name = "slices"
+    mode_key = "slices_2d"
+
     @staticmethod
     def _build_export_affine(
         slice_meta: Dict[str, Any],
@@ -288,6 +291,283 @@ class SliceExportStrategy:
         """
         Export a split using either sequential or parallel execution.
         """
+        if use_parallel:
+            return self._export_dataset_parallel(
+                dataset=dataset,
+                images_dir=images_dir,
+                labels_dir=labels_dir,
+                num_channels=num_channels,
+                desc=desc,
+                max_slices=max_slices,
+                num_workers=num_workers,
+                split_name=split_name,
+            )
+        return self._export_dataset_sequential(
+            dataset=dataset,
+            images_dir=images_dir,
+            labels_dir=labels_dir,
+            num_channels=num_channels,
+            desc=desc,
+            max_slices=max_slices,
+            split_name=split_name,
+        )
+
+
+class VolumeExportStrategy:
+    """
+    Export strategy for full-volume 3D datasets.
+    """
+
+    sample_unit_name = "cases"
+    mode_key = "volumes_3d"
+
+    @staticmethod
+    def _to_numpy(data: Any) -> np.ndarray:
+        if hasattr(data, "detach"):
+            data = data.detach()
+        if hasattr(data, "cpu"):
+            data = data.cpu()
+        if hasattr(data, "numpy"):
+            return data.numpy()
+        return np.asarray(data)
+
+    @staticmethod
+    def _extract_path(value: Any) -> str:
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                return ""
+            value = value[0]
+        if isinstance(value, str) and len(value.strip()) > 0:
+            candidate = Path(value)
+            if candidate.exists():
+                return str(candidate)
+        return ""
+
+    def _resolve_source_path(self, dataset: Any, idx: int) -> str:
+        database = getattr(dataset, "database", None)
+        if not isinstance(database, list) or idx < 0 or idx >= len(database):
+            return ""
+
+        record = database[idx]
+        if not isinstance(record, dict):
+            return ""
+
+        candidate_keys: List[str] = []
+        for key in getattr(dataset, "base_modalities", []) or []:
+            candidate_keys.append(str(key))
+        for modality in getattr(dataset, "modalities", []) or []:
+            candidate_keys.append(str(modality).split("_")[0])
+
+        # Keep original order while deduplicating.
+        seen = set()
+        ordered_keys: List[str] = []
+        for key in candidate_keys:
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered_keys.append(key)
+
+        for key in ordered_keys:
+            path = self._extract_path(record.get(key))
+            if path:
+                return path
+
+        ignored_keys = {"label", "caseID", "fold", "siteID", "metadata", "metadata_csv"}
+        for key, value in record.items():
+            if key in ignored_keys:
+                continue
+            path = self._extract_path(value)
+            if path:
+                return path
+        return ""
+
+    @staticmethod
+    def _resolve_metadata_from_source(
+        source_path: str,
+        fallback_shape: List[int],
+    ) -> Dict[str, Any]:
+        if source_path and Path(source_path).exists():
+            try:
+                source_img = nib.load(source_path)
+                affine = np.asarray(source_img.affine, dtype=np.float64)
+                spacing = [float(value) for value in source_img.header.get_zooms()[:3]]
+                axcodes = [str(code) for code in nib.aff2axcodes(affine)]
+                volume_shape = [int(dim) for dim in source_img.shape[:3]]
+                return {
+                    "source_path": source_path,
+                    "source_affine": affine.tolist(),
+                    "source_spacing_xyz": spacing,
+                    "source_axcodes": axcodes,
+                    "source_volume_shape": volume_shape,
+                    "export_affine": affine.tolist(),
+                }
+            except Exception:
+                pass
+
+        identity = np.eye(4, dtype=np.float64)
+        return {
+            "source_path": source_path,
+            "source_affine": identity.tolist(),
+            "source_spacing_xyz": [1.0, 1.0, 1.0],
+            "source_axcodes": ["R", "A", "S"],
+            "source_volume_shape": fallback_shape,
+            "export_affine": identity.tolist(),
+        }
+
+    @staticmethod
+    def _write_nifti_with_affine(data: np.ndarray, affine: np.ndarray, output_path: Path) -> None:
+        nii_img = nib.Nifti1Image(data, affine=affine)
+        nii_img.set_qform(affine, code=1)
+        nii_img.set_sform(affine, code=1)
+        nib.save(nii_img, output_path)
+
+    def _process_single_case(
+        self,
+        idx: int,
+        dataset: Any,
+        images_dir: Path,
+        labels_dir: Path,
+        num_channels: int,
+        split_name: str,
+    ) -> Dict[str, Any]:
+        sample = dataset[idx]
+        if len(sample) < 3:
+            raise ValueError(
+                "VolumeExportStrategy expects dataset samples as (image, label, case_id). "
+                f"Got sample length {len(sample)}."
+            )
+        image, label, case_id = sample[0], sample[1], sample[2]
+        safe_case_id = str(case_id)
+
+        image_np = self._to_numpy(image)
+        if image_np.ndim != 4:
+            raise ValueError(
+                f"Volume export expects image shape [C,H,W,D], got {tuple(image_np.shape)} "
+                f"for case '{safe_case_id}'."
+            )
+        if int(image_np.shape[0]) != int(num_channels):
+            raise ValueError(
+                "Volume export channel mismatch: "
+                f"expected {num_channels}, got {int(image_np.shape[0])} for case '{safe_case_id}'."
+            )
+
+        label_np = self._to_numpy(label)
+        if label_np.ndim == 4 and label_np.shape[0] == 1:
+            label_np = label_np[0]
+        if label_np.ndim != 3:
+            raise ValueError(
+                f"Volume export expects label shape [H,W,D] or [1,H,W,D], got "
+                f"{tuple(label_np.shape)} for case '{safe_case_id}'."
+            )
+
+        fallback_shape = [int(dim) for dim in image_np.shape[-3:]]
+        source_path = self._resolve_source_path(dataset, idx)
+        metadata = self._resolve_metadata_from_source(source_path, fallback_shape=fallback_shape)
+        export_affine = np.asarray(metadata["export_affine"], dtype=np.float64)
+
+        image_files: List[str] = []
+        for ch_idx in range(num_channels):
+            ch_volume = np.asarray(image_np[ch_idx], dtype=np.float32)
+            filename = f"{safe_case_id}_{ch_idx:04d}.nii.gz"
+            self._write_nifti_with_affine(ch_volume, export_affine, images_dir / filename)
+            image_files.append(filename)
+
+        label_filename = f"{safe_case_id}.nii.gz"
+        label_volume = np.asarray(label_np, dtype=np.uint8)
+        self._write_nifti_with_affine(label_volume, export_affine, labels_dir / label_filename)
+
+        return {
+            "split": split_name,
+            "safe_case_id": safe_case_id,
+            "case_id": safe_case_id,
+            "image_files": image_files,
+            "label_file": label_filename,
+            "source_path": metadata["source_path"],
+            "source_affine": metadata["source_affine"],
+            "source_spacing_xyz": metadata["source_spacing_xyz"],
+            "source_axcodes": metadata["source_axcodes"],
+            "source_volume_shape": metadata["source_volume_shape"],
+            "export_affine": metadata["export_affine"],
+            "post_export_shape_hwd": fallback_shape,
+        }
+
+    def _export_dataset_sequential(
+        self,
+        dataset: Any,
+        images_dir: Path,
+        labels_dir: Path,
+        num_channels: int,
+        desc: str,
+        max_slices: Optional[int] = None,
+        split_name: str = "unknown",
+    ) -> Tuple[set, List[Dict[str, Any]]]:
+        case_ids = set()
+        records: List[Dict[str, Any]] = []
+
+        total_cases = len(dataset)
+        num_to_process = min(max_slices, total_cases) if max_slices else total_cases
+
+        for idx in tqdm(range(num_to_process), desc=desc):
+            record = self._process_single_case(
+                idx,
+                dataset,
+                images_dir,
+                labels_dir,
+                num_channels,
+                split_name=split_name,
+            )
+            case_ids.add(record["safe_case_id"])
+            records.append(record)
+
+        return case_ids, records
+
+    def _export_dataset_parallel(
+        self,
+        dataset: Any,
+        images_dir: Path,
+        labels_dir: Path,
+        num_channels: int,
+        desc: str,
+        max_slices: Optional[int] = None,
+        num_workers: int = 32,
+        split_name: str = "unknown",
+    ) -> Tuple[set, List[Dict[str, Any]]]:
+        total_cases = len(dataset)
+        num_to_process = min(max_slices, total_cases) if max_slices else total_cases
+
+        case_ids = set()
+        records: List[Dict[str, Any]] = []
+
+        process_fn = partial(
+            self._process_single_case,
+            dataset=dataset,
+            images_dir=images_dir,
+            labels_dir=labels_dir,
+            num_channels=num_channels,
+            split_name=split_name,
+        )
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(process_fn, idx): idx for idx in range(num_to_process)}
+            for future in tqdm(as_completed(futures), total=num_to_process, desc=desc):
+                record = future.result()
+                case_ids.add(record["safe_case_id"])
+                records.append(record)
+
+        return case_ids, records
+
+    def export_split(
+        self,
+        dataset: Any,
+        images_dir: Path,
+        labels_dir: Path,
+        num_channels: int,
+        desc: str,
+        max_slices: Optional[int],
+        split_name: str,
+        use_parallel: bool,
+        num_workers: int,
+    ) -> Tuple[set, List[Dict[str, Any]]]:
         if use_parallel:
             return self._export_dataset_parallel(
                 dataset=dataset,
