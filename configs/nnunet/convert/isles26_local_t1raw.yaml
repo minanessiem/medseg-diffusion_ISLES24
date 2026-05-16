@@ -2,7 +2,7 @@
 #
 # ISLES26 conversion preset (local environment, T1 raw modality).
 # Canonical usage:
-#   python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+#   python3 -m scripts.nnunet.convert_to_nnunet \
 #       --config-name=nnunet/convert/isles26_local_t1raw
 
 defaults:

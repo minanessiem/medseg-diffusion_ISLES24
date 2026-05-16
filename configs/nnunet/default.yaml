@@ -1,5 +1,5 @@
 # nnU-Net export configuration
-# Used by scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py
+# Used by scripts/nnunet/convert_to_nnunet.py
 
 # Output settings
 output_dir: './nnunet_raw'           # Base output directory (nnUNet_raw equivalent)

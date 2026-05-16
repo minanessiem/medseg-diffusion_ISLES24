@@ -89,7 +89,7 @@ Current preferred direction is canonical nested config names under `configs/nnun
 
 ## 5) Components of Interest
 
-- Conversion script: `scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py`
+- Conversion script: `scripts/nnunet/convert_to_nnunet.py`
 - Planned conversion core modules:
   - `scripts/nnunet/core/conversion_core.py`
   - `scripts/nnunet/core/exporters.py`
@@ -124,7 +124,7 @@ Phase-2 extraction uses a deliberately lightweight split:
 
 - `conversion_core.py`: config validation/resolution, strategy selection, orchestration.
 - `exporters.py`: concrete exporter implementations (slice first, volume next).
-- existing converter script remains a thin compatibility entrypoint during migration.
+- converter entrypoint is the canonical generic script (`convert_to_nnunet.py`).
 
 ### 6.2 Generic evaluation entrypoint
 
@@ -186,7 +186,7 @@ No path roots, no cluster/local resource duplication in this group.
 After implementation:
 
 - Generic runtime scripts exist for convert/run/eval.
-- Legacy scripts still work as wrappers with deprecation warnings.
+- Conversion uses canonical generic entrypoints (no legacy converter wrapper).
 - Configs are more orderly under `configs/nnunet/{convert,eval,run}`.
 - Environment remains the single source of local/cluster differences.
 - ISLES24 2D and ISLES26 3D nnU-Net workflows both operate from config composition.
@@ -223,7 +223,7 @@ After implementation:
 - A user can run conversion/evaluation generically using `--config-name` presets under `configs/nnunet/...` without selecting dataset-specific script files.
 - Local/cluster differences are resolved via `environment` composition, not duplicated `nnunet_run` local/cluster files.
 - Login-node runners remain dependency-light and reuse existing shared config/CLI helper code.
-- Legacy commands remain functional during migration window.
+- Evaluation legacy commands remain functional during migration window.
 
 ## CAP v2: Generic nnU-Net Pipeline (Config-First, Cluster-Safe)
 
@@ -231,13 +231,13 @@ After implementation:
 - Implement a generic nnU-Net workflow with three entrypoints: `convert`, `run`, `evaluate`.
 - Keep strict separation between runtime scripts and login-node `slurm_runners`.
 - Reuse existing config ecosystem (`data_profile`, `data_mode`, `data_io`, `environment`, `data_runtime`, `validation`, `model`, `nnunet`) as primary sources of truth.
-- Reorganize config files under `configs/nnunet/{convert,eval,run}` while preserving old entry aliases during migration.
+- Reorganize config files under `configs/nnunet/{convert,eval,run}` with canonical nested entry names.
 - Avoid package-structure refactors; reuse `scripts/slurm/utils/commandline_utils.py` and `scripts/slurm/single_job_runner.py` directly.
 
 ---
 
 ## Phase 0 — Baseline Lock and Regression Contracts
-- Record current behavior for `scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py`, `scripts/nnunet/slurm_runners/run_nnunet_command.py`, and current nnU-Net eval scripts.
+- Record current behavior for `scripts/nnunet/convert_to_nnunet.py`, `scripts/nnunet/slurm_runners/run_nnunet_command.py`, and current nnU-Net eval scripts.
 - Capture expected artifacts: folder layout, naming conventions, `dataset.json` keys, metrics report files, SLURM dry-run outputs.
 - Create a baseline document at `docs/nnunet_baseline_parity_contract.md`.
 - Validation: parity contract is explicit and executable as checklist.
@@ -269,12 +269,11 @@ After implementation:
 - Validation: ISLES26 3D conversion produces valid nnU-Net raw dataset structure and counts.
 - Rollback: keep volume strategy opt-in until validation matrix is green.
 
-## Phase 4 — Generic Conversion Entrypoint and Compatibility Wrapper
+## Phase 4 — Generic Conversion Entrypoint and Rename Completion
 - Add `scripts/nnunet/convert_to_nnunet.py` as the canonical conversion entrypoint.
-- Convert `scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py` to thin compatibility wrapper with deprecation warning.
-- Ensure wrapper passes through Hydra overrides transparently.
-- Validation: old and new commands generate equivalent ISLES24 2D artifacts.
-- Rollback: maintain old converter as primary command target temporarily.
+- Remove `scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py` and update references/messages/tests to generic naming.
+- Validation: canonical conversion command remains functional for ISLES24/ISLES26 and 2D/3D config presets.
+- Rollback: restore deleted legacy converter module from git if immediate fallback is needed.
 
 ## Phase 5 — Generic nnU-Net Evaluation Entrypoint
 - Add `scripts/nnunet/evaluate_nnunet_results.py` as canonical evaluator.
@@ -345,7 +344,7 @@ This ordering minimizes risk by preserving current behavior while adding generic
 ---
 
 ## Rollback and Contingencies
-- Keep legacy scripts as wrappers until all parity checks pass.
+- Keep legacy wrappers where explicitly retained (evaluation path), but conversion uses canonical naming only.
 - Reintroduce top-level config aliases (`convert_nnunet_*`) only as temporary shims if migration friction appears.
 - Gate auto-inference behavior in runners with explicit flags.
 - Prefer additive changes; avoid deleting old paths in this CAP.

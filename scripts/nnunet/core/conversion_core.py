@@ -128,7 +128,7 @@ def validate_converter_contract(cfg: DictConfig) -> None:
     }
     if resolution.capabilities.loader_module not in supported_loader_modules:
         raise ValueError(
-            "scripts.nnunet.convert_isles24_2d_dataset_to_nnunet currently supports "
+            "scripts.nnunet.convert_to_nnunet currently supports "
             "dataset routes backed by ISLES24/ISLES26 slice/volume loaders only. "
             f"Got dataset='{resolution.dataset_id}', "
             f"loader_module='{resolution.capabilities.loader_module}'."
@@ -372,7 +372,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
 
     with (request.dataset_folder / "dataset.json").open("w", encoding="utf-8") as handle:
         json.dump(dataset_json, handle, indent=2)
-    provenance_path = request.dataset_folder / "slice_provenance.jsonl"
+    provenance_path = request.dataset_folder / "export_provenance.jsonl"
     write_provenance_jsonl(provenance_records, provenance_path)
 
     print(f"\n{'=' * 60}")
@@ -386,7 +386,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
     print("\nOutput structure:")
     print(f"  {request.dataset_folder}/")
     print("  ├── dataset.json")
-    print(f"  ├── slice_provenance.jsonl ({len(provenance_records)} records)")
+    print(f"  ├── export_provenance.jsonl ({len(provenance_records)} records)")
     print(f"  ├── imagesTr/  ({num_training * num_channels} files)")
     print(f"  ├── labelsTr/  ({num_training} files)")
     print(f"  ├── imagesTs/  ({num_test * num_channels} files)")

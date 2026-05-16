@@ -2,7 +2,7 @@
 #
 # ISLES26 conversion preset (cluster environment, T1 raw modality, 3D volumes).
 # Canonical usage:
-#   python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet \
+#   python3 -m scripts.nnunet.convert_to_nnunet \
 #       --config-name=nnunet/convert/isles26_cluster_3d_t1raw
 
 defaults:

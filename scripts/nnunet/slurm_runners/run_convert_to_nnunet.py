@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Submit ISLES24 2D dataset conversion to nnU-Net format as a SLURM job.
+Submit dataset conversion to nnU-Net format as a SLURM job.
 
-This script wraps convert_isles24_2d_dataset_to_nnunet.py and submits it
+This script wraps convert_to_nnunet.py and submits it
 as a non-interactive SLURM job.
 
 Usage:
-    python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
+    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
         [--time 02:00:00] [--cpus 64] [--mem 64G] \
         [--config-name nnunet/convert/isles24_cluster_baseline] \
         [hydra_overrides...] \
@@ -14,26 +14,26 @@ Usage:
 
 Examples:
     # Default cluster conversion (test mode)
-    python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py
+    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py
 
     # Full export with custom fold
-    python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
+    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
         nnunet.test=false dataset.fold=2
 
     # Custom resources then overrides
-    python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
+    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
         --time 04:00:00 --cpus 32 --mem 64G \
         nnunet.test=false
 
     # Dry run to see what would be submitted
-    python scripts/nnunet/slurm_runners/run_convert_isles24_2d_to_nnunet.py \
+    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
         nnunet.test=false --dry-run
 """
 
 import argparse
 import os
-import sys
 import re
+import sys
 from datetime import datetime
 
 # Add project root to path
@@ -90,88 +90,88 @@ def _resolve_dataset_identity(config_name: str, hydra_overrides: list[str]) -> t
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Submit ISLES24 2D to nnU-Net conversion as SLURM job',
+        description="Submit dataset conversion to nnU-Net as SLURM job",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog=__doc__,
     )
-    
+
     # SLURM resource arguments (first)
-    slurm_group = parser.add_argument_group('SLURM resources')
+    slurm_group = parser.add_argument_group("SLURM resources")
     slurm_group.add_argument(
-        '--partition',
+        "--partition",
         type=str,
         default=None,
-        help=f'SLURM partition (default: {BASE_CONFIG["partition"]})'
+        help=f"SLURM partition (default: {BASE_CONFIG['partition']})",
     )
     slurm_group.add_argument(
-        '--qos',
+        "--qos",
         type=str,
         default=None,
-        help=f'SLURM QoS (default: {BASE_CONFIG["qos"]})'
+        help=f"SLURM QoS (default: {BASE_CONFIG['qos']})",
     )
     slurm_group.add_argument(
-        '--time',
+        "--time",
         type=str,
         default=CONVERT_DEFAULTS["time"],
-        help=f'Time limit (default: {CONVERT_DEFAULTS["time"]})'
+        help=f"Time limit (default: {CONVERT_DEFAULTS['time']})",
     )
     slurm_group.add_argument(
-        '--cpus',
+        "--cpus",
         type=int,
         default=CONVERT_DEFAULTS["cpus_per_task"],
-        help=f'CPUs per task (default: {CONVERT_DEFAULTS["cpus_per_task"]})'
+        help=f"CPUs per task (default: {CONVERT_DEFAULTS['cpus_per_task']})",
     )
     slurm_group.add_argument(
-        '--mem',
+        "--mem",
         type=str,
         default=CONVERT_DEFAULTS["mem"],
-        help=f'Memory allocation (default: {CONVERT_DEFAULTS["mem"]})'
+        help=f"Memory allocation (default: {CONVERT_DEFAULTS['mem']})",
     )
-    
+
     # Configuration (second)
-    config_group = parser.add_argument_group('Configuration')
+    config_group = parser.add_argument_group("Configuration")
     config_group.add_argument(
-        '--config-name',
+        "--config-name",
         type=str,
-        default='nnunet/convert/isles24_cluster_baseline',
-        help='Hydra config name (default: nnunet/convert/isles24_cluster_baseline)'
+        default="nnunet/convert/isles24_cluster_baseline",
+        help="Hydra config name (default: nnunet/convert/isles24_cluster_baseline)",
     )
-    
+
     # Hydra overrides as positional (third)
     parser.add_argument(
-        'hydra_overrides',
-        nargs='*',
-        help='Hydra config overrides (e.g., nnunet.test=false dataset.fold=2)'
+        "hydra_overrides",
+        nargs="*",
+        help="Hydra config overrides (e.g., nnunet.test=false dataset.fold=2)",
     )
-    
+
     # Control arguments (last)
-    control_group = parser.add_argument_group('Control')
+    control_group = parser.add_argument_group("Control")
     control_group.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Print job configuration without submitting'
+        "--dry-run",
+        action="store_true",
+        help="Print job configuration without submitting",
     )
-    
+
     return parser.parse_args()
 
 
 def build_python_command(args: argparse.Namespace) -> str:
     """Build the Python command to run dataset conversion."""
     cmd_parts = [
-        'python3 -m scripts.nnunet.convert_isles24_2d_dataset_to_nnunet',
-        f'--config-name={args.config_name}',
+        "python3 -m scripts.nnunet.convert_to_nnunet",
+        f"--config-name={args.config_name}",
     ]
-    
+
     # Add Hydra overrides
     if args.hydra_overrides:
         cmd_parts.extend(args.hydra_overrides)
-    
-    return ' '.join(cmd_parts)
+
+    return " ".join(cmd_parts)
 
 
 def main():
     args = parse_arguments()
-    
+
     # Build the Python command
     python_command = build_python_command(args)
 
@@ -181,36 +181,37 @@ def main():
     except Exception as exc:
         print(f"[WARN] Could not resolve dataset identity for job name: {exc}")
         dataset_id, dataset_name = "unknown", "unknown"
-    
+
     # Create job configuration
     config = BASE_CONFIG.copy()
-    
+
     # Override with conversion-specific settings
-    config['python_command'] = python_command
-    config['cpus_per_task'] = args.cpus
-    config['mem'] = args.mem
-    config['time'] = args.time
-    
+    config["python_command"] = python_command
+    config["cpus_per_task"] = args.cpus
+    config["mem"] = args.mem
+    config["time"] = args.time
+
     if args.partition:
-        config['partition'] = args.partition
+        config["partition"] = args.partition
     if args.qos:
-        config['qos'] = args.qos
-    
+        config["qos"] = args.qos
+
     # Create job name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_tag = f"d{dataset_id}_{dataset_name}"
-    config['job_name'] = f'nnunet_convert_{dataset_tag}_{timestamp}'
-    
+    config["job_name"] = f"nnunet_convert_{dataset_tag}_{timestamp}"
+
     # Set up log directory
-    config['logdir_name'] = os.path.join(
-        'nnunet_jobs', 'convert', 
-        f'convert_{dataset_tag}_{timestamp}'
+    config["logdir_name"] = os.path.join(
+        "nnunet_jobs",
+        "convert",
+        f"convert_{dataset_tag}_{timestamp}",
     )
     config = update_logdir_paths(config)
-    
+
     # Print job summary
     print("\n" + "=" * 60)
-    print("ISLES24 2D → nnU-Net Conversion SLURM Job")
+    print("Dataset -> nnU-Net Conversion SLURM Job")
     print("=" * 60)
     print(f"  Config:      {args.config_name}")
     if args.hydra_overrides:
@@ -223,29 +224,38 @@ def main():
     print(f"    Memory:    {args.mem}")
     print(f"    Time:      {args.time}")
     print("-" * 60)
-    print(f"  Command:")
+    print("  Command:")
     print(f"    {python_command}")
     print("=" * 60)
-    
+
     if args.dry_run:
         print("\n[DRY RUN] Would submit the following SLURM job:\n")
-        
+
         # Show what the script would look like
-        config['output_file'] = f"{config['host_logdir']}/output.out"
-        config['error_file'] = f"{config['host_logdir']}/error.err"
-        
+        config["output_file"] = f"{config['host_logdir']}/output.out"
+        config["error_file"] = f"{config['host_logdir']}/error.err"
+
         print("Configuration:")
-        for key in ['job_name', 'partition', 'qos', 'gpus', 'time', 
-                    'cpus_per_task', 'mem', 'host_logdir', 'python_command']:
+        for key in [
+            "job_name",
+            "partition",
+            "qos",
+            "gpus",
+            "time",
+            "cpus_per_task",
+            "mem",
+            "host_logdir",
+            "python_command",
+        ]:
             print(f"  {key}: {config[key]}")
-        
+
         print("\n[DRY RUN] No job submitted.")
         return
-    
+
     # Submit the job
     runner = SlurmJobRunner(config)
     job_id = runner.submit_job(config, SLURM_TEMPLATE, dry_run=False)
-    
+
     if job_id:
         print(f"\n✓ Job submitted successfully: {job_id}")
         print(f"  Monitor with: squeue -j {job_id}")
@@ -255,5 +265,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
