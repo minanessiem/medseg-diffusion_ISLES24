@@ -55,377 +55,121 @@ try:
 except ImportError:
     pass
 
-import gc
-import shutil
 import hydra
-from omegaconf import DictConfig, OmegaConf
-import nibabel as nib
-import numpy as np
-import json
+from omegaconf import DictConfig
 from pathlib import Path
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.utils.train_utils import setup_seeds
-from src.data.loaders import get_dataloaders, validate_dataset_contract
-from src.data.loader_stack.factory import resolve_loader_contract
+from scripts.nnunet.core.conversion_core import (
+    run_conversion,
+    validate_converter_contract as _validate_converter_contract,
+)
+from scripts.nnunet.core.exporters import (
+    SliceExportStrategy,
+    write_provenance_jsonl as _write_provenance_jsonl,
+)
 
-
-def _is_set(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return len(value.strip()) > 0
-    return True
+_SLICE_EXPORTER = SliceExportStrategy()
 
 
 def validate_converter_contract(cfg: DictConfig) -> None:
     """
-    Validate converter-specific requirements on top of the global data contract.
-
-    This converter exports from the online 3D->2D slicing path and currently
-    supports ISLES24/ISLES26 loader routes that emit "{case_id}_slice{index}".
+    Backward-compatible wrapper for core conversion contract validation.
     """
-    validate_dataset_contract(cfg)
+    _validate_converter_contract(cfg)
 
-    loader_mode = OmegaConf.select(cfg, "data_mode.loader_mode")
-    dim = OmegaConf.select(cfg, "data_mode.dim")
-    data_root = OmegaConf.select(cfg, "data_io.paths.data_root")
-    split_file = OmegaConf.select(cfg, "data_io.paths.split_file")
-    dataset_id = OmegaConf.select(cfg, "dataset.id")
-    dataset_name = OmegaConf.select(cfg, "dataset.name")
-    modalities = OmegaConf.select(cfg, "dataset.modalities")
-    num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
 
-    if loader_mode != "online_slices_3d_to_2d":
-        raise ValueError(
-            "nnUNet converter requires data_mode.loader_mode='online_slices_3d_to_2d'. "
-            f"Got '{loader_mode}'."
-        )
-    if dim != "2d":
-        raise ValueError(f"nnUNet converter requires data_mode.dim='2d'. Got '{dim}'.")
-    resolution = resolve_loader_contract(
-        dataset_id=dataset_id,
-        dataset_name=dataset_name,
-        loader_mode=loader_mode,
+def _build_export_affine(
+    slice_meta: Dict[str, Any],
+    out_h: int,
+    out_w: int,
+    slice_idx: int,
+) -> Any:
+    """
+    Backward-compatible wrapper around core slice affine construction.
+    """
+    return _SLICE_EXPORTER._build_export_affine(
+        slice_meta=slice_meta,
+        out_h=out_h,
+        out_w=out_w,
+        slice_idx=slice_idx,
     )
-    supported_loader_modules = {
-        "src.data.loader_stack.isles24_loader",
-        "src.data.loader_stack.isles26_loader",
-    }
-    if resolution.capabilities.loader_module not in supported_loader_modules:
-        raise ValueError(
-            "scripts.nnunet.convert_isles24_2d_dataset_to_nnunet currently supports "
-            "dataset routes backed by ISLES24/ISLES26 online slice loaders only. "
-            f"Got dataset='{resolution.dataset_id}', "
-            f"loader_module='{resolution.capabilities.loader_module}'."
-        )
-    if not _is_set(data_root):
-        raise ValueError("nnUNet converter requires data_io.paths.data_root.")
-    if not _is_set(split_file):
-        raise ValueError("nnUNet converter requires data_io.paths.split_file.")
-    modalities_is_sequence = isinstance(modalities, (list, tuple)) or OmegaConf.is_list(modalities)
-    if not modalities_is_sequence or len(modalities) == 0:
-        raise ValueError("nnUNet converter requires dataset.modalities to be a non-empty list.")
-    if int(num_modalities) != len(modalities):
-        raise ValueError(
-            "nnUNet converter requires len(dataset.modalities) == dataset.num_modalities. "
-            f"Got {len(modalities)} vs {num_modalities}."
-        )
-
-    nn_dataset_id = OmegaConf.select(cfg, "nnunet.dataset_id")
-    nn_dataset_name = OmegaConf.select(cfg, "nnunet.dataset_name")
-    output_dir = OmegaConf.select(cfg, "nnunet.output_dir")
-    test_mode = bool(OmegaConf.select(cfg, "nnunet.test"))
-    test_max_slices = OmegaConf.select(cfg, "nnunet.test_max_slices")
-
-    if not _is_set(nn_dataset_id):
-        raise ValueError("nnUNet converter requires nnunet.dataset_id.")
-    if not _is_set(nn_dataset_name):
-        raise ValueError("nnUNet converter requires nnunet.dataset_name.")
-    if not _is_set(output_dir):
-        raise ValueError("nnUNet converter requires nnunet.output_dir.")
-    if test_mode and (test_max_slices is None or int(test_max_slices) <= 0):
-        raise ValueError("When nnunet.test=true, nnunet.test_max_slices must be > 0.")
-
-
-def _resolve_dataset_label(cfg: DictConfig) -> str:
-    return str(OmegaConf.select(cfg, "dataset.id", default=OmegaConf.select(cfg, "dataset.name", default="unknown")))
-
-
-def _resolve_augmentation_label(cfg: DictConfig) -> str:
-    label = OmegaConf.select(cfg, "augmentation._name_")
-    if _is_set(label):
-        return str(label)
-    return "custom"
-
-
-def clear_directory(directory: Path, description: str = "") -> int:
-    """
-    Remove all files from a directory, keeping the directory itself.
-    
-    Args:
-        directory: Path to directory to clear
-        description: Human-readable description for logging
-    
-    Returns:
-        Number of files removed
-    """
-    if not directory.exists():
-        return 0
-    
-    files = list(directory.glob("*"))
-    count = len(files)
-    
-    if count > 0:
-        # Remove and recreate for speed (faster than individual deletes)
-        shutil.rmtree(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        label = f" ({description})" if description else ""
-        print(f"  Cleared {count} stale files from {directory.name}/{label}")
-    
-    return count
-
-
-def count_files_in_directory(directory: Path, pattern: str = "*.nii.gz") -> int:
-    """
-    Count files matching a pattern in a directory.
-    
-    Used to determine numTraining from existing files on disk
-    when only exporting the test split (resume scenario).
-    
-    Args:
-        directory: Path to directory
-        pattern: Glob pattern to match
-    
-    Returns:
-        Number of matching files
-    """
-    if not directory.exists():
-        return 0
-    return len(list(directory.glob(pattern)))
-
-
-def _build_export_affine(slice_meta: Dict[str, Any], out_h: int, out_w: int, slice_idx: int) -> np.ndarray:
-    """
-    Build slice-export affine that preserves source geometry and includes index-aware z-offset.
-    """
-    source_affine = np.asarray(slice_meta.get("source_affine", np.eye(4)), dtype=np.float64)
-    if source_affine.shape != (4, 4):
-        source_affine = np.eye(4, dtype=np.float64)
-    pre_hw = slice_meta.get("pre_resize_shape_hw", [out_h, out_w])
-    try:
-        pre_h = max(int(pre_hw[0]), 1)
-        pre_w = max(int(pre_hw[1]), 1)
-    except Exception:
-        pre_h, pre_w = out_h, out_w
-    out_h = max(int(out_h), 1)
-    out_w = max(int(out_w), 1)
-    scale_h = float(pre_h / out_h)
-    scale_w = float(pre_w / out_w)
-
-    export_affine = np.array(source_affine, dtype=np.float64, copy=True)
-    export_affine[:3, 0] = source_affine[:3, 0] * scale_h
-    export_affine[:3, 1] = source_affine[:3, 1] * scale_w
-    export_affine[:3, 3] = source_affine[:3, 3] + source_affine[:3, 2] * float(slice_idx)
-    return export_affine
-
-
-def _write_nifti_with_affine(data: np.ndarray, affine: np.ndarray, output_path: Path) -> None:
-    nii_img = nib.Nifti1Image(data, affine=affine)
-    nii_img.set_qform(affine, code=1)
-    nii_img.set_sform(affine, code=1)
-    nib.save(nii_img, output_path)
 
 
 def process_single_slice(
     idx: int,
-    dataset,
+    dataset: Any,
     images_dir: Path,
     labels_dir: Path,
     num_channels: int,
     split_name: str,
 ) -> Dict[str, Any]:
     """
-    Process and save a single slice to nnU-Net format.
-    
-    Args:
-        idx: Slice index in dataset
-        dataset: ISLES24Dataset2D instance
-        images_dir: Output directory for images
-        labels_dir: Output directory for labels
-        num_channels: Number of modality channels
-    
-    Returns:
-        Slice export record for provenance manifest.
+    Backward-compatible wrapper around core slice export processing.
     """
-    sample = dataset[idx]
-    if len(sample) == 4:
-        image, label, virtual_path, slice_meta = sample
-    else:
-        image, label, virtual_path = sample
-        slice_meta = {}
-    # image: [C, H, W], label: [1, H, W]
-    
-    # Parse case_id and slice_idx from virtual_path
-    # Format from ISLES24Dataset2D: "{caseID}_slice{slice_idx}"
-    case_id, slice_part = virtual_path.rsplit("_slice", 1)
-    slice_idx = int(slice_part)
-    
-    # Create case identifier for nnU-Net
-    safe_case_id = f"{case_id}_s{slice_idx:04d}"
-    out_h = int(image.shape[-2])
-    out_w = int(image.shape[-1])
-    export_affine = _build_export_affine(slice_meta, out_h=out_h, out_w=out_w, slice_idx=slice_idx)
-    image_files: List[str] = []
-    
-    # Save each channel as separate file
-    for ch_idx in range(num_channels):
-        ch_data = image[ch_idx].numpy()  # [H, W]
-        
-        # Create 2D NIfTI (shape [H, W, 1] for 2D)
-        nii_data = ch_data[..., np.newaxis].astype(np.float32)
-        filename = f"{safe_case_id}_{ch_idx:04d}.nii.gz"
-        _write_nifti_with_affine(nii_data, export_affine, images_dir / filename)
-        image_files.append(filename)
-    
-    # Save label (as uint8 for segmentation)
-    label_data = label[0].numpy()  # [H, W]
-    label_nii = label_data[..., np.newaxis].astype(np.uint8)
-    label_filename = f"{safe_case_id}.nii.gz"
-    _write_nifti_with_affine(label_nii, export_affine, labels_dir / label_filename)
-
-    return {
-        "split": split_name,
-        "safe_case_id": safe_case_id,
-        "case_id": str(case_id),
-        "slice_index": int(slice_idx),
-        "virtual_path": str(virtual_path),
-        "image_files": image_files,
-        "label_file": label_filename,
-        "source_path": str(slice_meta.get("source_path", "")),
-        "source_affine": slice_meta.get("source_affine", np.eye(4).tolist()),
-        "source_spacing_xyz": slice_meta.get("source_spacing_xyz", [1.0, 1.0, 1.0]),
-        "source_axcodes": slice_meta.get("source_axcodes", ["R", "A", "S"]),
-        "source_volume_shape": slice_meta.get("source_volume_shape", [out_h, out_w, 1]),
-        "slice_axis": int(slice_meta.get("slice_axis", 2)),
-        "pre_resize_shape_hw": slice_meta.get("pre_resize_shape_hw", [out_h, out_w]),
-        "post_resize_shape_hw": [out_h, out_w],
-        "export_affine": export_affine.tolist(),
-    }
-
-
-def export_dataset(
-    dataset, 
-    images_dir: Path, 
-    labels_dir: Path, 
-    num_channels: int, 
-    desc: str,
-    max_slices: int = None,
-    split_name: str = "unknown",
-) -> Tuple[set, List[Dict[str, Any]]]:
-    """
-    Export a dataset to nnU-Net format sequentially.
-    
-    Args:
-        dataset: ISLES24Dataset2D instance
-        images_dir: Output directory for images
-        labels_dir: Output directory for labels
-        num_channels: Number of modality channels
-        desc: Progress bar description
-        max_slices: Maximum number of slices to export (None for all)
-    
-    Returns:
-        Set of exported case identifiers
-    """
-    case_ids = set()
-    records: List[Dict[str, Any]] = []
-    
-    # Determine number of slices to process
-    total_slices = len(dataset)
-    num_to_process = min(max_slices, total_slices) if max_slices else total_slices
-    
-    # Sequential iteration by index
-    for idx in tqdm(range(num_to_process), desc=desc):
-        record = process_single_slice(
-            idx, dataset, images_dir, labels_dir, num_channels, split_name=split_name
-        )
-        case_ids.add(record["safe_case_id"])
-        records.append(record)
-    
-    return case_ids, records
-
-
-def export_dataset_parallel(
-    dataset, 
-    images_dir: Path, 
-    labels_dir: Path, 
-    num_channels: int, 
-    desc: str,
-    max_slices: int = None,
-    num_workers: int = 32,
-    split_name: str = "unknown",
-) -> Tuple[set, List[Dict[str, Any]]]:
-    """
-    Export a dataset to nnU-Net format using parallel threads.
-    
-    Uses ThreadPoolExecutor for parallel processing. GIL is released
-    during I/O operations (nibabel read/write), allowing good parallelism.
-    
-    Args:
-        dataset: ISLES24Dataset2D instance
-        images_dir: Output directory for images
-        labels_dir: Output directory for labels
-        num_channels: Number of modality channels
-        desc: Progress bar description
-        max_slices: Maximum number of slices to export (None for all)
-        num_workers: Number of parallel threads
-    
-    Returns:
-        Set of exported case identifiers
-    """
-    # Determine number of slices to process
-    total_slices = len(dataset)
-    num_to_process = min(max_slices, total_slices) if max_slices else total_slices
-    
-    case_ids = set()
-    records: List[Dict[str, Any]] = []
-    
-    # Create partial function with fixed arguments
-    process_fn = partial(
-        process_single_slice,
+    return _SLICE_EXPORTER._process_single_slice(
+        idx=idx,
         dataset=dataset,
         images_dir=images_dir,
         labels_dir=labels_dir,
         num_channels=num_channels,
         split_name=split_name,
     )
-    
-    # Process slices in parallel using ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        # Submit all tasks
-        futures = {executor.submit(process_fn, idx): idx for idx in range(num_to_process)}
-        
-        # Collect results with progress bar
-        for future in tqdm(as_completed(futures), total=num_to_process, desc=desc):
-            record = future.result()
-            case_ids.add(record["safe_case_id"])
-            records.append(record)
-    
-    return case_ids, records
+
+
+def export_dataset(
+    dataset: Any,
+    images_dir: Path,
+    labels_dir: Path,
+    num_channels: int,
+    desc: str,
+    max_slices: Optional[int] = None,
+    split_name: str = "unknown",
+) -> Tuple[set, List[Dict[str, Any]]]:
+    """
+    Backward-compatible wrapper around sequential split export.
+    """
+    return _SLICE_EXPORTER._export_dataset_sequential(
+        dataset=dataset,
+        images_dir=images_dir,
+        labels_dir=labels_dir,
+        num_channels=num_channels,
+        desc=desc,
+        max_slices=max_slices,
+        split_name=split_name,
+    )
+
+
+def export_dataset_parallel(
+    dataset: Any,
+    images_dir: Path,
+    labels_dir: Path,
+    num_channels: int,
+    desc: str,
+    max_slices: Optional[int] = None,
+    num_workers: int = 32,
+    split_name: str = "unknown",
+) -> Tuple[set, List[Dict[str, Any]]]:
+    """
+    Backward-compatible wrapper around parallel split export.
+    """
+    return _SLICE_EXPORTER._export_dataset_parallel(
+        dataset=dataset,
+        images_dir=images_dir,
+        labels_dir=labels_dir,
+        num_channels=num_channels,
+        desc=desc,
+        max_slices=max_slices,
+        num_workers=num_workers,
+        split_name=split_name,
+    )
 
 
 def write_provenance_jsonl(records: List[Dict[str, Any]], output_path: Path) -> None:
     """
-    Write one JSON record per line for exported slice provenance.
+    Backward-compatible wrapper for provenance JSONL writing.
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=True))
-            handle.write("\n")
+    _write_provenance_jsonl(records=records, output_path=output_path)
 
 
 @hydra.main(config_path="../../configs", config_name="nnunet/convert/isles24_local", version_base=None)
@@ -436,229 +180,8 @@ def main(cfg: DictConfig):
     Reuses existing config infrastructure and data loading.
     All settings come from config - no defaults in code.
     """
-    # === 1. Setup ===
-    setup_seeds(cfg)
-    validate_converter_contract(cfg)
-    
-    # === 2. Build output paths from config ===
-    # Clean train/test split:
-    # - imagesTr/labelsTr = Training data ONLY
-    # - imagesTs/labelsTs = Validation/test data ONLY (configured fold)
-    output_base = Path(cfg.nnunet.output_dir)
-    dataset_folder = output_base / f"Dataset{cfg.nnunet.dataset_id}_{cfg.nnunet.dataset_name}"
-    
-    imagesTr = dataset_folder / "imagesTr"
-    labelsTr = dataset_folder / "labelsTr"
-    imagesTs = dataset_folder / "imagesTs"
-    labelsTs = dataset_folder / "labelsTs"
-    
-    for d in [imagesTr, labelsTr, imagesTs, labelsTs]:
-        d.mkdir(parents=True, exist_ok=True)
-    
-    # === 3. Determine test mode settings ===
-    is_test_mode = cfg.nnunet.test
-    max_slices = cfg.nnunet.test_max_slices if is_test_mode else None
-    
-    # === 4. Determine parallel settings ===
-    use_parallel = cfg.nnunet.parallel.enabled
-    num_workers = cfg.nnunet.parallel.num_workers
-    
-    # === 5. Determine which splits to export ===
-    export_train = cfg.nnunet.export_train
-    export_test = cfg.nnunet.export_test
-    
-    if not export_train and not export_test:
-        raise ValueError("At least one of export_train or export_test must be True")
-    
-    # === 6. Print configuration summary ===
-    print(f"\n{'='*60}")
-    print(f"{_resolve_dataset_label(cfg)} 2D Dataset → nnU-Net Conversion")
-    print(f"{'='*60}")
-    print(f"Mode: {'TEST (limited slices)' if is_test_mode else 'FULL EXPORT'}")
-    if is_test_mode:
-        print(f"Max slices per split: {max_slices}")
-    print(f"Export splits: {'train' if export_train else ''}{' + ' if export_train and export_test else ''}{'test' if export_test else ''}")
-    print(f"Parallel: {'enabled (' + str(num_workers) + ' threads)' if use_parallel else 'disabled'}")
-    print(f"Source dataset: {_resolve_dataset_label(cfg)}")
-    print(f"Modalities: {list(cfg.dataset.modalities)}")
-    print(f"Image size: {cfg.model.image_size}")
-    print(f"Validation fold: {cfg.dataset.fold}")
-    print(f"Augmentation: {_resolve_augmentation_label(cfg)}")
-    print(f"Output: {dataset_folder}")
-    print(f"{'='*60}\n")
-    
-    # === 7. Get dataloaders, extract underlying datasets ===
-    dataloaders = get_dataloaders(cfg)
-    
-    # Access underlying datasets (bypasses dataloader shuffle)
-    train_dataset = dataloaders['train'].dataset
-    val_dataset = dataloaders['val'].dataset
-    # Ensure export path gets per-slice metadata and no augmentation side-effects.
-    train_dataset.return_metadata = True
-    val_dataset.return_metadata = True
-    if hasattr(train_dataset, "augmentation"):
-        train_dataset.augmentation = None
-    if hasattr(val_dataset, "augmentation"):
-        val_dataset.augmentation = None
-    
-    num_channels = len(cfg.dataset.modalities)
-    
-    print(f"Total training slices: {len(train_dataset)}")
-    print(f"Total validation slices: {len(val_dataset)}")
-    print(f"Channels per slice: {num_channels}")
-    if is_test_mode:
-        if export_train:
-            print(f"Will export train: {min(max_slices, len(train_dataset))} slices")
-        if export_test:
-            print(f"Will export test: {min(max_slices, len(val_dataset))} slices")
-    print()
-    
-    # === 8. Export datasets ===
-    # Clean separation: train → imagesTr/labelsTr, val → imagesTs/labelsTs
-    train_case_ids = set()
-    val_case_ids = set()
-    provenance_records: List[Dict[str, Any]] = []
-    
-    if export_train:
-        # Clear stale files from previous runs
-        clear_directory(imagesTr, "training images")
-        clear_directory(labelsTr, "training labels")
-        
-        if use_parallel:
-            train_case_ids, train_records = export_dataset_parallel(
-                train_dataset, imagesTr, labelsTr, 
-                num_channels, "Exporting training set",
-                max_slices=max_slices,
-                num_workers=num_workers,
-                split_name="train",
-            )
-        else:
-            train_case_ids, train_records = export_dataset(
-                train_dataset, imagesTr, labelsTr, 
-                num_channels, "Exporting training set",
-                max_slices=max_slices,
-                split_name="train",
-            )
-        provenance_records.extend(train_records)
-    else:
-        print("Skipping training set export (export_train=false)")
-    
-    # === 8b. Memory cleanup between phases ===
-    # Free training data references before starting validation export
-    # to avoid accumulating memory from both phases simultaneously
-    del train_dataset
-    del dataloaders
-    gc.collect()
-    
-    if export_test:
-        # Clear stale files from previous runs
-        clear_directory(imagesTs, "test images")
-        clear_directory(labelsTs, "test labels")
-        
-        if use_parallel:
-            val_case_ids, val_records = export_dataset_parallel(
-                val_dataset, imagesTs, labelsTs,
-                num_channels, "Exporting test set (validation fold)",
-                max_slices=max_slices,
-                num_workers=num_workers,
-                split_name="test",
-            )
-        else:
-            val_case_ids, val_records = export_dataset(
-                val_dataset, imagesTs, labelsTs,
-                num_channels, "Exporting test set (validation fold)",
-                max_slices=max_slices,
-                split_name="test",
-            )
-        provenance_records.extend(val_records)
-    else:
-        print("Skipping test set export (export_test=false)")
-    
-    # Free validation data references
-    del val_dataset
-    gc.collect()
-    
-    # === 9. Generate dataset.json ===
-    channel_names = {
-        str(i): cfg.dataset.modalities[i] 
-        for i in range(num_channels)
-    }
-    
-    # numTraining: use exported count if we exported, otherwise count from disk
-    # This supports the resume scenario where only test is exported but
-    # dataset.json still needs the correct numTraining from a previous run
-    if export_train:
-        num_training = len(train_case_ids)
-    else:
-        num_training = count_files_in_directory(labelsTr, "*.nii.gz")
-        print(f"Counted {num_training} existing training labels on disk")
-    
-    num_test = len(val_case_ids)
-    
-    dataset_json = {
-        "channel_names": channel_names,
-        "labels": {
-            "background": 0,
-            "lesion": 1
-        },
-        "numTraining": num_training,
-        "file_ending": ".nii.gz",
-        "description": f"ISLES24 2D slices preprocessed with MedSegDiff pipeline",
-        "reference": "Converted from MedSegDiff preprocessing",
-        "source_config": {
-            "dataset": _resolve_dataset_label(cfg),
-            "modalities": list(cfg.dataset.modalities),
-            "image_size": cfg.model.image_size,
-            "fold": cfg.dataset.fold,
-            "test_mode": is_test_mode,
-            "num_test": num_test
-        }
-    }
-    
-    with open(dataset_folder / "dataset.json", "w") as f:
-        json.dump(dataset_json, f, indent=2)
-    provenance_path = dataset_folder / "slice_provenance.jsonl"
-    write_provenance_jsonl(provenance_records, provenance_path)
-    
-    # === 10. Summary ===
-    print(f"\n{'='*60}")
-    print(f"Conversion complete!")
-    print(f"{'='*60}")
-    print(f"Training slices: {num_training}")
-    print(f"Test slices (fold {cfg.dataset.fold}): {num_test}")
-    if is_test_mode:
-        print(f"\n⚠️  TEST MODE: Only exported {max_slices} slices per split")
-        print(f"   Run with nnunet.test=false for full export")
-    print(f"\nOutput structure:")
-    print(f"  {dataset_folder}/")
-    print(f"  ├── dataset.json")
-    print(f"  ├── slice_provenance.jsonl ({len(provenance_records)} records)")
-    print(f"  ├── imagesTr/  ({num_training * num_channels} files)")
-    print(f"  ├── labelsTr/  ({num_training} files)")
-    print(f"  ├── imagesTs/  ({num_test * num_channels} files)")
-    print(f"  └── labelsTs/  ({num_test} files)")
-    # Build helpful paths for next steps
-    dataset_id = cfg.nnunet.dataset_id
-    pred_dir = f"/mnt/outputs/nnunet_results/predictionsTs_{cfg.nnunet.dataset_name}"
-    
-    print(f"\nNext steps — Raw nnU-Net commands:")
-    print(f"  1. export nnUNet_raw={output_base}")
-    print(f"  2. nnUNetv2_plan_and_preprocess -d {dataset_id} --verify_dataset_integrity")
-    print(f"  3. nnUNetv2_train {dataset_id} 2d all")
-    print(f"  4. nnUNetv2_predict -i {imagesTs} -o {pred_dir} -d {dataset_id} -c 2d -f all")
-    print(f"  5. python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \\")
-    print(f"       --pred-dir {pred_dir} --gt-dir {labelsTs}")
-    
-    print(f"\nNext steps — SLURM runners:")
-    print(f"  1. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command preprocess \\")
-    print(f"       -d {dataset_id} --verify")
-    print(f"  2. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command train \\")
-    print(f"       -d {dataset_id} -c 2d -f all")
-    print(f"  3. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command predict \\")
-    print(f"       -d {dataset_id} -i {imagesTs} -o {pred_dir}")
-    print(f"  4. python3 -m scripts.nnunet.slurm_runners.run_compute_segmentation_metrics_for_nnunet_2d_predictions \\")
-    print(f"       --pred-dir {pred_dir} --gt-dir {labelsTs}")
-
+    # Phase 2: thin entrypoint delegating to extracted conversion core.
+    run_conversion(cfg)
 
 if __name__ == "__main__":
     main()

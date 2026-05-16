@@ -82,13 +82,17 @@ If any local/cluster differences exist, they must be inherited from `environment
 
 ### 4.4 Backward compatibility during migration
 
-Existing top-level conversion presets like `configs/convert_nnunet_*.yaml` can be retained as aliases/wrappers initially, then deprecated after adoption.
+Top-level conversion presets like `configs/convert_nnunet_*.yaml` are optional migration shims.  
+Current preferred direction is canonical nested config names under `configs/nnunet/convert/*` without passthrough aliases.
 
 ---
 
 ## 5) Components of Interest
 
 - Conversion script: `scripts/nnunet/convert_isles24_2d_dataset_to_nnunet.py`
+- Planned conversion core modules:
+  - `scripts/nnunet/core/conversion_core.py`
+  - `scripts/nnunet/core/exporters.py`
 - Existing nnU-Net command runner: `scripts/nnunet/slurm_runners/run_nnunet_command.py`
 - Existing nnU-Net eval scripts:
   - `scripts/nnunet/compute_segmentation_metrics_for_nnunet_2d_predictions.py`
@@ -114,8 +118,13 @@ Create `scripts/nnunet/convert_to_nnunet.py` with strategy-based export routing:
 - `SliceExportStrategy` for `online_slices_3d_to_2d`.
 - `VolumeExportStrategy` for `full_volumes_3d`.
 
-Core behavior remains config-driven and uses current loader contracts.  
-The old conversion script becomes a compatibility wrapper.
+Core behavior remains config-driven and uses current loader contracts.
+
+Phase-2 extraction uses a deliberately lightweight split:
+
+- `conversion_core.py`: config validation/resolution, strategy selection, orchestration.
+- `exporters.py`: concrete exporter implementations (slice first, volume next).
+- existing converter script remains a thin compatibility entrypoint during migration.
 
 ### 6.2 Generic evaluation entrypoint
 
@@ -239,17 +248,18 @@ After implementation:
 - Create `configs/nnunet/eval/*` with thin policy defaults (`input_format`, `levels`, `threshold`, `allow_shape_mismatch`).
 - Create optional `configs/nnunet/run/default.yaml` for nnU-Net command semantics only; no `local`/`cluster` variants here.
 - Keep environment differences in `configs/environment/*`; optionally rename `isles24_nnunet2d_cluster` -> `isles24_nnunet_cluster` with compatibility alias.
-- Add top-level compatibility alias configs (`configs/convert_nnunet_*.yaml`) that default-chain into new `configs/nnunet/convert/*`.
-- Validation: both old and new `--config-name` paths compose successfully.
-- Rollback: keep top-level aliases as source of truth until migration is stable.
+- Prefer canonical nested config names under `configs/nnunet/convert/*`; avoid top-level passthrough alias configs unless migration friction requires temporary shims.
+- Validation: canonical nested `--config-name` paths compose successfully.
+- Rollback: if needed, reintroduce temporary aliases as a short-lived migration shim.
 
 ## Phase 2 — Conversion Core Extraction (2D Parity First)
-- Introduce `scripts/nnunet/core/contracts.py`, `scripts/nnunet/core/config_resolvers.py`, `scripts/nnunet/core/exporters.py`, `scripts/nnunet/core/conversion_pipeline.py`.
-- Move current slice export logic into `SliceExportStrategy` without changing external behavior.
-- Keep existing converter script functional, now delegating to extracted core.
+- Introduce `scripts/nnunet/core/conversion_core.py` and `scripts/nnunet/core/exporters.py`.
+- Let `conversion_core.py` own config validation/resolution, strategy selection, and orchestration.
+- Move current slice export logic into `SliceExportStrategy` in `exporters.py` without changing external behavior.
+- Keep existing converter script functional as a thin Hydra entrypoint delegating to extracted core.
 - Preserve current use of existing data stack (`get_dataloaders`, `validate_dataset_contract`).
 - Validation: ISLES24 2D output parity against Phase 0 contract.
-- Rollback: retain legacy inlined path behind a temporary flag if parity fails.
+- Rollback: temporarily restore inlined converter execution path if parity fails.
 
 ## Phase 3 — 3D Volume Export Strategy
 - Add `VolumeExportStrategy` in `scripts/nnunet/core/exporters.py` for `full_volumes_3d`.
@@ -330,14 +340,13 @@ This ordering minimizes risk by preserving current behavior while adding generic
 - ISLES26 3D conversion validity and completeness.
 - ISLES26 3D evaluation volume metrics path.
 - SLURM dry-run parity for convert/run/eval old and new runners.
-- Config-path reachability for both top-level aliases and nested `configs/nnunet/*` names.
+- Config-path reachability for canonical nested `configs/nnunet/*` names.
 
 ---
 
 ## Rollback and Contingencies
 - Keep legacy scripts as wrappers until all parity checks pass.
-- Keep top-level config aliases (`convert_nnunet_*`) during migration.
+- Reintroduce top-level config aliases (`convert_nnunet_*`) only as temporary shims if migration friction appears.
 - Gate auto-inference behavior in runners with explicit flags.
 - Prefer additive changes; avoid deleting old paths in this CAP.
-- If cluster runner fails due to composition edge cases, temporarily pin runner to explicit CLI mode while fixing config resolver logic.
-s
+- If cluster runner fails due to composition edge cases, temporarily pin runner to explicit CLI mode while fixing conversion-core resolver logic.
