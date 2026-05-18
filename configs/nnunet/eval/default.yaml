@@ -4,13 +4,13 @@
 # Runtime scripts should compose this with dataset/environment configs.
 
 nnunet_eval:
-  # One of: auto, slices_2d, volumes_3d.
-  input_format: auto
+  # One of: slices_2d, volumes_3d.
+  input_format: slices_2d
 
   # Supported levels: slice, volume.
   # Keep both enabled by default for comprehensive reporting.
   levels:
-    - slice
+    # - slice
     - volume
 
   # Fixed threshold for post-threshold metrics.
@@ -18,3 +18,12 @@ nnunet_eval:
 
   # If true, skip pairs with mismatched shapes instead of raising.
   allow_shape_mismatch: false
+
+  # Legacy 2D compatibility policy:
+  # if true, non-Dice metrics are reported with foreground-only denominator.
+  foreground_only_all_metrics: false
+
+  # Runtime paths must be provided by config composition or CLI overrides.
+  pred_dir: null
+  gt_dir: null
+  output_dir: null

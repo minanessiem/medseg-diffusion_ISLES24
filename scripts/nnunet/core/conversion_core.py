@@ -394,6 +394,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
 
     dataset_id = cfg.nnunet.dataset_id
     pred_dir = f"/mnt/outputs/nnunet_results/predictionsTs_{cfg.nnunet.dataset_name}"
+    eval_output_dir = f"{pred_dir}/evaluation_v2"
 
     print("\nNext steps — Raw nnU-Net commands:")
     print(f"  1. export nnUNet_raw={request.output_base}")
@@ -406,17 +407,12 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
         f"  4. nnUNetv2_predict -i {request.images_ts} "
         f"-o {pred_dir} -d {dataset_id} -c {nnunet_configuration} -f all"
     )
-    if strategy.mode_key == "slices_2d":
-        print("  5. python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \\")
-        print(f"       --pred-dir {pred_dir} --gt-dir {request.labels_ts}")
-    else:
-        print("  5. [Temporary compatibility metrics] \\")
-        print("     python3 -m scripts.nnunet.compute_segmentation_metrics_for_nnunet_2d_predictions \\")
-        print(f"       --pred-dir {pred_dir} --gt-dir {request.labels_ts}")
-        print(
-            "     # Note: this compatibility script is 2D-labeled; "
-            "dedicated native 3D evaluation entrypoint is planned for Phase 5."
-        )
+    print("  5. python3 -m scripts.nnunet.evaluate_nnunet_results \\")
+    print("       --convert-config-name <nnunet/convert/...> --eval-config-name <nnunet/eval/...> \\")
+    print(
+        f"       nnunet_eval.pred_dir={pred_dir} nnunet_eval.gt_dir={request.labels_ts} "
+        f"nnunet_eval.output_dir={eval_output_dir}"
+    )
 
     print("\nNext steps — SLURM runners:")
     print("  1. python3 -m scripts.nnunet.slurm_runners.run_nnunet_command preprocess \\")

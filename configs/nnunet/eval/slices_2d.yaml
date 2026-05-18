@@ -8,3 +8,4 @@ defaults:
 
 nnunet_eval:
   input_format: slices_2d
+  foreground_only_all_metrics: false

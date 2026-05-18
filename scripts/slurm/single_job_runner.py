@@ -10,8 +10,6 @@ import pprint
 
 from src.utils.run_name import generate_run_name
 
-from scripts.slurm.base_run_config import BASE_CONFIG, SLURM_TEMPLATE, update_logdir_paths
-from scripts.slurm.job_runner import SlurmJobRunner
 from scripts.slurm.utils.commandline_utils import add_config_arguments, update_config_from_args
 
 def deep_merge(dict1: Dict, dict2: Dict) -> Dict:
@@ -455,6 +453,11 @@ def _build_training_command(
     return f"python3 {script_name}{suffix}".strip()
 
 def main():
+    # Keep SLURM runtime imports local to main so utility imports from this module
+    # (e.g., config composition helpers) do not require cluster-only env vars.
+    from scripts.slurm.base_run_config import BASE_CONFIG, SLURM_TEMPLATE, update_logdir_paths
+    from scripts.slurm.job_runner import SlurmJobRunner
+
     parser = argparse.ArgumentParser(description='Submit a single SLURM job for medseg-diffusion training')
     
     # Hydra-related arguments (reused for custom loader)

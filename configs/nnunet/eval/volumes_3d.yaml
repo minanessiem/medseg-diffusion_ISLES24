@@ -9,4 +9,5 @@ defaults:
 nnunet_eval:
   input_format: volumes_3d
   levels:
+    - slice
     - volume
