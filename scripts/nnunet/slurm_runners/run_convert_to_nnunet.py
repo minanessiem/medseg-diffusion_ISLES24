@@ -6,27 +6,31 @@ This script wraps convert_to_nnunet.py and submits it
 as a non-interactive SLURM job.
 
 Usage:
-    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
+    python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
         [--time 02:00:00] [--cpus 64] [--mem 64G] \
-        [--config-name nnunet/convert/isles24_cluster_baseline] \
+        --convert-config-name nnunet/convert/isles24_cluster_baseline \
         [hydra_overrides...] \
         [--dry-run]
 
 Examples:
-    # Default cluster conversion (test mode)
-    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py
+    # Cluster conversion (test mode)
+    python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
+        --convert-config-name nnunet/convert/isles24_cluster_baseline
 
     # Full export with custom fold
-    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
+    python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
+        --convert-config-name nnunet/convert/isles24_cluster_baseline \
         nnunet.test=false dataset.fold=2
 
     # Custom resources then overrides
-    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
+    python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
+        --convert-config-name nnunet/convert/isles26_cluster_3d_t1raw \
         --time 04:00:00 --cpus 32 --mem 64G \
         nnunet.test=false
 
     # Dry run to see what would be submitted
-    python scripts/nnunet/slurm_runners/run_convert_to_nnunet.py \
+    python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
+        --convert-config-name nnunet/convert/isles24_cluster_baseline \
         nnunet.test=false --dry-run
 """
 
@@ -69,7 +73,7 @@ def _resolve_dataset_identity(config_name: str, hydra_overrides: list[str]) -> t
     Uses the same custom YAML composer as SLURM training launch so this works
     without Hydra/OmegaConf on the login node.
     """
-    composed = load_config(config_name, hydra_overrides, resolve_final=True)
+    composed = load_config(convert_config_name, hydra_overrides, resolve_final=True)
 
     nnunet_cfg = composed.get("nnunet", {}) if isinstance(composed, dict) else {}
     dataset_cfg = composed.get("dataset", {}) if isinstance(composed, dict) else {}
@@ -131,10 +135,15 @@ def parse_arguments() -> argparse.Namespace:
     # Configuration (second)
     config_group = parser.add_argument_group("Configuration")
     config_group.add_argument(
+        "--convert-config-name",
         "--config-name",
+        dest="convert_config_name",
         type=str,
-        default="nnunet/convert/isles24_cluster_baseline",
-        help="Hydra config name (default: nnunet/convert/isles24_cluster_baseline)",
+        required=True,
+        help=(
+            "Conversion config name (required), e.g. nnunet/convert/isles24_cluster_baseline. "
+            "--config-name is accepted as a compatibility alias."
+        ),
     )
 
     # Hydra overrides as positional (third)
@@ -159,7 +168,7 @@ def build_python_command(args: argparse.Namespace) -> str:
     """Build the Python command to run dataset conversion."""
     cmd_parts = [
         "python3 -m scripts.nnunet.convert_to_nnunet",
-        f"--config-name={args.config_name}",
+        f"--config-name={args.convert_config_name}",
     ]
 
     # Add Hydra overrides
@@ -177,7 +186,7 @@ def main():
 
     # Resolve dataset identity for traceable job naming.
     try:
-        dataset_id, dataset_name = _resolve_dataset_identity(args.config_name, args.hydra_overrides)
+        dataset_id, dataset_name = _resolve_dataset_identity(args.convert_config_name, args.hydra_overrides)
     except Exception as exc:
         print(f"[WARN] Could not resolve dataset identity for job name: {exc}")
         dataset_id, dataset_name = "unknown", "unknown"
@@ -213,7 +222,7 @@ def main():
     print("\n" + "=" * 60)
     print("Dataset -> nnU-Net Conversion SLURM Job")
     print("=" * 60)
-    print(f"  Config:      {args.config_name}")
+    print(f"  Config:      {args.convert_config_name}")
     if args.hydra_overrides:
         print(f"  Overrides:   {' '.join(args.hydra_overrides)}")
     print("-" * 60)
