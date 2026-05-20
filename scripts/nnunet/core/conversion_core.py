@@ -424,23 +424,12 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
         f"       -d {dataset_id} -c {nnunet_configuration} "
         f"-i {request.images_ts} -o {pred_dir}"
     )
-    if strategy.mode_key == "slices_2d":
-        print(
-            "  4. python3 -m scripts.nnunet.slurm_runners.run_compute_segmentation_metrics_for_nnunet_2d_predictions \\"
-        )
-        print(f"       --pred-dir {pred_dir} --gt-dir {request.labels_ts}")
-    else:
-        print(
-            "  4. [Temporary compatibility metrics runner] \\"
-        )
-        print(
-            "     python3 -m scripts.nnunet.slurm_runners.run_compute_segmentation_metrics_for_nnunet_2d_predictions \\"
-        )
-        print(f"       --pred-dir {pred_dir} --gt-dir {request.labels_ts}")
-        print(
-            "     # Dedicated native 3D evaluation runner is planned for Phase 6 "
-            "(with Phase 5 runtime evaluator entrypoint)."
-        )
+    print("  4. python3 -m scripts.nnunet.slurm_runners.run_evaluate_nnunet_results \\")
+    print("       --convert-config-name <nnunet/convert/...> --eval-config-name <nnunet/eval/...> \\")
+    print(
+        f"       nnunet_eval.pred_dir={pred_dir} nnunet_eval.gt_dir={request.labels_ts} "
+        f"nnunet_eval.output_dir={eval_output_dir}"
+    )
 
     return {
         "dataset_folder": str(request.dataset_folder),
