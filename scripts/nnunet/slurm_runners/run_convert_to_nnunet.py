@@ -73,7 +73,7 @@ def _resolve_dataset_identity(config_name: str, hydra_overrides: list[str]) -> t
     Uses the same custom YAML composer as SLURM training launch so this works
     without Hydra/OmegaConf on the login node.
     """
-    composed = load_config(convert_config_name, hydra_overrides, resolve_final=True)
+    composed = load_config(config_name, hydra_overrides, resolve_final=True)
 
     nnunet_cfg = composed.get("nnunet", {}) if isinstance(composed, dict) else {}
     dataset_cfg = composed.get("dataset", {}) if isinstance(composed, dict) else {}
