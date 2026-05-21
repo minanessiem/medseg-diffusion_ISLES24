@@ -1,19 +1,20 @@
-# MONAI SwinUNETR for discriminative 2D segmentation.
+# MONAI SwinUNETR for discriminative segmentation (2D or 3D).
 #
 # Key differences from diffusion models (DiffSwinTr, MedSegDiff):
 # - NO time conditioning (no timestep input)
 # - NO mask concatenation (input is modalities only)
 # - Direct mask prediction (not noise prediction)
 #
-# Input: modalities only [B, image_channels, H, W]
-# Output: binary segmentation mask [B, out_channels, H, W]
+# Input: modalities only [B, image_channels, *spatial_shape]
+# Output: binary segmentation mask [B, out_channels, *spatial_shape]
 #
 # Parameters: ~62M (with default settings)
 
 architecture: swinunetr
 
 # ==================== Core Dimensions ====================
-image_size: 256
+image_size: 256                            # Scalar edge length; adapter expands to (X,X) or (X,X,X)
+spatial_dims: ${data_mode.dim}             # "2d" or "3d" from active data contract
 image_channels: ${dataset.num_modalities}  # Dynamic based on dataset (e.g., 2 for CBF+TMAX)
 out_channels: 1                             # Binary segmentation
 
