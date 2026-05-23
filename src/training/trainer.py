@@ -223,6 +223,43 @@ def test_one_epoch(diffusion, test_dataloader, cfg, logger, global_step):
     test_mean_loss = total_loss / len(test_dataloader)
     return test_mean_loss, global_step
 
+
+def _resolve_validation_progress_metric_keys(cfg):
+    """
+    Resolve which metric keys should be shown in validation progress bars.
+    """
+    configured = OmegaConf.select(cfg, "validation.progress_metrics", default=None)
+    if configured is None:
+        return ["dice_2d_fg", "f1_2d"]
+
+    keys = []
+    for key in configured:
+        key_str = str(key).strip()
+        if key_str:
+            keys.append(key_str)
+    return keys if keys else ["dice_2d_fg", "f1_2d"]
+
+
+def _build_validation_progress_postfix(metric_values, progress_metric_keys):
+    """
+    Build tqdm postfix payload for configured validation progress metrics.
+    """
+    postfix = {}
+    for key in progress_metric_keys:
+        if key not in metric_values:
+            continue
+        value = metric_values[key]
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            value = float(value.detach().float().cpu().item())
+        try:
+            postfix[key] = f"{float(value):.4f}"
+        except (TypeError, ValueError):
+            continue
+    return postfix
+
+
 @device_grad_decorator(no_grad=True)
 def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
     """
@@ -254,6 +291,7 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
 
     from src.utils.valid_utils import build_validation_inferer
     infer_batch = build_validation_inferer(diffusion=diffusion, cfg=cfg)
+    progress_metric_keys = _resolve_validation_progress_metric_keys(cfg)
     
     pbar = tqdm(val_dl, desc="Validation", leave=True)
     for img, true_mask, _ in pbar:
@@ -292,8 +330,12 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
             else:
                 current_results[metric.__class__.__name__] = metric_results
         
-        key_metrics = {k: f"{current_results.get(k, 0):.4f}" for k in ['dice_2d_fg', 'f1_2d']}
-        pbar.set_postfix(**key_metrics)
+        key_metrics = _build_validation_progress_postfix(
+            current_results,
+            progress_metric_keys,
+        )
+        if key_metrics:
+            pbar.set_postfix(**key_metrics)
 
     # Compute aggregated results
     results = {}
@@ -305,8 +347,9 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
             results[metric.__class__.__name__] = metric_results
 
     # Update tqdm postfix with key metrics
-    key_metrics = {k: f"{v:.4f}" for k, v in results.items() if k in ['dice_2d_fg', 'f1_2d']}
-    pbar.set_postfix(**key_metrics)
+    key_metrics = _build_validation_progress_postfix(results, progress_metric_keys)
+    if key_metrics:
+        pbar.set_postfix(**key_metrics)
 
     # Reset metrics
     for metric in metrics:

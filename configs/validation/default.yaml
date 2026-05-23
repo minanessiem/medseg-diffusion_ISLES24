@@ -10,3 +10,8 @@ inference:
 metrics:
   - name: SliceWiseMetricsAggregator
     params: {}  # Add specific params here if needed, e.g., epsilon: 1e-6
+
+# Metric keys shown in tqdm validation postfix (if present in current results)
+progress_metrics:
+  - dice_2d_fg
+  - f1_2d

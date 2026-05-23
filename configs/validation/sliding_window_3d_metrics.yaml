@@ -1,0 +1,16 @@
+defaults:
+  - sliding_window
+  - _self_
+
+# 3D volume-wise metric bundle for sliding-window validation runs.
+metrics:
+  - name: ThreeDMetricsAggregator
+    params: {}
+
+# Metric keys shown in tqdm validation postfix.
+progress_metrics:
+  - dice_3d
+  - lesion_f1_3d
+
+# If best-checkpointing is enabled with this preset, use:
+# training.checkpoint_best.metric_name=dice_3d

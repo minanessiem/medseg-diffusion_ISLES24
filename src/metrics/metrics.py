@@ -1165,6 +1165,133 @@ class SliceWiseMetricsAggregator(nn.Module):
         self.f1_score.reset()
         self.f2_score.reset()
 
+
+class ThreeDMetricsAggregator(nn.Module):
+    """
+    Aggregates core 3D volume-wise metrics and volume statistics.
+
+    This mirrors the role of SliceWiseMetricsAggregator but for full 3D
+    volumes/samples.
+
+    Notes
+    -----
+    3D metrics are computed on CPU tensors to keep metric buffer/device
+    semantics consistent across legacy metric implementations and avoid
+    cross-device accumulation errors during validation.
+    """
+
+    def __init__(
+        self,
+        spacing=(1.0, 1.0, 1.0),
+        tolerance_mm=1.0,
+        voxel_size=None,
+    ):
+        super().__init__()
+        spacing_tuple = tuple(float(v) for v in spacing)
+        if len(spacing_tuple) != 3:
+            raise ValueError(
+                "ThreeDMetricsAggregator expects `spacing` as a length-3 tuple/list."
+            )
+        if voxel_size is None:
+            voxel_size_value = float(np.prod(spacing_tuple))
+        else:
+            voxel_size_value = float(voxel_size)
+        tolerance_mm_value = float(tolerance_mm)
+
+        self.register_buffer("total_volumes", torch.tensor(0))
+        self.register_buffer("foreground_volumes", torch.tensor(0))
+        self.register_buffer("empty_volumes", torch.tensor(0))
+
+        # Keep a stable key set so downstream configs/checkpoint keys remain explicit.
+        self.metrics = nn.ModuleDict(
+            {
+                "dice_medpy_3d": DiceMedpyCoefficient(),
+                "dice_3d": DiceNativeCoefficient(threshold=0.5),
+                "abs_volume_diff_3d": AbsoluteVolumeDifferenceNative(
+                    voxel_size=voxel_size_value
+                ),
+                "abs_lesion_count_diff_3d": AbsoluteLesionCountDifferenceCC3D(),
+                "lesion_f1_3d": LesionF1CC3DScore(),
+                "hd95_medpy_3d": HausdorffDistance95Medpy(),
+                "hd95_3d": HausdorffDistance95Native(),
+                "hd95_monai_mm_3d": HausdorffDistance95MonaiMm(
+                    spacing=spacing_tuple
+                ),
+                "surface_dice_monai_3d": SurfaceDiceMonai(
+                    spacing=spacing_tuple,
+                    tolerance_mm=tolerance_mm_value,
+                ),
+                "voxel_tp_3d": VoxelTruePositives(),
+                "voxel_fp_3d": VoxelFalsePositives(),
+                "voxel_fn_3d": VoxelFalseNegatives(),
+                "voxel_tn_3d": VoxelTrueNegatives(),
+                "predicted_volume_mm3": PredictedVolumeMm3(spacing=spacing_tuple),
+                "ground_truth_volume_mm3": GroundTruthVolumeMm3(
+                    spacing=spacing_tuple
+                ),
+            }
+        )
+
+    @staticmethod
+    def _ensure_batched_channel_first_volume(volume):
+        """
+        Normalize tensors to [B, C, H, W, D] for consistent 3D metric calls.
+        """
+        if volume.ndim == 5:
+            return volume
+        if volume.ndim == 4:
+            return volume.unsqueeze(0)
+        if volume.ndim == 3:
+            return volume.unsqueeze(0).unsqueeze(0)
+        raise ValueError(
+            "ThreeDMetricsAggregator expected tensor with 3, 4, or 5 dims. "
+            f"Got shape={tuple(volume.shape)}."
+        )
+
+    def forward(self, y_pred, y_true):
+        with torch.no_grad():
+            y_pred = self._ensure_batched_channel_first_volume(y_pred)
+            y_true = self._ensure_batched_channel_first_volume(y_true)
+            y_pred_cpu = y_pred.detach().cpu()
+            y_true_cpu = y_true.detach().cpu()
+            self.total_volumes += 1
+
+            has_foreground = torch.sum(y_true_cpu > 0.5) > 0
+            if has_foreground:
+                self.foreground_volumes += 1
+            else:
+                self.empty_volumes += 1
+
+            results = {
+                metric_name: metric(y_pred_cpu, y_true_cpu)
+                for metric_name, metric in self.metrics.items()
+            }
+            return results
+
+    def compute(self):
+        results = {
+            metric_name: metric.compute()
+            for metric_name, metric in self.metrics.items()
+        }
+        results.update(
+            {
+                "total_volumes": self.total_volumes.float(),
+                "foreground_volumes": self.foreground_volumes.float(),
+                "empty_volumes": self.empty_volumes.float(),
+                "foreground_volume_ratio": self.foreground_volumes.float()
+                / (self.total_volumes.float() + 1e-6),
+            }
+        )
+        return results
+
+    def reset(self):
+        self.total_volumes.zero_()
+        self.foreground_volumes.zero_()
+        self.empty_volumes.zero_()
+
+        for metric in self.metrics.values():
+            metric.reset()
+
 def get_metric(name, params):
     if name not in globals():
         raise ValueError(f"Metric class '{name}' not found in metrics.py")

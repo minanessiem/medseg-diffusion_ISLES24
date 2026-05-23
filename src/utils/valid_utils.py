@@ -520,6 +520,45 @@ def sample_parallel(
     return torch.cat(valid_results, dim=0)
 
 
+def _resolve_validation_progress_metric_keys(cfg) -> List[str]:
+    """
+    Resolve which metric keys should be shown in validation progress bars.
+    """
+    configured = OmegaConf.select(cfg, "validation.progress_metrics", default=None)
+    if configured is None:
+        return ["dice_2d_fg", "f1_2d"]
+
+    keys: List[str] = []
+    for key in configured:
+        key_str = str(key).strip()
+        if key_str:
+            keys.append(key_str)
+    return keys if keys else ["dice_2d_fg", "f1_2d"]
+
+
+def _build_validation_progress_postfix(
+    metric_values: Dict[str, Any],
+    progress_metric_keys: List[str],
+) -> Dict[str, str]:
+    """
+    Build tqdm postfix payload for configured validation progress metrics.
+    """
+    postfix: Dict[str, str] = {}
+    for key in progress_metric_keys:
+        if key not in metric_values:
+            continue
+        value = metric_values[key]
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            value = float(value.detach().float().cpu().item())
+        try:
+            postfix[key] = f"{float(value):.4f}"
+        except (TypeError, ValueError):
+            continue
+    return postfix
+
+
 def validate_one_epoch_multigpu(
     diffusion,
     val_dl,
@@ -579,6 +618,7 @@ def validate_one_epoch_multigpu(
     
     # Log memory after model copies
     log_gpu_memory(gpu_ids, "after model copy")
+    progress_metric_keys = _resolve_validation_progress_metric_keys(cfg)
     
     pbar = tqdm(val_dl, desc="Validation (Multi-GPU)", leave=True)
     
@@ -607,9 +647,12 @@ def validate_one_epoch_multigpu(
                 if isinstance(metric_results, dict):
                     current_results.update(metric_results)
             
-            key_metrics = {k: f"{current_results.get(k, 0):.4f}" 
-                          for k in ['dice_2d_fg', 'f1_2d']}
-            pbar.set_postfix(**key_metrics)
+            key_metrics = _build_validation_progress_postfix(
+                current_results,
+                progress_metric_keys,
+            )
+            if key_metrics:
+                pbar.set_postfix(**key_metrics)
     
     finally:
         # Always cleanup, even on error
