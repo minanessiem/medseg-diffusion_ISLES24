@@ -22,6 +22,7 @@ from src.data.loader_stack.isles26_loader import (
     ISLES26Dataset2D,
     ISLES26Dataset3D,
     ISLES26OnlineProc2D,
+    ISLES26RandomPatches3D,
 )
 
 
@@ -33,6 +34,7 @@ _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES24_LOADER_MODULE, "full_volumes_3d"): {"legacy-runtime"},
     (_ISLES26_LOADER_MODULE, "online_slices_3d_to_2d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "full_volumes_3d"): {"online-runtime"},
+    (_ISLES26_LOADER_MODULE, "random_patches_3d"): {"online-runtime"},
 }
 
 
@@ -102,6 +104,10 @@ def validate_dataset_contract(cfg):
                 "data_mode.channel_layout is currently supported only for "
                 "loader_mode='nnunet_slices_2d'."
             )
+        if OmegaConf.select(cfg, "dataset.preprocessing_configs") is None:
+            raise ValueError(
+                "online_slices_3d_to_2d requires dataset.preprocessing_configs."
+            )
 
     elif loader_mode == "nnunet_slices_2d":
         if dim != "2d":
@@ -143,6 +149,27 @@ def validate_dataset_contract(cfg):
                 "data_mode.channel_layout is currently supported only for "
                 "loader_mode='nnunet_slices_2d'."
             )
+        if OmegaConf.select(cfg, "dataset.preprocessing_configs") is None:
+            raise ValueError("full_volumes_3d requires dataset.preprocessing_configs.")
+    elif loader_mode == "random_patches_3d":
+        if dim != "3d":
+            raise ValueError("random_patches_3d requires data_mode.dim='3d'.")
+        if not _is_set(OmegaConf.select(cfg, "data_io.paths.data_root")):
+            raise ValueError("random_patches_3d requires data_io.paths.data_root.")
+        if not _is_set(OmegaConf.select(cfg, "data_io.paths.split_file")):
+            raise ValueError("random_patches_3d requires data_io.paths.split_file.")
+        if per_side_context_slices is not None and int(per_side_context_slices) != 0:
+            raise ValueError(
+                "data_mode.per_side_context_slices is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
+        if _is_set(channel_layout):
+            raise ValueError(
+                "data_mode.channel_layout is currently supported only for "
+                "loader_mode='nnunet_slices_2d'."
+            )
+        if OmegaConf.select(cfg, "dataset.preprocessing_configs") is None:
+            raise ValueError("random_patches_3d requires dataset.preprocessing_configs.")
 
 
 def get_dataloaders(cfg):
@@ -183,6 +210,7 @@ def get_dataloaders(cfg):
     )
     data_root = cfg.data_io.paths.data_root
     split_file = cfg.data_io.paths.split_file
+    preprocessing_configs = OmegaConf.select(cfg, "dataset.preprocessing_configs")
 
     if loader_mode == "nnunet_slices_2d":
         if capabilities.loader_module != _ISLES24_LOADER_MODULE:
@@ -252,6 +280,7 @@ def get_dataloaders(cfg):
             cache_lock=cache_lock,
             aug_cfg=aug_cfg,
             is_training=True,
+            preprocessing_configs=preprocessing_configs,
         )
         test_dataset = online_dataset_cls(
             directory=data_root,
@@ -266,6 +295,7 @@ def get_dataloaders(cfg):
             cache_lock=cache_lock,
             aug_cfg=None,
             is_training=False,
+            preprocessing_configs=preprocessing_configs,
         )
     elif loader_mode == "full_volumes_3d":
         if capabilities.loader_module == _ISLES24_LOADER_MODULE:
@@ -284,6 +314,8 @@ def get_dataloaders(cfg):
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=False,
+            image_size=cfg.model.image_size,
+            preprocessing_configs=preprocessing_configs,
         )
         test_dataset = fullvol_dataset_cls(
             directory=data_root,
@@ -292,6 +324,35 @@ def get_dataloaders(cfg):
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=True,
+            image_size=cfg.model.image_size,
+            preprocessing_configs=preprocessing_configs,
+        )
+    elif loader_mode == "random_patches_3d":
+        if capabilities.loader_module != _ISLES26_LOADER_MODULE:
+            raise NotImplementedError(
+                "random_patches_3d dispatch is currently available only for "
+                "src.data.loader_stack.isles26_loader routes."
+            )
+        train_dataset = ISLES26RandomPatches3D(
+            directory=data_root,
+            datalist_json=split_file,
+            fold=cfg.dataset.fold,
+            transform=None,
+            modalities=cfg.dataset.modalities,
+            test_flag=False,
+            image_size=cfg.model.image_size,
+            preprocessing_configs=preprocessing_configs,
+        )
+        # Random patch mode trains on patches but validates/samples on full volumes.
+        test_dataset = ISLES26Dataset3D(
+            directory=data_root,
+            datalist_json=split_file,
+            fold=cfg.dataset.fold,
+            transform=None,
+            modalities=cfg.dataset.modalities,
+            test_flag=True,
+            image_size=cfg.model.image_size,
+            preprocessing_configs=preprocessing_configs,
         )
     else:
         raise ValueError(f"Unsupported loader_mode: {loader_mode}")
@@ -374,6 +435,7 @@ __all__ = [
     "ISLES24NNUNet2D",
     "ISLES24OnlineProc2D",
     "ISLES26Dataset3D",
+    "ISLES26RandomPatches3D",
     "ISLES26Dataset2D",
     "ISLES26OnlineProc2D",
     "validate_dataset_contract",

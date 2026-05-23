@@ -1,0 +1,3 @@
+loader_mode: random_patches_3d
+dim: 3d
+preprocessing_mode: volume_random_patch_preprocessed

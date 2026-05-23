@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import threading
+from typing import Any, Mapping, Optional
 
 import nibabel
 import numpy as np
@@ -93,12 +94,29 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
     Inspired by BRATSDataset.
     """
 
-    def __init__(self, directory, datalist_json, fold=0, transform=None, modalities=None, test_flag=False):
+    def __init__(
+        self,
+        directory,
+        datalist_json,
+        fold=0,
+        transform=None,
+        modalities=None,
+        test_flag=False,
+        image_size=32,
+        preprocessing_configs: Optional[Mapping[str, Any]] = None,
+    ):
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
         self.modalities = modalities if modalities is not None else []
         self.base_modalities = sorted(list(set(mod.split("_")[0] for mod in self.modalities)))
+        self.image_size = int(image_size)
+        if not isinstance(preprocessing_configs, Mapping):
+            raise ValueError(
+                "ISLES24Dataset3D requires dataset.preprocessing_configs mapping. "
+                f"Got: {type(preprocessing_configs).__name__}."
+            )
+        self.preprocessing_configs = dict(preprocessing_configs)
 
         train_files, val_files = datafold_read(datalist=datalist_json, basedir=self.directory, fold=fold)
         self.database = val_files if test_flag else train_files
@@ -200,6 +218,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         cache_lock=None,
         aug_cfg=None,
         is_training=False,
+        preprocessing_configs: Optional[Mapping[str, Any]] = None,
     ):
         super().__init__()
         self.directory = os.path.expanduser(directory)
@@ -212,7 +231,13 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
 
         self.all_slices = []
 
-        self.image_size = image_size
+        self.image_size = int(image_size)
+        if not isinstance(preprocessing_configs, Mapping):
+            raise ValueError(
+                "ISLES24Dataset2D requires dataset.preprocessing_configs mapping. "
+                f"Got: {type(preprocessing_configs).__name__}."
+            )
+        self.preprocessing_configs = dict(preprocessing_configs)
         self.use_caching = use_caching
         self._cache_prefix = "ts" if test_flag else "tr"
 

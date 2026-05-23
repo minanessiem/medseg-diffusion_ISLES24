@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.data.loader_stack.contracts import SUPPORTED_LOADER_MODES
-
 
 @dataclass(frozen=True)
 class DatasetCapabilities:
@@ -29,16 +27,21 @@ DEFAULT_DATASET_REGISTRY: dict[str, DatasetCapabilities] = {
     # ISLES24 currently covers all active loader modes.
     "isles24": DatasetCapabilities(
         dataset_id="isles24",
-        supported_loader_modes=tuple(SUPPORTED_LOADER_MODES),
+        supported_loader_modes=(
+            "online_slices_3d_to_2d",
+            "nnunet_slices_2d",
+            "full_volumes_3d",
+        ),
         loader_module="src.data.loader_stack.isles24_loader",
         implementation_state="legacy-runtime",
     ),
-    # ISLES26 starts with online/full-volume paths first.
+    # ISLES26 supports online slices, full volumes, and random volume patches.
     "isles26": DatasetCapabilities(
         dataset_id="isles26",
         supported_loader_modes=(
             "online_slices_3d_to_2d",
             "full_volumes_3d",
+            "random_patches_3d",
         ),
         loader_module="src.data.loader_stack.isles26_loader",
         implementation_state="online-runtime",

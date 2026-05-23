@@ -13,6 +13,7 @@ SUPPORTED_LOADER_MODES = (
     "online_slices_3d_to_2d",
     "nnunet_slices_2d",
     "full_volumes_3d",
+    "random_patches_3d",
 )
 
 
@@ -26,7 +27,7 @@ def validate_supported_loader_mode(loader_mode: object) -> str:
     if loader_mode not in SUPPORTED_LOADER_MODES:
         raise ValueError(
             "Invalid data_mode.loader_mode. Expected one of "
-            "{online_slices_3d_to_2d, nnunet_slices_2d, full_volumes_3d}, "
+            "{online_slices_3d_to_2d, nnunet_slices_2d, full_volumes_3d, random_patches_3d}, "
             f"got: {loader_mode}"
         )
     return str(loader_mode)
