@@ -40,6 +40,7 @@ DEFAULT_DATASET_REGISTRY: dict[str, DatasetCapabilities] = {
         dataset_id="isles26",
         supported_loader_modes=(
             "online_slices_3d_to_2d",
+            "nnunet_slices_2d",
             "full_volumes_3d",
             "random_patches_3d",
         ),

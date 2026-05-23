@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 from omegaconf import OmegaConf
@@ -28,11 +28,13 @@ from src.data.loader_stack.isles26_loader import (
 
 _ISLES24_LOADER_MODULE = "src.data.loader_stack.isles24_loader"
 _ISLES26_LOADER_MODULE = "src.data.loader_stack.isles26_loader"
+_LOADER_SMOKE_ITEMS = 10
 _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES24_LOADER_MODULE, "online_slices_3d_to_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "nnunet_slices_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "full_volumes_3d"): {"legacy-runtime"},
     (_ISLES26_LOADER_MODULE, "online_slices_3d_to_2d"): {"online-runtime"},
+    (_ISLES26_LOADER_MODULE, "nnunet_slices_2d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "full_volumes_3d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "random_patches_3d"): {"online-runtime"},
 }
@@ -81,6 +83,7 @@ def validate_dataset_contract(cfg):
         "data_runtime.use_shared_cache",
         "data_runtime.train_prefetch_factor",
         "data_runtime.test_prefetch_factor",
+        "data_runtime.loader_smoke_testing",
     ]
     for key in runtime_required:
         value = OmegaConf.select(cfg, key)
@@ -213,10 +216,10 @@ def get_dataloaders(cfg):
     preprocessing_configs = OmegaConf.select(cfg, "dataset.preprocessing_configs")
 
     if loader_mode == "nnunet_slices_2d":
-        if capabilities.loader_module != _ISLES24_LOADER_MODULE:
+        if capabilities.loader_module not in {_ISLES24_LOADER_MODULE, _ISLES26_LOADER_MODULE}:
             raise NotImplementedError(
                 "nnunet_slices_2d dispatch is currently available only for "
-                "src.data.loader_stack.isles24_loader routes."
+                "src.data.loader_stack.isles24_loader / isles26_loader routes."
             )
         shared_cache = {} if cfg.data_runtime.use_shared_cache else None
         cache_lock = threading.Lock() if shared_cache else None
@@ -367,6 +370,29 @@ def get_dataloaders(cfg):
         f"per_rank={per_rank_train_batch_size}, strategy={strategy}"
     )
 
+    val_dataset = test_dataset
+    if bool(OmegaConf.select(cfg, "data_runtime.loader_smoke_testing", default=False)):
+        train_limit = min(_LOADER_SMOKE_ITEMS, len(train_dataset))
+        val_limit = min(_LOADER_SMOKE_ITEMS, len(test_dataset))
+        if train_limit == 0:
+            raise ValueError(
+                "data_runtime.loader_smoke_testing=true but train dataset is empty "
+                "(0 items after route/fold split)."
+            )
+        if val_limit == 0:
+            raise ValueError(
+                "data_runtime.loader_smoke_testing=true but validation dataset is empty "
+                "(0 items after route/fold split)."
+            )
+
+        train_dataset = Subset(train_dataset, list(range(train_limit)))
+        val_dataset = Subset(test_dataset, list(range(val_limit)))
+        print(
+            "[Data Runtime] loader_smoke_testing enabled: "
+            f"train_items={train_limit}, val_items={val_limit}, "
+            f"hard_cap={_LOADER_SMOKE_ITEMS}"
+        )
+
     train_sampler = None
     is_ddp = strategy == "ddp"
     if is_ddp:
@@ -409,7 +435,7 @@ def get_dataloaders(cfg):
         **train_kwargs,
     )
     val_dataloader = DataLoader(
-        test_dataset,
+        val_dataset,
         batch_size=cfg.validation.val_batch_size,
         shuffle=False,
         **val_kwargs,

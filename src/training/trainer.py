@@ -251,6 +251,9 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
         num_ensemble_samples = cfg.validation.ensemble.num_samples
         ensemble_method = cfg.validation.ensemble.method
         print(f"  Ensemble validation: {num_ensemble_samples} samples, method='{ensemble_method}'")
+
+    from src.utils.valid_utils import build_validation_inferer
+    infer_batch = build_validation_inferer(diffusion=diffusion, cfg=cfg)
     
     pbar = tqdm(val_dl, desc="Validation", leave=True)
     for img, true_mask, _ in pbar:
@@ -262,15 +265,15 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
             # Generate multiple samples and combine
             samples = []
             for _ in range(num_ensemble_samples):
-                sample = diffusion.sample(img, disable_tqdm=True)
+                sample = infer_batch(img)
                 samples.append(sample)
-            # Stack: [N, B, C, H, W]
+            # Stack: [N, B, C, *spatial]
             samples = torch.stack(samples, dim=0)
             # Combine using configured method
             pred_mask = ensemble_predictions(samples, cfg.validation.ensemble)
         else:
             # Single sample (original behavior)
-            pred_mask = diffusion.sample(img, disable_tqdm=True)
+            pred_mask = infer_batch(img)
         
         # Process each sample in batch (since metrics are slice-wise)
         batch_size = img.shape[0]

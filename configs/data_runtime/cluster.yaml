@@ -1,5 +1,6 @@
 train_batch_size: 4
 test_batch_size: 4
+loader_smoke_testing: false
 num_train_workers: 72
 num_valid_workers: 48
 num_test_workers: 8
