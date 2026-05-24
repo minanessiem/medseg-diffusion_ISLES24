@@ -12,8 +12,10 @@ import copy
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from typing import Iterable, List, Tuple, Optional
 from omegaconf import OmegaConf, DictConfig, ListConfig
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 from src.utils.distribution_utils import (
     is_main_process,
@@ -71,6 +73,104 @@ def _parse_multi_gpu_flag(flag):
     if isinstance(flag, (list, tuple, ListConfig)):
         return [int(x) for x in flag]
     return [int(x.strip()) for x in str(flag).split(',') if x.strip()]
+
+
+def _resolve_ddp_wrapper_kwargs(cfg: DictConfig) -> dict:
+    """Resolve DDP wrapper options from ``cfg.distribution``."""
+    distribution_cfg = getattr(cfg, "distribution", None)
+    return {
+        "find_unused_parameters": bool(
+            getattr(distribution_cfg, "find_unused_parameters", False)
+        ),
+        "broadcast_buffers": bool(getattr(distribution_cfg, "broadcast_buffers", False)),
+        "gradient_as_bucket_view": bool(
+            getattr(distribution_cfg, "gradient_as_bucket_view", False)
+        ),
+        "static_graph": bool(getattr(distribution_cfg, "static_graph", False)),
+    }
+
+
+def _wrap_trainable_model_for_strategy(
+    model: torch.nn.Module,
+    cfg: DictConfig,
+    device: torch.device,
+    strategy: str,
+) -> Tuple[torch.nn.Module, str]:
+    """
+    Wrap the trainable model exactly once according to distribution strategy.
+
+    Returns:
+        Tuple of (wrapped_model, wrapper_name) where wrapper_name is one of
+        {"DistributedDataParallel", "DataParallel", "none"}.
+    """
+    gpu_ids = _parse_multi_gpu_flag(cfg.environment.training.multi_gpu)
+
+    if strategy == "ddp":
+        # `environment.training.multi_gpu` is a DP-only knob.
+        if gpu_ids:
+            raise ValueError(
+                "Invalid config: distribution.strategy=ddp does not use "
+                "environment.training.multi_gpu. Remove this DP-only setting "
+                "or switch strategy to dp."
+            )
+
+        if not dist.is_available() or not dist.is_initialized():
+            raise RuntimeError(
+                "DDP strategy requires an initialized torch.distributed process group "
+                "before model wrapping."
+            )
+        if device.type != "cuda" or device.index is None:
+            raise RuntimeError(
+                "DDP strategy requires cuda:LOCAL_RANK process device. "
+                f"Got device={device}."
+            )
+
+        ddp_kwargs = _resolve_ddp_wrapper_kwargs(cfg)
+        model = DistributedDataParallel(
+            model,
+            device_ids=[int(device.index)],
+            output_device=int(device.index),
+            **ddp_kwargs,
+        )
+        dist_state = get_distribution_state(strategy)
+        print(
+            "[Model Wrapping] strategy=ddp wrapper=DistributedDataParallel "
+            f"rank={dist_state.rank} local_rank={dist_state.local_rank} "
+            f"world_size={dist_state.world_size} ddp_kwargs={ddp_kwargs}"
+        )
+        return model, "DistributedDataParallel"
+
+    if gpu_ids:
+        visible = torch.cuda.device_count()
+        if max(gpu_ids) >= visible:
+            raise ValueError(f"Requested GPU id {max(gpu_ids)} but only {visible} GPUs visible.")
+        print(f"Using GPUs {gpu_ids} with torch.nn.DataParallel")
+        model = torch.nn.DataParallel(model, device_ids=gpu_ids).cuda(gpu_ids[0])
+        print(f"  Wrapped UNet in DataParallel (primary device: cuda:{gpu_ids[0]})")
+        print("[Model Wrapping] strategy=dp wrapper=DataParallel")
+        return model, "DataParallel"
+
+    print(f"[Model Wrapping] strategy={strategy} wrapper=none")
+    return model, "none"
+
+
+def _assert_ddp_wrapping_invariants(diffusion: torch.nn.Module, strategy: str) -> None:
+    """Fail fast if DDP runtime is active without DDP model wrapping."""
+    if strategy != "ddp":
+        return
+
+    if not dist.is_available() or not dist.is_initialized():
+        raise RuntimeError(
+            "DDP strategy selected but torch.distributed process group is not initialized."
+        )
+
+    trainable_model = getattr(diffusion, "model", None)
+    if not isinstance(trainable_model, DistributedDataParallel):
+        raise RuntimeError(
+            "DDP strategy requires diffusion.model to be wrapped with "
+            "torch.nn.parallel.DistributedDataParallel, but got "
+            f"{type(trainable_model).__name__}."
+        )
 
 
 # =============================================================================
@@ -212,17 +312,21 @@ def setup_logger(
 
 def build_model_and_diffusion(cfg: DictConfig, device: torch.device):
     """
-    Build model and diffusion, handling multi-GPU if configured.
+    Build model and diffusion with strategy-aware wrapping.
     
-    Multi-GPU: Wraps UNet BEFORE building diffusion to ensure
-    gradients flow correctly to all GPUs, especially for OpenAI adapter.
+    - DDP: wraps trainable model with DistributedDataParallel using cfg.distribution
+    - DP: wraps trainable model with DataParallel using environment.training.multi_gpu
+    - single process: no wrapper
+
+    Wrapping always happens before diffusion construction so adapters see the
+    correct trainable module.
     
     Args:
-        cfg: Config with model, diffusion, and multi_gpu settings
+        cfg: Config with model, diffusion, and distribution settings
         device: Target device for model
     
     Returns:
-        Diffusion model (potentially with DataParallel-wrapped UNet)
+        Diffusion model with distribution-appropriate wrapping
     
     Raises:
         ValueError: If requested GPU id exceeds visible GPUs
@@ -230,32 +334,30 @@ def build_model_and_diffusion(cfg: DictConfig, device: torch.device):
     from src.models import build_model
     from src.diffusion.diffusion import Diffusion
 
+    strategy = resolve_strategy(cfg)
+
     # Keep model channels aligned with the active data contract before model build.
     sync_model_image_channels_with_data_contract(cfg)
     
     # Build model
     unet = build_model(cfg).to(device)
-    
-    # Multi-GPU: Wrap UNet BEFORE building diffusion
-    # This ensures gradients flow correctly to all GPUs, especially for OpenAI adapter
-    gpu_ids = _parse_multi_gpu_flag(cfg.environment.training.multi_gpu)
-    if gpu_ids:
-        visible = torch.cuda.device_count()
-        if max(gpu_ids) >= visible:
-            raise ValueError(f"Requested GPU id {max(gpu_ids)} but only {visible} GPUs visible.")
-        print(f"Using GPUs {gpu_ids} with torch.nn.DataParallel")
-        unet = torch.nn.DataParallel(unet, device_ids=gpu_ids).cuda(gpu_ids[0])
-        print(f"  Wrapped UNet in DataParallel (primary device: cuda:{gpu_ids[0]})")
+
+    # Strategy-aware model wrapping (exactly one path)
+    unet, wrapper_name = _wrap_trainable_model_for_strategy(
+        unet, cfg=cfg, device=device, strategy=strategy
+    )
     
     # Build diffusion with potentially wrapped UNet
     diffusion = Diffusion.build_diffusion(unet, cfg, device)
     
     # Ensure diffusion is on correct device
-    if not gpu_ids:
+    if wrapper_name == "none":
         diffusion = diffusion.to(device)
     else:
-        # Already on correct device via UNet wrapping
-        print(f"  Diffusion built with multi-GPU UNet")
+        # Wrapped models are already device-pinned appropriately.
+        print(f"  Diffusion built with wrapper={wrapper_name}")
+
+    _assert_ddp_wrapping_invariants(diffusion, strategy=strategy)
     
     return diffusion
 
@@ -325,6 +427,50 @@ def validate_model_channel_contract(cfg: DictConfig) -> None:
         )
 
 
+def validate_training_runtime_contract(cfg: DictConfig) -> None:
+    """
+    Fail fast for unsupported training-runtime combinations.
+
+    Current guardrails:
+    - 3D + diffusion (non-discriminative) + sampling snapshot logging
+    - 3D + diffusion (non-discriminative) + validation ensemble
+    - 3D + diffusion (non-discriminative) + ensembled image validation logging
+    """
+    dim_token = str(OmegaConf.select(cfg, "data_mode.dim", default="")).strip().lower()
+    is_3d = dim_token in {"3", "3d"}
+    diffusion_type = str(OmegaConf.select(cfg, "diffusion.type", default="")).strip()
+    is_discriminative = diffusion_type.lower() == "discriminative"
+    is_diffusion_3d = is_3d and not is_discriminative
+
+    if not is_diffusion_3d:
+        return
+
+    if bool(OmegaConf.select(cfg, "logging.enable_sampling_snapshots", default=False)):
+        raise ValueError(
+            "Unsupported runtime combination: data_mode.dim='3d' with "
+            f"diffusion.type='{diffusion_type}' and logging.enable_sampling_snapshots=true. "
+            "3D diffusion sampling snapshots are disabled for training-time logging."
+        )
+
+    if bool(OmegaConf.select(cfg, "validation.ensemble.enabled", default=False)):
+        ensemble_method = str(
+            OmegaConf.select(cfg, "validation.ensemble.method", default="unknown")
+        )
+        raise ValueError(
+            "Unsupported runtime combination: data_mode.dim='3d' with "
+            f"diffusion.type='{diffusion_type}' and validation.ensemble.enabled=true "
+            f"(method='{ensemble_method}'). "
+            "3D diffusion ensemble/STAPLE validation in training loops is intentionally disabled."
+        )
+
+    if bool(OmegaConf.select(cfg, "validation.ensembled_image.enabled", default=False)):
+        raise ValueError(
+            "Unsupported runtime combination: data_mode.dim='3d' with "
+            f"diffusion.type='{diffusion_type}' and validation.ensembled_image.enabled=true. "
+            "3D diffusion ensembled-image validation logging is intentionally disabled."
+        )
+
+
 # =============================================================================
 # High-Level Training Entry Points
 # =============================================================================
@@ -377,6 +523,7 @@ def setup_and_start_training(cfg: DictConfig, run_dir: str):
 
     # Sync before logger prints resolved config for accurate channel visibility.
     sync_model_image_channels_with_data_contract(cfg)
+    validate_training_runtime_contract(cfg)
     
     _debug("Setting up logger...")
     logger, writer = setup_logger(cfg, run_dir, mode='train')
@@ -436,6 +583,7 @@ def setup_and_resume_training(cfg: DictConfig, run_dir: str, resume_step: str = 
     device = setup_device(cfg)
     # Sync before logger prints resolved config for accurate channel visibility.
     sync_model_image_channels_with_data_contract(cfg)
+    validate_training_runtime_contract(cfg)
     
     # Load checkpoint first to get step info
     resume_state = load_checkpoint(run_dir, resume_step, cfg, device)

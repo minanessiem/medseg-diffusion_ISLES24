@@ -1,0 +1,12 @@
+# 3D discriminative logging profile.
+# Builds on 2D discriminative logging and enables 3D->2D projection controls.
+
+defaults:
+  - 2d_discriminative
+  - _self_
+
+# 3D -> 2D projection settings for image logging.
+visualization:
+  mode: triplanar
+  use_mip: false
+

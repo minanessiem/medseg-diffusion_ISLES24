@@ -62,6 +62,10 @@ from src.utils.ensemble import (
     ensemble_predictions,
     should_log_ensembled_image,
 )
+from src.utils.visualization_utils import (
+    prepare_discriminative_sample_panels,
+    prepare_discriminative_tensor_panel,
+)
 print("[DEBUG:trainer.py] All imports complete!", flush=True)
 
 
@@ -1189,27 +1193,40 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
                     
                     if is_discriminative:
                         # Discriminative: simpler grid (modalities, prediction, target)
+                        per_sample_ncol = 1 if use_context_panel else None
                         for i in range(num_samples):
                             if use_context_panel:
                                 context_panel = _build_context_modalities_panel(intermediates['img'][i], cfg)
+                                pred_panel = prepare_discriminative_tensor_panel(
+                                    tensor=intermediates['pred'][i],
+                                    logging_cfg=cfg.logging,
+                                )
+                                mask_panel = prepare_discriminative_tensor_panel(
+                                    tensor=intermediates['mask'][i],
+                                    logging_cfg=cfg.logging,
+                                )
                                 row_image = _concat_row_panels(
-                                    [context_panel, intermediates['pred'][i], intermediates['mask'][i]]
+                                    [context_panel, pred_panel, mask_panel]
                                 )
                                 all_images.append(row_image)
                                 labels.append("Context Grid | Prediction | Target")
                             else:
-                                # Modality channels (each channel separately)
-                                for c in range(num_modalities):
-                                    all_images.append(intermediates['img'][i, c:c+1])
-                                    labels.append(f"Modality: {modality_names[c]}")
-                                # Prediction
-                                all_images.append(intermediates['pred'][i])
-                                labels.append("Prediction")
-                                # Target
-                                all_images.append(intermediates['mask'][i])
-                                labels.append("Target")
-                        
-                        per_sample_ncol = 1 if use_context_panel else (num_modalities + 2)
+                                sample_panels, sample_labels = prepare_discriminative_sample_panels(
+                                    sample_img=intermediates['img'][i],
+                                    sample_pred=intermediates['pred'][i],
+                                    sample_mask=intermediates['mask'][i],
+                                    modality_names=modality_names,
+                                    logging_cfg=cfg.logging,
+                                )
+                                all_images.extend(sample_panels)
+                                labels.extend(sample_labels)
+                                if per_sample_ncol is None:
+                                    per_sample_ncol = len(sample_labels)
+
+                        if per_sample_ncol is None:
+                            raise RuntimeError(
+                                "Unable to resolve per_sample_ncol for discriminative logging."
+                            )
                     else:
                         # Diffusion: full grid with x_t, noise, noise_hat, pred_x0
                         for i in range(num_samples):

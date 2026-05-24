@@ -11,6 +11,7 @@ import torch
 from torchvision.utils import make_grid
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+from monai.data.utils import pad_list_data_collate
 from src.models.MedSegDiff.unet_util import unnormalize_to_zero_to_one
 from omegaconf import DictConfig
 
@@ -156,13 +157,54 @@ class Logger:
             if isinstance(fmt, TensorboardOutput):
                 fmt.close()
 
+    @staticmethod
+    def _pad_panels_to_common_size(images: List[torch.Tensor]) -> List[torch.Tensor]:
+        """
+        Pad 2D panels to a common spatial size for torchvision.make_grid.
+
+        This is especially important for full-volume 3D projections where
+        different cases naturally have different H/W shapes.
+        """
+        if not images:
+            return images
+
+        normalized: List[torch.Tensor] = []
+        for img in images:
+            if img.dim() == 2:
+                img = img.unsqueeze(0)
+            if img.dim() != 3:
+                raise ValueError(
+                    "Expected panel tensors with shape [C,H,W] before padding. "
+                    f"Got {tuple(img.shape)}."
+                )
+            normalized.append(img)
+
+        padded_batch = pad_list_data_collate(
+            normalized,
+            method="symmetric",
+            mode="constant",
+        )
+        if hasattr(padded_batch, "as_tensor"):
+            padded_batch = padded_batch.as_tensor()
+
+        if not isinstance(padded_batch, torch.Tensor):
+            raise TypeError(
+                "pad_list_data_collate returned unsupported type "
+                f"{type(padded_batch).__name__}; expected torch.Tensor."
+            )
+        if padded_batch.dim() != 4:
+            raise ValueError(
+                "Expected padded batch tensor with shape [N,C,H,W], "
+                f"got {tuple(padded_batch.shape)}."
+            )
+        return [padded_batch[i] for i in range(int(padded_batch.shape[0]))]
+
     def log_image_grid(self, tag: str, images: List[torch.Tensor], step: int, metrics: Optional[Dict[int, float]] = None, grid_layout: str = 'horizontal', labels: Optional[List[str]] = None, per_sample_ncol: Optional[int] = None) -> None:
         if not any(isinstance(fmt, TensorboardOutput) for fmt in self.output_formats):
             return  # Skip if TensorBoard not enabled
 
-        # Preprocess: Handle MetaTensor, split multi-channel, normalize (keep 1-channel for grayscale)
+        # Preprocess: Handle MetaTensor, split multi-channel, normalize.
         processed_images = []
-        label_index = 0  # For assigning labels after splitting
 
         # Helper to convert arbitrary CHW or HW tensor to RGB uint8 numpy
         def _to_rgb_numpy(tensor: torch.Tensor) -> Optional[np.ndarray]:
@@ -190,6 +232,25 @@ class Logger:
             if hasattr(img, 'as_tensor'):  # MONAI MetaTensor
                 img = img.as_tensor()
             img = unnormalize_to_zero_to_one(img).detach().cpu()
+            if img.dim() == 4:
+                # Legacy batched 2D panel [1,1,H,W] is accepted and squeezed.
+                if img.shape[0] == 1 and img.shape[1] == 1:
+                    img = img.squeeze(0)
+                else:
+                    raise ValueError(
+                        "Logger.log_image_grid expects pre-projected 2D panels "
+                        "with shape [1,H,W] (or batched [1,1,H,W]). "
+                        f"Got 4D tensor with shape {tuple(img.shape)} at index {idx}. "
+                        "Project 3D tensors via src.utils.visualization_utils first."
+                    )
+
+            if img.dim() not in {2, 3}:
+                raise ValueError(
+                    "Logger.log_image_grid expects image tensors with shape [H,W], [C,H,W], "
+                    "or [1,1,H,W]. "
+                    f"Got shape {tuple(img.shape)} at index {idx}."
+                )
+
             if img.dim() == 3 and img.shape[0] > 1:  # Multi-channel: split and normalize per channel
                 for c in range(img.shape[0]):
                     slice_img = img[c:c+1]
@@ -200,7 +261,6 @@ class Logger:
                         slice_img = (slice_img - min_val) / (max_val - min_val + 1e-8)
                     slice_img = slice_img.clamp(0, 1)
                     processed_images.append(slice_img)
-                    label_index += 1
             else:
                 # Stretch contrast for single-channel image
                 min_val = img.min()
@@ -209,7 +269,6 @@ class Logger:
                     img = (img - min_val) / (max_val - min_val + 1e-8)
                 img = img.clamp(0, 1)
                 processed_images.append(img)
-                label_index += 1
 
         # Add labels to each processed image if enabled and provided
         if labels and len(labels) == len(processed_images):
@@ -252,6 +311,7 @@ class Logger:
             processed_images = labeled_images
 
         # Create grid
+        processed_images = self._pad_panels_to_common_size(processed_images)
         nrow = len(processed_images) if grid_layout == 'horizontal' else 1
         if grid_layout == 'horizontal' and per_sample_ncol:
             nrow = per_sample_ncol  # Group into rows of per_sample_ncol images

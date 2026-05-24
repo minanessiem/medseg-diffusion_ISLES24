@@ -8,6 +8,6 @@ defaults:
   - override /model: swinunetr_base
   - override /diffusion: discriminative
   - override /loss: discriminative_dicebce
-  - override /logging: discriminative
+  - override /logging: 2d_discriminative
   - override /augmentation: none
 
