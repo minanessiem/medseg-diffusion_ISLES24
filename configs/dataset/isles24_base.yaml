@@ -4,4 +4,40 @@ fold: 0
 label_spec:
   background: 0
   foreground: 1
-preprocessing_configs: {}
+preprocessing_configs:
+  common:
+    orientation:
+      enabled: false
+      axcodes: RAS
+    spacing:
+      enabled: false
+      pixdim: [1.0, 1.0, 1.0]
+      interpolation:
+        image: bilinear
+        label: nearest
+
+  roi:
+    volume_3d:
+      - ${model.image_size}
+      - ${model.image_size}
+      - ${model.image_size}
+    slice_2d:
+      - ${model.image_size}
+      - ${model.image_size}
+
+  online_slices_3d_to_2d:
+    slice_axis: 2
+    slice_order: sequential
+
+  random_patches_3d:
+    patches_per_volume:
+      train: 1
+    rand_crop_by_pos_neg_label:
+      pos: 1
+      neg: 1
+      image_threshold: 0.0
+      allow_smaller: true
+    pad_to_divisible: true
+
+  full_volumes_3d:
+    pad_to_divisible: false
