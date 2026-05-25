@@ -328,7 +328,9 @@ def generate_augmentation_string(aug_cfg):
         String encoding of augmentation strategy:
         - "augNONE" - No augmentation or all transforms disabled
         - "augLIGHT2D" - Light preset (configs/augmentation/light_2d.yaml)
+        - "augLIGHT3D" - Light 3D preset (configs/augmentation/light_3d.yaml)
         - "augAGG2D" - Aggressive preset (configs/augmentation/aggressive_2d.yaml)
+        - "augAGG3D" - Aggressive 3D preset (configs/augmentation/aggressive_3d.yaml)
         - "augCUSTOM" - Custom user-defined config
     
     Examples:
@@ -357,8 +359,12 @@ def generate_augmentation_string(aug_cfg):
         return "augNONE"
     
     if 'light' in config_name:
+        if '3d' in config_name:
+            return "augLIGHT3D"
         return "augLIGHT2D"
     elif 'aggressive' in config_name or 'agg' in config_name:
+        if '3d' in config_name:
+            return "augAGG3D"
         return "augAGG2D"
     elif config_name == 'none':
         return "augNONE"

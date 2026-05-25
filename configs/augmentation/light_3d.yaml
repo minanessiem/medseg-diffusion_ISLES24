@@ -1,0 +1,11 @@
+# Light 3D augmentation: conservative volume-space transforms.
+
+defaults:
+  - light_2d
+  - _self_
+
+_name_: light_3d
+
+spatial:
+  random_flip:
+    spatial_axis: [0, 1, 2]

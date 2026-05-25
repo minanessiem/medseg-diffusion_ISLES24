@@ -1,0 +1,19 @@
+# Aggressive 3D augmentation: stronger volume-space transforms.
+
+defaults:
+  - aggressive_2d
+  - _self_
+
+_name_: aggressive_3d
+
+spatial:
+  random_flip:
+    spatial_axis: [0, 1, 2]
+
+  random_rotate:
+    range_y: [-15, 15]
+    range_z: [-15, 15]
+
+intensity:
+  random_gaussian_blur:
+    sigma_range_z: [0.5, 1.5]

@@ -15,10 +15,7 @@ import threading
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import nibabel
-import numpy as np
 import torch
-import monai.transforms.compose as monai_compose_module
-import monai.transforms.transform as monai_transform_module
 from monai.transforms import (
     Compose,
     EnsureTyped,
@@ -30,6 +27,14 @@ from monai.transforms import (
     Spacingd,
 )
 
+from src.data.augmentation import AugmentationPipeline2D, AugmentationPipeline3D
+from src.utils.loader_monai_utils import build_monai_compose_safe
+from src.utils.loader_transforms import (
+    MergeProcessedChannelsTransform,
+    ProcessModalitiesTransform,
+)
+from src.utils.loader_utils import LoaderDataUtils
+
 ISLES26_MODALITY_KEY = "T1"
 ISLES26_SUPPORTED_MODALITY_KEYS = (ISLES26_MODALITY_KEY,)
 ISLES26_SUPPORTED_PREPROCESSING_KEYS = ("RAW",)
@@ -39,76 +44,19 @@ ISLES26_VIRTUAL_PATH_TEMPLATE = "{case_id}_slice{slice_idx}"
 ISLES26_PATCH_PATH_TEMPLATE = "{case_id}_patch{patch_idx}"
 
 
-def _as_int_tuple(values: Sequence[Any], expected_len: int, field_name: str) -> Tuple[int, ...]:
-    if len(values) != expected_len:
-        raise ValueError(
-            f"{field_name} must have exactly {expected_len} entries, got {len(values)}."
-        )
-    return tuple(int(value) for value in values)
-
-
-def _as_float_tuple(
-    values: Sequence[Any], expected_len: int, field_name: str
-) -> Tuple[float, ...]:
-    if len(values) != expected_len:
-        raise ValueError(
-            f"{field_name} must have exactly {expected_len} entries, got {len(values)}."
-        )
-    return tuple(float(value) for value in values)
-
-
-def _resolve_case_input_paths(
-    filedict: Mapping[str, Any], base_modalities: Sequence[str]
-) -> Dict[str, str]:
-    case_input: Dict[str, str] = {}
-    for key in list(base_modalities) + ["label"]:
-        if key not in filedict or not filedict[key]:
-            continue
-        filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
-        case_input[key] = str(filepath)
-    return case_input
-
-
-def _as_sample_list(samples: Any) -> list[Mapping[str, Any]]:
-    if isinstance(samples, Mapping):
-        return [samples]
-    if isinstance(samples, list):
-        return samples
-    if isinstance(samples, tuple):
-        return list(samples)
-    raise ValueError(
-        "Expected patch pipeline output to be mapping or list/tuple of mappings, "
-        f"got: {type(samples).__name__}."
-    )
-
-
 def _parse_modality_config(modality_config: str) -> Tuple[str, str]:
-    token = str(modality_config).strip()
-    if "_" not in token:
+    try:
+        return LoaderDataUtils.parse_modality_token(modality_config)
+    except ValueError as exc:
         raise ValueError(
             "ISLES26 modality config must use '<modality_key>_<preprocessing_key>' format. "
             f"Got '{modality_config}'."
-        )
-    base_modality, preprocessing_key = token.split("_", 1)
-    if not base_modality or not preprocessing_key:
-        raise ValueError(
-            "ISLES26 modality config must define both base modality and preprocessing key. "
-            f"Got '{modality_config}'."
-        )
-    return base_modality, preprocessing_key
+        ) from exc
 
 
-def _compute_data_stats(raw_tensor: torch.Tensor) -> Dict[str, float]:
-    raw_np = raw_tensor.detach().cpu().numpy()
-    finite_vals = raw_np[np.isfinite(raw_np)]
-    if finite_vals.size == 0:
-        return {"min_val": 0.0, "max_val": 0.0, "mean": 0.0, "std": 0.0}
-    return {
-        "min_val": float(np.min(finite_vals)),
-        "max_val": float(np.max(finite_vals)),
-        "mean": float(np.mean(finite_vals)),
-        "std": float(np.std(finite_vals)),
-    }
+def _resolve_base_modality(modality_config: str) -> str:
+    base_modality, _ = _parse_modality_config(modality_config)
+    return base_modality
 
 
 def _resolve_t1_preprocessing_params(
@@ -140,7 +88,7 @@ def _process_t1_modality(
             f"Got '{modality_config}'."
         )
 
-    data_stats = _compute_data_stats(raw_tensor)
+    data_stats = LoaderDataUtils.compute_tensor_data_stats(raw_tensor)
     params = _resolve_t1_preprocessing_params(
         preprocessing_key=preprocessing_key,
         data_stats=data_stats,
@@ -154,71 +102,11 @@ def _process_t1_modality(
     return processor(raw_tensor, **params)
 
 
-class _ProcessModalitiesTransform:
-    def __init__(self, modalities: Sequence[str]):
-        self.modalities = tuple(str(modality) for modality in modalities)
-
-    def __call__(self, data: Mapping[str, Any]) -> Dict[str, Any]:
-        output = dict(data)
-        for modality_config in self.modalities:
-            base_modality, _ = _parse_modality_config(modality_config)
-            if base_modality not in output:
-                raise KeyError(
-                    f"Missing modality key '{base_modality}' during ISLES26 preprocessing."
-                )
-            raw_tensor = output[base_modality]
-            if not isinstance(raw_tensor, torch.Tensor):
-                raw_tensor = torch.as_tensor(raw_tensor)
-            output[f"processed_{modality_config}"] = _process_t1_modality(
-                modality_config=modality_config,
-                raw_tensor=raw_tensor,
-            )
-        return output
-
-
-class _MergeProcessedChannelsTransform:
-    def __init__(self, modalities: Sequence[str]):
-        self.modalities = tuple(str(modality) for modality in modalities)
-        self.base_modalities = tuple(
-            sorted(set(_parse_modality_config(modality)[0] for modality in self.modalities))
-        )
-
-    def __call__(self, data: Mapping[str, Any]) -> Dict[str, Any]:
-        output = dict(data)
-        processed_channels = [output[f"processed_{modality}"] for modality in self.modalities]
-        output["image"] = torch.cat(processed_channels, dim=0)
-
-        cleanup_keys = [
-            *[f"processed_{modality}" for modality in self.modalities],
-            *self.base_modalities,
-        ]
-        for key in cleanup_keys:
-            output.pop(key, None)
-            output.pop(f"{key}_meta_dict", None)
-        return output
-
-
-def _build_monai_compose(transforms: Sequence[Any]) -> Compose:
-    """
-    Build MONAI Compose with a compatibility guard for uint32 seed overflow.
-
-    Some NumPy/MONAI combos raise on `_seed % MAX_SEED` when MAX_SEED is set to
-    2**32. Capping module MAX_SEED values to uint32 max preserves native MONAI
-    behavior while avoiding overflow.
-    """
-    uint32_max = int(np.iinfo(np.uint32).max)
-    if getattr(monai_compose_module, "MAX_SEED", uint32_max) > uint32_max:
-        monai_compose_module.MAX_SEED = uint32_max
-    if getattr(monai_transform_module, "MAX_SEED", uint32_max) > uint32_max:
-        monai_transform_module.MAX_SEED = uint32_max
-    return Compose(list(transforms))
-
-
 def _build_common_preprocess_transforms(
     modalities: Sequence[str],
     preprocessing_configs: Mapping[str, Any],
 ) -> list[Any]:
-    base_modalities = sorted(set(_parse_modality_config(modality)[0] for modality in modalities))
+    base_modalities = sorted(set(_resolve_base_modality(modality) for modality in modalities))
     keys_to_load = [*base_modalities, "label"]
 
     common_cfg = preprocessing_configs["common"]
@@ -241,7 +129,7 @@ def _build_common_preprocess_transforms(
         )
 
     if bool(spacing_cfg["enabled"]):
-        pixdim = _as_float_tuple(
+        pixdim = LoaderDataUtils.as_float_tuple(
             spacing_cfg["pixdim"],
             expected_len=3,
             field_name="dataset.preprocessing_configs.common.spacing.pixdim",
@@ -259,20 +147,37 @@ def _build_common_preprocess_transforms(
 
     transforms.extend(
         [
-            _ProcessModalitiesTransform(modalities),
-            _MergeProcessedChannelsTransform(modalities),
+            ProcessModalitiesTransform(
+                modalities,
+                resolve_base_modality=_resolve_base_modality,
+                process_modality=_process_t1_modality,
+            ),
+            MergeProcessedChannelsTransform(
+                modalities,
+                resolve_base_modality=_resolve_base_modality,
+            ),
             EnsureTyped(keys=["image", "label"], dtype=torch.float32),
         ]
     )
     return transforms
 
 
+def build_common_preprocessed_volume_pipeline(
+    modalities: Sequence[str],
+    preprocessing_configs: Mapping[str, Any],
+) -> Compose:
+    return build_monai_compose_safe(
+        _build_common_preprocess_transforms(modalities, preprocessing_configs)
+    )
+
+
 def build_online_slices_3d_to_2d_case_pipeline(
     modalities: Sequence[str],
     preprocessing_configs: Mapping[str, Any],
 ) -> Compose:
-    return _build_monai_compose(
-        _build_common_preprocess_transforms(modalities, preprocessing_configs)
+    return build_common_preprocessed_volume_pipeline(
+        modalities=modalities,
+        preprocessing_configs=preprocessing_configs,
     )
 
 
@@ -283,23 +188,22 @@ def build_full_volumes_3d_pipeline(
     transforms = _build_common_preprocess_transforms(modalities, preprocessing_configs)
     fullvol_cfg = preprocessing_configs["full_volumes_3d"]
     if bool(fullvol_cfg["pad_to_divisible"]):
-        roi_3d = _as_int_tuple(
+        roi_3d = LoaderDataUtils.as_int_tuple(
             preprocessing_configs["roi"]["volume_3d"],
             expected_len=3,
             field_name="dataset.preprocessing_configs.roi.volume_3d",
         )
         transforms.append(SpatialPadd(keys=["image", "label"], spatial_size=roi_3d))
-    return _build_monai_compose(transforms)
+    return build_monai_compose_safe(transforms)
 
 
-def build_random_patches_3d_pipeline(
-    modalities: Sequence[str],
+def _build_random_patches_3d_sampling_transforms(
     preprocessing_configs: Mapping[str, Any],
     patches_per_volume: Optional[int] = None,
-) -> Compose:
-    transforms = _build_common_preprocess_transforms(modalities, preprocessing_configs)
+) -> list[Any]:
+    transforms: list[Any] = []
     random_patch_cfg = preprocessing_configs["random_patches_3d"]
-    roi_3d = _as_int_tuple(
+    roi_3d = LoaderDataUtils.as_int_tuple(
         preprocessing_configs["roi"]["volume_3d"],
         expected_len=3,
         field_name="dataset.preprocessing_configs.roi.volume_3d",
@@ -331,15 +235,25 @@ def build_random_patches_3d_pipeline(
     if bool(random_patch_cfg["pad_to_divisible"]):
         transforms.append(SpatialPadd(keys=["image", "label"], spatial_size=roi_3d))
     transforms.append(EnsureTyped(keys=["image", "label"], dtype=torch.float32))
-    return _build_monai_compose(transforms)
+    return transforms
 
 
-def _is_non_empty(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return len(value.strip()) > 0
-    return True
+def build_random_patches_3d_pipeline(
+    modalities: Sequence[str],
+    preprocessing_configs: Mapping[str, Any],
+    patches_per_volume: Optional[int] = None,
+    include_common_preprocess: bool = True,
+) -> Compose:
+    transforms: list[Any] = []
+    if include_common_preprocess:
+        transforms.extend(_build_common_preprocess_transforms(modalities, preprocessing_configs))
+    transforms.extend(
+        _build_random_patches_3d_sampling_transforms(
+            preprocessing_configs=preprocessing_configs,
+            patches_per_volume=patches_per_volume,
+        )
+    )
+    return build_monai_compose_safe(transforms)
 
 
 def _normalize_modalities(modalities: Optional[Sequence[str]]) -> Tuple[str, ...]:
@@ -371,19 +285,6 @@ def _normalize_modalities(modalities: Optional[Sequence[str]]) -> Tuple[str, ...
     return normalized
 
 
-def _resolve_path_value(basedir: str, value: object) -> object:
-    """
-    Resolve relative datalist paths against `basedir`.
-    """
-    if isinstance(value, str) and _is_non_empty(value):
-        if os.path.isabs(value):
-            return value
-        return os.path.join(basedir, value)
-    if isinstance(value, list):
-        return [_resolve_path_value(basedir, item) for item in value]
-    return value
-
-
 def _normalize_case_record_paths(record: Mapping[str, Any], basedir: str) -> Dict[str, Any]:
     """
     Return a shallow normalized copy of one ISLES26 datalist record.
@@ -391,21 +292,8 @@ def _normalize_case_record_paths(record: Mapping[str, Any], basedir: str) -> Dic
     normalized = dict(record)
     for key in (ISLES26_MODALITY_KEY, "label", "metadata_csv"):
         if key in normalized:
-            normalized[key] = _resolve_path_value(basedir, normalized[key])
+            normalized[key] = LoaderDataUtils.resolve_path_value(basedir, normalized[key])
     return normalized
-
-
-def _normalize_case_id(case_id: object) -> str:
-    """
-    Normalize case identity to a non-empty string.
-    """
-    if isinstance(case_id, list):
-        if len(case_id) == 0:
-            raise ValueError("ISLES26 record has empty list for 'caseID'.")
-        case_id = case_id[0]
-    if not _is_non_empty(case_id):
-        raise ValueError("ISLES26 record requires non-empty 'caseID'.")
-    return str(case_id)
 
 
 def _normalize_t1_paths(t1_value: object, basedir: str) -> list[str]:
@@ -423,9 +311,9 @@ def _normalize_t1_paths(t1_value: object, basedir: str) -> list[str]:
 
     resolved_paths: list[str] = []
     for path_value in candidate_paths:
-        if not _is_non_empty(path_value):
+        if not LoaderDataUtils.is_non_empty(path_value):
             continue
-        resolved = _resolve_path_value(basedir, path_value)
+        resolved = LoaderDataUtils.resolve_path_value(basedir, path_value)
         resolved_paths.append(str(resolved))
 
     if len(resolved_paths) == 0:
@@ -445,7 +333,10 @@ def _normalize_case_record(record: Mapping[str, Any], basedir: str) -> Dict[str,
         )
 
     normalized = _normalize_case_record_paths(record=record, basedir=basedir)
-    normalized["caseID"] = _normalize_case_id(record.get("caseID"))
+    normalized["caseID"] = LoaderDataUtils.normalize_case_id(
+        record.get("caseID"),
+        field_name="caseID",
+    )
 
     try:
         normalized["fold"] = int(record.get("fold"))
@@ -460,11 +351,11 @@ def _normalize_case_record(record: Mapping[str, Any], basedir: str) -> Dict[str,
     )
 
     label_value = record.get("label")
-    if not _is_non_empty(label_value):
+    if not LoaderDataUtils.is_non_empty(label_value):
         raise ValueError("ISLES26 record requires non-empty 'label' path.")
-    normalized["label"] = str(_resolve_path_value(basedir, label_value))
+    normalized["label"] = str(LoaderDataUtils.resolve_path_value(basedir, label_value))
 
-    if "siteID" in record and _is_non_empty(record.get("siteID")):
+    if "siteID" in record and LoaderDataUtils.is_non_empty(record.get("siteID")):
         normalized["siteID"] = str(record.get("siteID"))
 
     if "metadata" in record:
@@ -473,8 +364,12 @@ def _normalize_case_record(record: Mapping[str, Any], basedir: str) -> Dict[str,
             raise ValueError("ISLES26 record field 'metadata' must be a mapping when provided.")
         normalized["metadata"] = metadata
 
-    if "metadata_csv" in record and _is_non_empty(record.get("metadata_csv")):
-        normalized["metadata_csv"] = str(_resolve_path_value(basedir, record.get("metadata_csv")))
+    if "metadata_csv" in record and LoaderDataUtils.is_non_empty(
+        record.get("metadata_csv")
+    ):
+        normalized["metadata_csv"] = str(
+            LoaderDataUtils.resolve_path_value(basedir, record.get("metadata_csv"))
+        )
 
     return normalized
 
@@ -538,6 +433,8 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
         test_flag=False,
         image_size=32,
         preprocessing_configs: Optional[Mapping[str, Any]] = None,
+        aug_cfg=None,
+        is_training=False,
     ):
         super().__init__()
         self.directory = os.path.expanduser(str(directory))
@@ -546,6 +443,8 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
         self.transform = transform
         self.test_flag = bool(test_flag)
         self.image_size = int(image_size)
+        self.aug_cfg = aug_cfg
+        self.is_training = bool(is_training)
         if not isinstance(preprocessing_configs, Mapping):
             raise ValueError(
                 "ISLES26Dataset3D requires dataset.preprocessing_configs mapping. "
@@ -567,12 +466,16 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
             modalities=self.modalities,
             preprocessing_configs=self.preprocessing_configs,
         )
+        self.augmentation = None
+        if self.is_training and self.aug_cfg is not None:
+            self.augmentation = AugmentationPipeline3D(self.aug_cfg)
+            print("Initialized 3D augmentation pipeline for ISLES26 full-volume training dataset")
 
     def __len__(self):
         return len(self.database)
 
     def _load_case_volume(self, filedict: Mapping[str, Any]) -> Dict[str, torch.Tensor]:
-        case_input = _resolve_case_input_paths(
+        case_input = LoaderDataUtils.resolve_case_input_paths(
             filedict=filedict,
             base_modalities=self.base_modalities,
         )
@@ -587,6 +490,12 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
         case_data = self._load_case_volume(filedict)
         image = case_data["image"]
         label = case_data["label"]
+
+        if self.augmentation is not None:
+            data_dict = {"image": image, "label": label}
+            data_dict = self.augmentation(data_dict)
+            image = data_dict["image"]
+            label = data_dict["label"]
 
         if self.transform:
             state = torch.get_rng_state()
@@ -616,6 +525,8 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         test_flag=False,
         image_size=32,
         preprocessing_configs: Optional[Mapping[str, Any]] = None,
+        aug_cfg=None,
+        is_training=False,
     ):
         super().__init__()
         self.directory = os.path.expanduser(str(directory))
@@ -624,6 +535,8 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         self.transform = transform
         self.test_flag = bool(test_flag)
         self.image_size = int(image_size)
+        self.aug_cfg = aug_cfg
+        self.is_training = bool(is_training)
         if not isinstance(preprocessing_configs, Mapping):
             raise ValueError(
                 "ISLES26RandomPatches3D requires dataset.preprocessing_configs mapping. "
@@ -649,21 +562,39 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
                 "dataset.preprocessing_configs.random_patches_3d.patches_per_volume.train "
                 f"must be > 0, got {self.patches_per_volume}."
             )
-        self.random_patch_pipeline = build_random_patches_3d_pipeline(
+        self.preprocessed_volume_pipeline = build_common_preprocessed_volume_pipeline(
+            modalities=self.modalities,
+            preprocessing_configs=self.preprocessing_configs,
+        )
+        self.random_patch_sampler_pipeline = build_random_patches_3d_pipeline(
             modalities=self.modalities,
             preprocessing_configs=self.preprocessing_configs,
             patches_per_volume=self.patches_per_volume,
+            include_common_preprocess=False,
         )
+        self.augmentation = None
+        if self.is_training and self.aug_cfg is not None:
+            self.augmentation = AugmentationPipeline3D(self.aug_cfg)
+            print("Initialized 3D augmentation pipeline for ISLES26 random-patch training dataset")
 
     def __len__(self):
         return len(self.database) * self.patches_per_volume
 
     def _load_case_patches(self, filedict: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-        case_input = _resolve_case_input_paths(
+        case_input = LoaderDataUtils.resolve_case_input_paths(
             filedict=filedict,
             base_modalities=self.base_modalities,
         )
-        patch_samples = _as_sample_list(self.random_patch_pipeline(case_input))
+        case_data = self.preprocessed_volume_pipeline(case_input)
+        data_dict = {
+            "image": case_data["image"],
+            "label": case_data["label"],
+        }
+        if self.augmentation is not None:
+            data_dict = self.augmentation(data_dict)
+        patch_samples = LoaderDataUtils.as_sample_list(
+            self.random_patch_sampler_pipeline(data_dict)
+        )
         if len(patch_samples) != self.patches_per_volume:
             raise RuntimeError(
                 "Random patch pipeline returned unexpected number of samples. "
@@ -763,7 +694,7 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
                 "dataset.preprocessing_configs.online_slices_3d_to_2d.slice_order "
                 f"must be one of {{sequential, reverse}}, got '{self.slice_order}'."
             )
-        self.slice_roi = _as_int_tuple(
+        self.slice_roi = LoaderDataUtils.as_int_tuple(
             self.preprocessing_configs["roi"]["slice_2d"],
             expected_len=2,
             field_name="dataset.preprocessing_configs.roi.slice_2d",
@@ -790,8 +721,6 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
         self.return_metadata = False
 
         if self.is_training and self.aug_cfg is not None:
-            from src.data.augmentation import AugmentationPipeline2D
-
             self.augmentation = AugmentationPipeline2D(self.aug_cfg)
             print("Initialized augmentation pipeline for ISLES26 training dataset")
 
@@ -826,7 +755,7 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
         return len(self.all_slices)
 
     def _load_case_volume(self, filedict: Mapping[str, Any]) -> Dict[str, torch.Tensor]:
-        case_input = _resolve_case_input_paths(
+        case_input = LoaderDataUtils.resolve_case_input_paths(
             filedict=filedict,
             base_modalities=self.base_modalities,
         )
@@ -922,6 +851,7 @@ __all__ = [
     "ISLES26_OPTIONAL_RECORD_KEYS",
     "ISLES26_VIRTUAL_PATH_TEMPLATE",
     "ISLES26_PATCH_PATH_TEMPLATE",
+    "build_common_preprocessed_volume_pipeline",
     "build_online_slices_3d_to_2d_case_pipeline",
     "build_full_volumes_3d_pipeline",
     "build_random_patches_3d_pipeline",

@@ -1,11 +1,11 @@
-# Light 2D augmentation: Conservative transforms for medical imaging
-# Suitable for initial experiments and datasets with limited samples
+# Light 2D augmentation: Conservative transforms for medical imaging.
+# Keeps backward-compatible behavior with previous light_2d preset.
 
 _name_: light_2d
 
 spatial:
   enabled: true
-  
+
   random_flip:
     enabled: true
     prob: 0.5
@@ -13,28 +13,28 @@ spatial:
 
 intensity:
   enabled: true
-  
+
   random_shift:
     enabled: true
     prob: 0.3
-    offsets: 0.05  # ±5% intensity shift
-  
+    offsets: 0.05  # +/-5% intensity shift
+
   random_scale:
     enabled: true
     prob: 0.3
-    factors: 0.05  # 0.95-1.05× intensity scaling
-  
+    factors: 0.05  # 0.95-1.05x intensity scaling
+
   random_gamma:
     enabled: false
     prob: 0.0
     gamma_range: [0.9, 1.1]
-  
+
   random_gaussian_noise:
     enabled: false
     prob: 0.0
     mean: 0.0
     std: 0.05
-  
+
   random_gaussian_blur:
     enabled: false
     prob: 0.0

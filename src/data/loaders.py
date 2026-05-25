@@ -14,6 +14,7 @@ from src.utils.distribution_utils import resolve_strategy, resolve_train_batch_s
 from src.data.loader_stack.isles24_loader import (
     ISLES24Dataset2D,
     ISLES24Dataset3D,
+    ISLES24RandomPatches3D,
     ISLES24NNUNet2D,
     ISLES24OnlineProc2D,
     datafold_read,
@@ -33,6 +34,7 @@ _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES24_LOADER_MODULE, "online_slices_3d_to_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "nnunet_slices_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "full_volumes_3d"): {"legacy-runtime"},
+    (_ISLES24_LOADER_MODULE, "random_patches_3d"): {"legacy-runtime"},
     (_ISLES26_LOADER_MODULE, "online_slices_3d_to_2d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "nnunet_slices_2d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "full_volumes_3d"): {"online-runtime"},
@@ -319,6 +321,8 @@ def get_dataloaders(cfg):
             test_flag=False,
             image_size=cfg.model.image_size,
             preprocessing_configs=preprocessing_configs,
+            aug_cfg=aug_cfg,
+            is_training=True,
         )
         test_dataset = fullvol_dataset_cls(
             directory=data_root,
@@ -329,14 +333,22 @@ def get_dataloaders(cfg):
             test_flag=True,
             image_size=cfg.model.image_size,
             preprocessing_configs=preprocessing_configs,
+            aug_cfg=None,
+            is_training=False,
         )
     elif loader_mode == "random_patches_3d":
-        if capabilities.loader_module != _ISLES26_LOADER_MODULE:
+        if capabilities.loader_module == _ISLES24_LOADER_MODULE:
+            patch_dataset_cls = ISLES24RandomPatches3D
+            fullvol_dataset_cls = ISLES24Dataset3D
+        elif capabilities.loader_module == _ISLES26_LOADER_MODULE:
+            patch_dataset_cls = ISLES26RandomPatches3D
+            fullvol_dataset_cls = ISLES26Dataset3D
+        else:
             raise NotImplementedError(
-                "random_patches_3d dispatch is currently available only for "
-                "src.data.loader_stack.isles26_loader routes."
+                "Unsupported loader module for random_patches_3d dispatch: "
+                f"{capabilities.loader_module}"
             )
-        train_dataset = ISLES26RandomPatches3D(
+        train_dataset = patch_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
             fold=cfg.dataset.fold,
@@ -345,9 +357,11 @@ def get_dataloaders(cfg):
             test_flag=False,
             image_size=cfg.model.image_size,
             preprocessing_configs=preprocessing_configs,
+            aug_cfg=aug_cfg,
+            is_training=True,
         )
         # Random patch mode trains on patches but validates/samples on full volumes.
-        test_dataset = ISLES26Dataset3D(
+        test_dataset = fullvol_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
             fold=cfg.dataset.fold,
@@ -356,6 +370,8 @@ def get_dataloaders(cfg):
             test_flag=True,
             image_size=cfg.model.image_size,
             preprocessing_configs=preprocessing_configs,
+            aug_cfg=None,
+            is_training=False,
         )
     else:
         raise ValueError(f"Unsupported loader_mode: {loader_mode}")
@@ -457,6 +473,7 @@ def get_dataloaders(cfg):
 __all__ = [
     "datafold_read",
     "ISLES24Dataset3D",
+    "ISLES24RandomPatches3D",
     "ISLES24Dataset2D",
     "ISLES24NNUNet2D",
     "ISLES24OnlineProc2D",

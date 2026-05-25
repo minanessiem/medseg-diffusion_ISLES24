@@ -19,8 +19,9 @@ import nibabel
 import numpy as np
 import torch
 import tqdm
-from monai.transforms import Resize
+from monai.transforms import EnsureTyped, RandCropByPosNegLabeld, Resize, SpatialPadd
 
+from src.data.augmentation import AugmentationPipeline2D, AugmentationPipeline3D
 from src.data.modalities import get_modality_params
 from src.data.modalities import process_cbf
 from src.data.modalities import process_cbv
@@ -28,6 +29,8 @@ from src.data.modalities import process_cta
 from src.data.modalities import process_mtt
 from src.data.modalities import process_ncct
 from src.data.modalities import process_tmax
+from src.utils.loader_monai_utils import build_monai_compose_safe
+from src.utils.loader_utils import LoaderDataUtils
 
 logging.getLogger("nibabel").setLevel(logging.WARNING)
 
@@ -55,11 +58,9 @@ def datafold_read(datalist, basedir, fold=0, key="training"):
     for d in json_data:
         for k, v in d.items():
             if k == "caseID":
-                d[k] = v[0] if isinstance(v, list) else v
-            elif isinstance(v, str) and len(v) > 0:
-                d[k] = os.path.join(basedir, v)
-            elif isinstance(v, list):
-                d[k] = [os.path.join(basedir, iv) for iv in v]
+                d[k] = LoaderDataUtils.normalize_case_id(v, field_name="caseID")
+            elif isinstance(v, (str, list)):
+                d[k] = LoaderDataUtils.resolve_path_value(basedir, v)
 
     tr = [d for d in json_data if d.get("fold") != fold]
     val = [d for d in json_data if d.get("fold") == fold]
@@ -104,12 +105,21 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
         test_flag=False,
         image_size=32,
         preprocessing_configs: Optional[Mapping[str, Any]] = None,
+        aug_cfg=None,
+        is_training=False,
     ):
         super().__init__()
         self.directory = os.path.expanduser(directory)
         self.transform = transform
         self.modalities = modalities if modalities is not None else []
-        self.base_modalities = sorted(list(set(mod.split("_")[0] for mod in self.modalities)))
+        self.base_modalities = sorted(
+            list(
+                set(
+                    LoaderDataUtils.get_base_modality_key(modality)
+                    for modality in self.modalities
+                )
+            )
+        )
         self.image_size = int(image_size)
         if not isinstance(preprocessing_configs, Mapping):
             raise ValueError(
@@ -117,6 +127,12 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
                 f"Got: {type(preprocessing_configs).__name__}."
             )
         self.preprocessing_configs = dict(preprocessing_configs)
+        self.aug_cfg = aug_cfg
+        self.is_training = bool(is_training)
+        self.augmentation = None
+        if self.is_training and self.aug_cfg is not None:
+            self.augmentation = AugmentationPipeline3D(self.aug_cfg)
+            print("Initialized 3D augmentation pipeline for ISLES24 training dataset")
 
         train_files, val_files = datafold_read(datalist=datalist_json, basedir=self.directory, fold=fold)
         self.database = val_files if test_flag else train_files
@@ -128,7 +144,7 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
         """Process each modality based on its configuration."""
         processed_images = {}
         for modality_config in self.modalities:
-            base_modality = modality_config.split("_")[0]
+            base_modality = LoaderDataUtils.get_base_modality_key(modality_config)
             raw_data = data[base_modality]
 
             # RAW mode: not implemented for 3D - use processors.py pipelines instead
@@ -138,18 +154,7 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
                     "Use src/data/processors.py pipelines for 3D volume processing."
                 )
 
-            raw_np = raw_data.numpy()
-            finite_mask = np.isfinite(raw_np)
-            if not finite_mask.any():
-                data_stats = {"min_val": 0.0, "max_val": 0.0, "mean": 0.0, "std": 0.0}
-            else:
-                finite_vals = raw_np[finite_mask]
-                data_stats = {
-                    "min_val": float(np.min(finite_vals)),
-                    "max_val": float(np.max(finite_vals)),
-                    "mean": float(np.mean(finite_vals)),
-                    "std": float(np.std(finite_vals)),
-                }
+            data_stats = LoaderDataUtils.compute_tensor_data_stats(raw_data)
 
             _base_modality, params = get_modality_params(modality_config, data_stats)
 
@@ -166,12 +171,11 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
 
         # Load all required base modalities and the label
         data = {}
-        keys_to_load = self.base_modalities + ["label"]
-        for key in keys_to_load:
-            if key not in filedict or not filedict[key]:
-                continue
-
-            filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
+        case_input_paths = LoaderDataUtils.resolve_case_input_paths(
+            filedict=filedict,
+            base_modalities=self.base_modalities,
+        )
+        for key, filepath in case_input_paths.items():
             if os.path.exists(filepath):
                 nib_img = nibabel.load(filepath)
                 data[key] = torch.tensor(nib_img.get_fdata(), dtype=torch.float32)
@@ -189,6 +193,12 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
         else:
             label = label.unsqueeze(0)
 
+        if self.augmentation is not None:
+            data_dict = {"image": image, "label": label}
+            data_dict = self.augmentation(data_dict)
+            image = data_dict["image"]
+            label = data_dict["label"]
+
         if self.transform:
             state = torch.get_rng_state()
             image = self.transform(image)
@@ -196,6 +206,184 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
             label = self.transform(label)
 
         return image, label, filedict["caseID"]
+
+
+def _build_isles24_random_patch_sampler(preprocessing_configs: Mapping[str, Any], patches_per_volume: int):
+    random_patch_cfg = preprocessing_configs["random_patches_3d"]
+    roi_3d = LoaderDataUtils.as_int_tuple(
+        preprocessing_configs["roi"]["volume_3d"],
+        expected_len=3,
+        field_name="dataset.preprocessing_configs.roi.volume_3d",
+    )
+    if patches_per_volume <= 0:
+        raise ValueError(
+            "dataset.preprocessing_configs.random_patches_3d.patches_per_volume.train "
+            f"must be > 0, got {patches_per_volume}."
+        )
+
+    crop_cfg = random_patch_cfg["rand_crop_by_pos_neg_label"]
+    transforms = [
+        RandCropByPosNegLabeld(
+            keys=["image", "label"],
+            label_key="label",
+            spatial_size=roi_3d,
+            pos=float(crop_cfg["pos"]),
+            neg=float(crop_cfg["neg"]),
+            num_samples=patches_per_volume,
+            image_key="image",
+            image_threshold=float(crop_cfg["image_threshold"]),
+            allow_smaller=bool(crop_cfg["allow_smaller"]),
+        )
+    ]
+    if bool(random_patch_cfg["pad_to_divisible"]):
+        transforms.append(SpatialPadd(keys=["image", "label"], spatial_size=roi_3d))
+    transforms.append(EnsureTyped(keys=["image", "label"], dtype=torch.float32))
+    return build_monai_compose_safe(transforms)
+
+
+class ISLES24RandomPatches3D(torch.utils.data.Dataset):
+    """
+    ISLES24 random 3D patch dataset.
+
+    Flatten policy:
+    - __len__ = num_cases * patches_per_volume.train
+    - __getitem__ returns one patch sample
+    """
+
+    def __init__(
+        self,
+        directory,
+        datalist_json,
+        fold=0,
+        transform=None,
+        modalities=None,
+        test_flag=False,
+        image_size=32,
+        preprocessing_configs: Optional[Mapping[str, Any]] = None,
+        aug_cfg=None,
+        is_training=False,
+    ):
+        super().__init__()
+        self.directory = os.path.expanduser(directory)
+        self.transform = transform
+        self.modalities = modalities if modalities is not None else []
+        self.base_modalities = sorted(
+            list(
+                set(
+                    LoaderDataUtils.get_base_modality_key(modality)
+                    for modality in self.modalities
+                )
+            )
+        )
+        self.image_size = int(image_size)
+        self.test_flag = bool(test_flag)
+        self.aug_cfg = aug_cfg
+        self.is_training = bool(is_training)
+        if not isinstance(preprocessing_configs, Mapping):
+            raise ValueError(
+                "ISLES24RandomPatches3D requires dataset.preprocessing_configs mapping. "
+                f"Got: {type(preprocessing_configs).__name__}."
+            )
+        self.preprocessing_configs = dict(preprocessing_configs)
+
+        train_files, val_files = datafold_read(
+            datalist=datalist_json,
+            basedir=self.directory,
+            fold=fold,
+        )
+        self.database = val_files if self.test_flag else train_files
+        self.patches_per_volume = int(
+            self.preprocessing_configs["random_patches_3d"]["patches_per_volume"]["train"]
+        )
+        self.patch_sampler_pipeline = _build_isles24_random_patch_sampler(
+            self.preprocessing_configs,
+            patches_per_volume=self.patches_per_volume,
+        )
+
+        self.augmentation = None
+        if self.is_training and self.aug_cfg is not None:
+            self.augmentation = AugmentationPipeline3D(self.aug_cfg)
+            print("Initialized 3D augmentation pipeline for ISLES24 random-patch training dataset")
+
+    def __len__(self):
+        return len(self.database) * self.patches_per_volume
+
+    def _process_modalities(self, data):
+        processed_images = {}
+        for modality_config in self.modalities:
+            base_modality = LoaderDataUtils.get_base_modality_key(modality_config)
+            raw_data = data[base_modality]
+
+            if modality_config.endswith("_RAW"):
+                raise NotImplementedError(
+                    f"RAW mode '{modality_config}' is not supported for ISLES24RandomPatches3D. "
+                    "Use src/data/processors.py pipelines for 3D volume processing."
+                )
+
+            data_stats = LoaderDataUtils.compute_tensor_data_stats(raw_data)
+            _base_modality, params = get_modality_params(modality_config, data_stats)
+
+            processor = MODALITY_PROCESSORS.get(base_modality)
+            if not processor:
+                raise ValueError(f"Unknown base modality: {base_modality}")
+            processed_images[f"processed_{modality_config}"] = processor(raw_data, **params)
+        return processed_images
+
+    def _load_case_volume(self, filedict: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+        data = {}
+        case_input_paths = LoaderDataUtils.resolve_case_input_paths(
+            filedict=filedict,
+            base_modalities=self.base_modalities,
+        )
+        for key, filepath in case_input_paths.items():
+            if os.path.exists(filepath):
+                nib_img = nibabel.load(filepath)
+                data[key] = torch.tensor(nib_img.get_fdata(), dtype=torch.float32)
+
+        processed_images = self._process_modalities(data)
+        image_channels = [processed_images[f"processed_{m}"] for m in self.modalities]
+        image = torch.stack(image_channels, dim=0)
+
+        label = data.get("label")
+        if label is None:
+            label = torch.zeros_like(image_channels[0]).unsqueeze(0)
+        else:
+            label = label.unsqueeze(0)
+        return {"image": image, "label": label}
+
+    def _load_case_patches(self, filedict: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        data_dict = self._load_case_volume(filedict)
+        if self.augmentation is not None:
+            data_dict = self.augmentation(data_dict)
+        patch_samples = LoaderDataUtils.as_sample_list(self.patch_sampler_pipeline(data_dict))
+        if len(patch_samples) != self.patches_per_volume:
+            raise RuntimeError(
+                "Random patch pipeline returned unexpected number of samples. "
+                f"Expected {self.patches_per_volume}, got {len(patch_samples)}."
+            )
+        return patch_samples
+
+    def __getitem__(self, index):
+        if index < 0 or index >= len(self):
+            raise IndexError(
+                f"Patch index out of range: {index}. Dataset length is {len(self)}."
+            )
+        case_idx = int(index) // self.patches_per_volume
+        patch_idx = int(index) % self.patches_per_volume
+        filedict = self.database[case_idx]
+
+        patch_sample = self._load_case_patches(filedict)[patch_idx]
+        image = patch_sample["image"]
+        label = patch_sample["label"]
+
+        if self.transform:
+            state = torch.get_rng_state()
+            image = self.transform(image)
+            torch.set_rng_state(state)
+            label = self.transform(label)
+
+        patch_path = f"{filedict['caseID']}_patch{int(patch_idx)}"
+        return image, label, patch_path
 
 
 class ISLES24Dataset2D(torch.utils.data.Dataset):
@@ -224,7 +412,14 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         self.directory = os.path.expanduser(directory)
         self.transform = transform
         self.modalities = modalities if modalities is not None else []
-        self.base_modalities = sorted(list(set(mod.split("_")[0] for mod in self.modalities)))
+        self.base_modalities = sorted(
+            list(
+                set(
+                    LoaderDataUtils.get_base_modality_key(modality)
+                    for modality in self.modalities
+                )
+            )
+        )
 
         train_files, val_files = datafold_read(datalist=datalist_json, basedir=self.directory, fold=fold)
         self.database = val_files if test_flag else train_files
@@ -247,8 +442,6 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         self.augmentation = None
 
         if self.is_training and self.aug_cfg is not None:
-            from src.data.augmentation import AugmentationPipeline2D
-
             self.augmentation = AugmentationPipeline2D(self.aug_cfg)
             print("Initialized augmentation pipeline for training dataset")
 
@@ -278,7 +471,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         """Process each 2D modality slice based on its configuration."""
         processed_images = {}
         for modality_config in self.modalities:
-            base_modality = modality_config.split("_")[0]
+            base_modality = LoaderDataUtils.get_base_modality_key(modality_config)
             raw_data = data_slice[base_modality]
 
             # RAW mode: skip normalization, passthrough raw intensity values
@@ -287,18 +480,7 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
                 processed_images[f"processed_{modality_config}"] = raw_data.float()
                 continue
 
-            raw_np = raw_data.numpy()
-            finite_mask = np.isfinite(raw_np)
-            if not finite_mask.any():
-                data_stats = {"min_val": 0.0, "max_val": 0.0, "mean": 0.0, "std": 0.0}
-            else:
-                finite_vals = raw_np[finite_mask]
-                data_stats = {
-                    "min_val": float(np.min(finite_vals)),
-                    "max_val": float(np.max(finite_vals)),
-                    "mean": float(np.mean(finite_vals)),
-                    "std": float(np.std(finite_vals)),
-                }
+            data_stats = LoaderDataUtils.compute_tensor_data_stats(raw_data)
 
             _base_modality, params = get_modality_params(modality_config, data_stats)
 
@@ -321,15 +503,16 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
                 with self.cache_lock:
                     if cache_key not in self.cache:  # Double-check after acquiring lock
                         data = {}
-                        keys_to_load = self.base_modalities + ["label"]
-                        for key in keys_to_load:
-                            if key not in filedict or not filedict[key]:
-                                continue
-
-                            filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
+                        case_input_paths = LoaderDataUtils.resolve_case_input_paths(
+                            filedict=filedict,
+                            base_modalities=self.base_modalities,
+                        )
+                        for key, filepath in case_input_paths.items():
                             if os.path.exists(filepath):
                                 nib_img = nibabel.load(filepath)
-                                data[key] = torch.from_numpy(nib_img.get_fdata().astype(np.float32))
+                                data[key] = torch.from_numpy(
+                                    nib_img.get_fdata().astype(np.float32)
+                                )
                         self.cache[cache_key] = data
 
             data_slice = {}
@@ -338,12 +521,11 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         else:
             # Load directly without caching
             data_slice = {}
-            keys_to_load = self.base_modalities + ["label"]
-            for key in keys_to_load:
-                if key not in filedict or not filedict[key]:
-                    continue
-
-                filepath = filedict[key][0] if isinstance(filedict[key], list) else filedict[key]
+            case_input_paths = LoaderDataUtils.resolve_case_input_paths(
+                filedict=filedict,
+                base_modalities=self.base_modalities,
+            )
+            for key, filepath in case_input_paths.items():
                 if os.path.exists(filepath):
                     nib_img = nibabel.load(filepath)
                     vol_data = torch.from_numpy(nib_img.get_fdata().astype(np.float32))
@@ -521,8 +703,6 @@ class ISLES24NNUNet2D(torch.utils.data.Dataset):
         self.is_training = bool(is_training)
         self.augmentation = None
         if self.is_training and self.aug_cfg is not None:
-            from src.data.augmentation import AugmentationPipeline2D
-
             self.augmentation = AugmentationPipeline2D(self.aug_cfg)
             print("Initialized augmentation pipeline for nnUNet training dataset")
 
@@ -694,6 +874,7 @@ ISLES24OnlineProc2D = ISLES24Dataset2D
 __all__ = [
     "datafold_read",
     "ISLES24Dataset3D",
+    "ISLES24RandomPatches3D",
     "ISLES24Dataset2D",
     "ISLES24NNUNet2D",
     "ISLES24OnlineProc2D",

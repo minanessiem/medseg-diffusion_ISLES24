@@ -24,13 +24,14 @@ class DatasetCapabilities:
 
 
 DEFAULT_DATASET_REGISTRY: dict[str, DatasetCapabilities] = {
-    # ISLES24 currently covers all active loader modes.
+    # ISLES24 supports online slices, nnUNet slices, full volumes, and random patches.
     "isles24": DatasetCapabilities(
         dataset_id="isles24",
         supported_loader_modes=(
             "online_slices_3d_to_2d",
             "nnunet_slices_2d",
             "full_volumes_3d",
+            "random_patches_3d",
         ),
         loader_module="src.data.loader_stack.isles24_loader",
         implementation_state="legacy-runtime",
