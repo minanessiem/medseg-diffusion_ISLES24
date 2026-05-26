@@ -5,6 +5,8 @@ Wraps MONAI's SwinUNETR for use with the training pipeline,
 exposing the required interface properties.
 """
 
+import inspect
+
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig, ListConfig
@@ -57,19 +59,10 @@ class SwinUNetRAdapter(nn.Module):
         depths = self._parse_list(model_cfg.depths)
         num_heads = self._parse_list(model_cfg.num_heads)
 
-        # Initialize MONAI SwinUNETR
-        self.model = SwinUNETR(
-            img_size=self.expanded_img_size,
-            in_channels=self.image_channels,
-            out_channels=self.output_channels,
-            feature_size=int(model_cfg.feature_size),
-            depths=tuple(depths),
-            num_heads=tuple(num_heads),
-            drop_rate=float(model_cfg.drop_rate),
-            attn_drop_rate=float(model_cfg.attn_drop_rate),
-            spatial_dims=self.spatial_dims,
-            use_checkpoint=False,  # Gradient checkpointing
-        )
+        # Initialize MONAI SwinUNETR with version-compatible kwargs.
+        # MONAI <=1.3 expects `img_size`, while newer releases (e.g., 1.5.x)
+        # removed it from the constructor.
+        self.model = self._build_swinunetr(model_cfg, depths, num_heads)
 
         self._print_init_info(model_cfg, depths, num_heads)
 
@@ -81,6 +74,33 @@ class SwinUNetRAdapter(nn.Module):
             return [int(x.strip()) for x in value.split(',')]
         else:
             raise ValueError(f"Cannot parse list from {type(value)}: {value}")
+
+    def _build_swinunetr(self, model_cfg, depths, num_heads):
+        """
+        Build SwinUNETR with MONAI-version-aware constructor arguments.
+
+        - MONAI 1.3.x: requires `img_size`.
+        - MONAI 1.5.x: no `img_size` argument.
+        """
+        init_sig = inspect.signature(SwinUNETR.__init__)
+        init_params = init_sig.parameters
+
+        model_kwargs = {
+            "in_channels": self.image_channels,
+            "out_channels": self.output_channels,
+            "feature_size": int(model_cfg.feature_size),
+            "depths": tuple(depths),
+            "num_heads": tuple(num_heads),
+            "drop_rate": float(model_cfg.drop_rate),
+            "attn_drop_rate": float(model_cfg.attn_drop_rate),
+            "spatial_dims": self.spatial_dims,
+            "use_checkpoint": False,  # Gradient checkpointing
+        }
+
+        if "img_size" in init_params:
+            model_kwargs["img_size"] = self.expanded_img_size
+
+        return SwinUNETR(**model_kwargs)
 
     def _parse_spatial_dims(self, value) -> int:
         """Parse supported 2D/3D spatial dims from config token."""
