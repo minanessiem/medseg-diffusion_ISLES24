@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, default_collate
 from torch.utils.data.distributed import DistributedSampler
 
 from omegaconf import OmegaConf
@@ -30,6 +30,12 @@ from src.data.loader_stack.isles26_loader import (
 _ISLES24_LOADER_MODULE = "src.data.loader_stack.isles24_loader"
 _ISLES26_LOADER_MODULE = "src.data.loader_stack.isles26_loader"
 _LOADER_SMOKE_ITEMS = 10
+try:
+    from monai.data.meta_tensor import MetaTensor
+
+    _META_TENSOR_TYPES = (MetaTensor,)
+except Exception:  # pragma: no cover - MONAI should be present in runtime envs
+    _META_TENSOR_TYPES = ()
 _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES24_LOADER_MODULE, "online_slices_3d_to_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "nnunet_slices_2d"): {"legacy-runtime"},
@@ -40,6 +46,29 @@ _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES26_LOADER_MODULE, "full_volumes_3d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "random_patches_3d"): {"online-runtime"},
 }
+
+
+def _strip_meta_tensors(sample):
+    """
+    Recursively convert MONAI MetaTensor leaves to plain torch.Tensor.
+
+    This avoids torch default_collate shared-storage resize issues seen in
+    multi-worker validation with val_batch_size > 1.
+    """
+    if _META_TENSOR_TYPES and isinstance(sample, _META_TENSOR_TYPES):
+        return sample.as_tensor()
+    if isinstance(sample, dict):
+        return {k: _strip_meta_tensors(v) for k, v in sample.items()}
+    if isinstance(sample, tuple):
+        return tuple(_strip_meta_tensors(v) for v in sample)
+    if isinstance(sample, list):
+        return [_strip_meta_tensors(v) for v in sample]
+    return sample
+
+
+def _meta_safe_collate(batch):
+    normalized_batch = [_strip_meta_tensors(sample) for sample in batch]
+    return default_collate(normalized_batch)
 
 
 def _resolve_active_dataset_contract(cfg) -> tuple[str, str, DatasetCapabilities]:
@@ -454,12 +483,14 @@ def get_dataloaders(cfg):
         val_dataset,
         batch_size=cfg.validation.val_batch_size,
         shuffle=False,
+        collate_fn=_meta_safe_collate,
         **val_kwargs,
     )
     sample_dataloader = DataLoader(
         test_dataset,
         batch_size=int(cfg.data_runtime.test_batch_size),
         shuffle=True,
+        collate_fn=_meta_safe_collate,
         **sample_kwargs,
     )
 
