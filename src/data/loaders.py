@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset, default_collate
 from torch.utils.data.distributed import DistributedSampler
 
@@ -74,11 +75,46 @@ def _meta_safe_collate(batch):
     elem = normalized_batch[0]
 
     # IMPORTANT: avoid torch default_collate tensor path, which can hit
-    # non-resizable storage errors in worker processes. Clone + stack directly.
+    # non-resizable storage errors in worker processes.
+    # For variable-size full volumes in validation, right-pad per dim to
+    # the in-batch max shape before stacking.
     if isinstance(elem, torch.Tensor):
-        return torch.stack(
-            [sample.detach().contiguous().clone() for sample in normalized_batch], dim=0
-        )
+        if not all(isinstance(sample, torch.Tensor) for sample in normalized_batch):
+            raise TypeError("Mixed tensor/non-tensor batch encountered in tensor collate path.")
+        rank = elem.ndim
+        if not all(sample.ndim == rank for sample in normalized_batch):
+            raise RuntimeError(
+                "Cannot collate tensors with different ranks. "
+                f"Got ranks: {[sample.ndim for sample in normalized_batch]}"
+            )
+
+        target_shape = [max(int(sample.shape[d]) for sample in normalized_batch) for d in range(rank)]
+        if rank >= 1:
+            # Channel dimension must match; only pad spatial dimensions.
+            channel_sizes = {int(sample.shape[0]) for sample in normalized_batch}
+            if len(channel_sizes) != 1:
+                raise RuntimeError(
+                    "Cannot collate tensors with different channel dimensions. "
+                    f"Got channels: {sorted(channel_sizes)}"
+                )
+
+        padded = []
+        for sample in normalized_batch:
+            sample = sample.detach().contiguous().clone()
+            if list(sample.shape) != target_shape:
+                pad_spec = []
+                for dim in range(rank - 1, -1, -1):
+                    pad_amount = int(target_shape[dim] - sample.shape[dim])
+                    if pad_amount < 0:
+                        raise RuntimeError(
+                            "Negative pad amount encountered while collating tensors. "
+                            f"sample_shape={tuple(sample.shape)}, target_shape={tuple(target_shape)}"
+                        )
+                    # torch.nn.functional.pad expects (left, right) pairs in reverse dim order.
+                    pad_spec.extend([0, pad_amount])
+                sample = F.pad(sample, pad=pad_spec, mode="constant", value=0)
+            padded.append(sample)
+        return torch.stack(padded, dim=0)
 
     if isinstance(elem, dict):
         return {
