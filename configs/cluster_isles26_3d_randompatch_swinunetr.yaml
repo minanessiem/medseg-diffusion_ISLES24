@@ -1,10 +1,11 @@
 # Cluster ISLES26 3D random-patch discriminative SwinUNETR run.
 #
 # Uses full SwinUNETR base architecture (no local debug downsizing).
-# Keeps loader smoke testing enabled while validating 3D metric stability.
+# Encodes the tuned training/validation cadence used for cluster ramp-up runs.
 
 defaults:
   - cluster
+  - override /distribution: dp
   - override /environment: isles26_cluster
   - override /model: swinunetr_base
   - override /data_profile: isles26_3d_randompatch_t1raw
@@ -19,17 +20,24 @@ defaults:
 distribution:
   timeout_minutes: 300
 
-# Runtime overrides (safe defaults; can be overridden from CLI).
+model:
+  image_size: 128
+
+# Runtime overrides (can still be overridden from CLI when needed).
 data_runtime:
-  loader_smoke_testing: true
-  train_batch_size: 1
+  loader_smoke_testing: false
+  train_batch_size: 3
 
 validation:
   val_batch_size: 1
-  validation_interval: 100000
+  validation_interval: 280
+  inference:
+    sliding_window:
+      sw_batch_size: 4
 
 logging:
-  image_log_interval: 10
+  image_log_interval: 280
+  min_log_step: 100
 
 environment:
   training:
@@ -39,9 +47,11 @@ dataset:
   preprocessing_configs:
     random_patches_3d:
       patches_per_volume:
-        train: 1
+        train: 32
 
 training:
+  checkpoint_interval:
+    save_interval: 1000
   checkpoint_best:
     enabled: true
     metric_name: dice_3d
