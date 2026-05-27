@@ -1,6 +1,5 @@
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset, default_collate
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 from omegaconf import OmegaConf
@@ -31,12 +30,6 @@ from src.data.loader_stack.isles26_loader import (
 _ISLES24_LOADER_MODULE = "src.data.loader_stack.isles24_loader"
 _ISLES26_LOADER_MODULE = "src.data.loader_stack.isles26_loader"
 _LOADER_SMOKE_ITEMS = 10
-try:
-    from monai.data.meta_tensor import MetaTensor
-
-    _META_TENSOR_TYPES = (MetaTensor,)
-except Exception:  # pragma: no cover - MONAI should be present in runtime envs
-    _META_TENSOR_TYPES = ()
 _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES24_LOADER_MODULE, "online_slices_3d_to_2d"): {"legacy-runtime"},
     (_ISLES24_LOADER_MODULE, "nnunet_slices_2d"): {"legacy-runtime"},
@@ -47,97 +40,6 @@ _ACTIVE_RUNTIME_ROUTES = {
     (_ISLES26_LOADER_MODULE, "full_volumes_3d"): {"online-runtime"},
     (_ISLES26_LOADER_MODULE, "random_patches_3d"): {"online-runtime"},
 }
-
-
-def _strip_meta_tensors(sample):
-    """
-    Recursively convert MONAI MetaTensor leaves to plain torch.Tensor.
-
-    This avoids torch default_collate shared-storage resize issues seen in
-    multi-worker validation with val_batch_size > 1.
-    """
-    if _META_TENSOR_TYPES and isinstance(sample, _META_TENSOR_TYPES):
-        return sample.as_tensor()
-    if isinstance(sample, dict):
-        return {k: _strip_meta_tensors(v) for k, v in sample.items()}
-    if isinstance(sample, tuple):
-        return tuple(_strip_meta_tensors(v) for v in sample)
-    if isinstance(sample, list):
-        return [_strip_meta_tensors(v) for v in sample]
-    return sample
-
-
-def _meta_safe_collate(batch):
-    if len(batch) == 0:
-        return batch
-
-    normalized_batch = [_strip_meta_tensors(sample) for sample in batch]
-    elem = normalized_batch[0]
-
-    # IMPORTANT: avoid torch default_collate tensor path, which can hit
-    # non-resizable storage errors in worker processes.
-    # For variable-size full volumes in validation, right-pad per dim to
-    # the in-batch max shape before stacking.
-    if isinstance(elem, torch.Tensor):
-        if not all(isinstance(sample, torch.Tensor) for sample in normalized_batch):
-            raise TypeError("Mixed tensor/non-tensor batch encountered in tensor collate path.")
-        rank = elem.ndim
-        if not all(sample.ndim == rank for sample in normalized_batch):
-            raise RuntimeError(
-                "Cannot collate tensors with different ranks. "
-                f"Got ranks: {[sample.ndim for sample in normalized_batch]}"
-            )
-
-        target_shape = [max(int(sample.shape[d]) for sample in normalized_batch) for d in range(rank)]
-        if rank >= 1:
-            # Channel dimension must match; only pad spatial dimensions.
-            channel_sizes = {int(sample.shape[0]) for sample in normalized_batch}
-            if len(channel_sizes) != 1:
-                raise RuntimeError(
-                    "Cannot collate tensors with different channel dimensions. "
-                    f"Got channels: {sorted(channel_sizes)}"
-                )
-
-        padded = []
-        for sample in normalized_batch:
-            sample = sample.detach().contiguous().clone()
-            if list(sample.shape) != target_shape:
-                pad_spec = []
-                for dim in range(rank - 1, -1, -1):
-                    pad_amount = int(target_shape[dim] - sample.shape[dim])
-                    if pad_amount < 0:
-                        raise RuntimeError(
-                            "Negative pad amount encountered while collating tensors. "
-                            f"sample_shape={tuple(sample.shape)}, target_shape={tuple(target_shape)}"
-                        )
-                    # torch.nn.functional.pad expects (left, right) pairs in reverse dim order.
-                    pad_spec.extend([0, pad_amount])
-                sample = F.pad(sample, pad=pad_spec, mode="constant", value=0)
-            padded.append(sample)
-        return torch.stack(padded, dim=0)
-
-    if isinstance(elem, dict):
-        return {
-            key: _meta_safe_collate([sample[key] for sample in normalized_batch])
-            for key in elem.keys()
-        }
-
-    if isinstance(elem, tuple):
-        transposed = list(zip(*normalized_batch))
-        return tuple(_meta_safe_collate(list(group)) for group in transposed)
-
-    if isinstance(elem, list):
-        if len(elem) == 0:
-            return []
-        transposed = list(zip(*normalized_batch))
-        return [_meta_safe_collate(list(group)) for group in transposed]
-
-    # Keep string/bytes identifiers as lists (e.g., case IDs / virtual paths).
-    if isinstance(elem, (str, bytes)):
-        return list(normalized_batch)
-
-    # Scalars and other simple types fall back to default behavior.
-    return default_collate(normalized_batch)
 
 
 def _resolve_active_dataset_contract(cfg) -> tuple[str, str, DatasetCapabilities]:
@@ -552,14 +454,12 @@ def get_dataloaders(cfg):
         val_dataset,
         batch_size=cfg.validation.val_batch_size,
         shuffle=False,
-        collate_fn=_meta_safe_collate,
         **val_kwargs,
     )
     sample_dataloader = DataLoader(
         test_dataset,
         batch_size=int(cfg.data_runtime.test_batch_size),
         shuffle=True,
-        collate_fn=_meta_safe_collate,
         **sample_kwargs,
     )
 
