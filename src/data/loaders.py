@@ -67,7 +67,40 @@ def _strip_meta_tensors(sample):
 
 
 def _meta_safe_collate(batch):
+    if len(batch) == 0:
+        return batch
+
     normalized_batch = [_strip_meta_tensors(sample) for sample in batch]
+    elem = normalized_batch[0]
+
+    # IMPORTANT: avoid torch default_collate tensor path, which can hit
+    # non-resizable storage errors in worker processes. Clone + stack directly.
+    if isinstance(elem, torch.Tensor):
+        return torch.stack(
+            [sample.detach().contiguous().clone() for sample in normalized_batch], dim=0
+        )
+
+    if isinstance(elem, dict):
+        return {
+            key: _meta_safe_collate([sample[key] for sample in normalized_batch])
+            for key in elem.keys()
+        }
+
+    if isinstance(elem, tuple):
+        transposed = list(zip(*normalized_batch))
+        return tuple(_meta_safe_collate(list(group)) for group in transposed)
+
+    if isinstance(elem, list):
+        if len(elem) == 0:
+            return []
+        transposed = list(zip(*normalized_batch))
+        return [_meta_safe_collate(list(group)) for group in transposed]
+
+    # Keep string/bytes identifiers as lists (e.g., case IDs / virtual paths).
+    if isinstance(elem, (str, bytes)):
+        return list(normalized_batch)
+
+    # Scalars and other simple types fall back to default behavior.
     return default_collate(normalized_batch)
 
 
