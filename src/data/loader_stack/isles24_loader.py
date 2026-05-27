@@ -353,8 +353,6 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
 
     def _load_case_patches(self, filedict: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         data_dict = self._load_case_volume(filedict)
-        if self.augmentation is not None:
-            data_dict = self.augmentation(data_dict)
         patch_samples = LoaderDataUtils.as_sample_list(self.patch_sampler_pipeline(data_dict))
         if len(patch_samples) != self.patches_per_volume:
             raise RuntimeError(
@@ -375,6 +373,13 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
         patch_sample = self._load_case_patches(filedict)[patch_idx]
         image = patch_sample["image"]
         label = patch_sample["label"]
+
+        # Random-patch mode policy: crop first, then augment per returned patch.
+        if self.augmentation is not None:
+            data_dict = {"image": image, "label": label}
+            data_dict = self.augmentation(data_dict)
+            image = data_dict["image"]
+            label = data_dict["label"]
 
         if self.transform:
             state = torch.get_rng_state()

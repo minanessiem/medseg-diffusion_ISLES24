@@ -590,8 +590,6 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
             "image": case_data["image"],
             "label": case_data["label"],
         }
-        if self.augmentation is not None:
-            data_dict = self.augmentation(data_dict)
         patch_samples = LoaderDataUtils.as_sample_list(
             self.random_patch_sampler_pipeline(data_dict)
         )
@@ -615,6 +613,13 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         patch_sample = patch_samples[patch_idx]
         image = patch_sample["image"]
         label = patch_sample["label"]
+
+        # Random-patch mode policy: crop first, then augment per returned patch.
+        if self.augmentation is not None:
+            data_dict = {"image": image, "label": label}
+            data_dict = self.augmentation(data_dict)
+            image = data_dict["image"]
+            label = data_dict["label"]
 
         if self.transform:
             state = torch.get_rng_state()
