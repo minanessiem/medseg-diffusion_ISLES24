@@ -1,7 +1,7 @@
 # Local ISLES26 3D random-patch discriminative SwinUNETR run.
 #
 # Built directly on local.yaml composition (does NOT inherit from
-# local_discriminative_swinunetr.yaml).
+# local_isles24_3d_randompatch_swinunetr.yaml).
 
 defaults:
   - local
@@ -11,7 +11,7 @@ defaults:
   - override /diffusion: discriminative
   - override /loss: discriminative_dicebce
   - override /logging: 3d_discriminative
-  - override /validation: sliding_window_3d_metrics
+  - override /validation: sliding_window_3d_metrics_subset
   - override /training: train_100Kms_ampbfloat16
   - override /augmentation: aggressive_3d
   - _self_

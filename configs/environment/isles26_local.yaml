@@ -1,6 +1,6 @@
 dataset:
   data_root: '/mnt/c/Users/minanessiem/Development/isles26_combined/atlas21_training_raw/Training_Raw'
-  split_file: '/mnt/c/Users/minanessiem/Development/isles26_combined/atlas21_training_raw/isles26_stratified_15pct.json'
+  split_file: '/mnt/c/Users/minanessiem/Development/isles26_combined/atlas21_training_raw/isles26_nested_15_5_best.json'
   nnunet_root: null
 training:
   output_root: './outputs/'
