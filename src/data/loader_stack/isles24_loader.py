@@ -19,9 +19,19 @@ import nibabel
 import numpy as np
 import torch
 import tqdm
-from monai.transforms import EnsureTyped, RandCropByPosNegLabeld, Resize, SpatialPadd
+from monai.transforms import (
+    Compose,
+    EnsureTyped,
+    LoadImaged,
+    Orientationd,
+    RandCropByPosNegLabeld,
+    Resize,
+    SpatialPadd,
+    Spacingd,
+)
 
 from src.data.augmentation import AugmentationPipeline2D, AugmentationPipeline3D
+from src.data.loader_stack.subset_contract import filter_records_for_subset
 from src.data.modalities import get_modality_params
 from src.data.modalities import process_cbf
 from src.data.modalities import process_cbv
@@ -30,6 +40,10 @@ from src.data.modalities import process_mtt
 from src.data.modalities import process_ncct
 from src.data.modalities import process_tmax
 from src.utils.loader_monai_utils import build_monai_compose_safe
+from src.utils.loader_transforms import (
+    MergeProcessedChannelsTransform,
+    ProcessModalitiesTransform,
+)
 from src.utils.loader_utils import LoaderDataUtils
 
 logging.getLogger("nibabel").setLevel(logging.WARNING)
@@ -47,9 +61,136 @@ MODALITY_PROCESSORS = {
 }
 
 
-def datafold_read(datalist, basedir, fold=0, key="training"):
+def _resolve_isles24_base_modality(modality_config: str) -> str:
+    return LoaderDataUtils.get_base_modality_key(modality_config)
+
+
+def _process_isles24_modality(
+    modality_config: str,
+    raw_tensor: torch.Tensor,
+) -> torch.Tensor:
+    base_modality = _resolve_isles24_base_modality(modality_config)
+
+    if modality_config.endswith("_RAW"):
+        raise NotImplementedError(
+            f"RAW mode '{modality_config}' is not supported for ISLES24 3D loaders. "
+            "Use src/data/processors.py pipelines for 3D volume processing."
+        )
+
+    data_stats = LoaderDataUtils.compute_tensor_data_stats(raw_tensor)
+    _base_modality, params = get_modality_params(modality_config, data_stats)
+    processor = MODALITY_PROCESSORS.get(base_modality)
+    if not processor:
+        raise ValueError(f"Unknown base modality: {base_modality}")
+    return processor(raw_tensor, **params)
+
+
+def _build_isles24_common_preprocess_transforms(
+    modalities: list[str] | tuple[str, ...],
+    preprocessing_configs: Mapping[str, Any],
+) -> list[Any]:
+    base_modalities = sorted(
+        set(_resolve_isles24_base_modality(modality) for modality in modalities)
+    )
+    keys_to_load = [*base_modalities, "label"]
+
+    common_cfg = preprocessing_configs["common"]
+    orientation_cfg = common_cfg["orientation"]
+    spacing_cfg = common_cfg["spacing"]
+
+    transforms: list[Any] = [
+        LoadImaged(
+            keys=keys_to_load,
+            reader="NibabelReader",
+            ensure_channel_first=True,
+        )
+    ]
+    if bool(orientation_cfg["enabled"]):
+        transforms.append(
+            Orientationd(
+                keys=keys_to_load,
+                axcodes=str(orientation_cfg["axcodes"]),
+            )
+        )
+
+    if bool(spacing_cfg["enabled"]):
+        pixdim = LoaderDataUtils.as_float_tuple(
+            spacing_cfg["pixdim"],
+            expected_len=3,
+            field_name="dataset.preprocessing_configs.common.spacing.pixdim",
+        )
+        image_interp = str(spacing_cfg["interpolation"]["image"])
+        label_interp = str(spacing_cfg["interpolation"]["label"])
+        spacing_modes = tuple([image_interp] * len(base_modalities) + [label_interp])
+        transforms.append(
+            Spacingd(
+                keys=keys_to_load,
+                pixdim=pixdim,
+                mode=spacing_modes,
+            )
+        )
+
+    transforms.extend(
+        [
+            ProcessModalitiesTransform(
+                modalities,
+                resolve_base_modality=_resolve_isles24_base_modality,
+                process_modality=_process_isles24_modality,
+            ),
+            MergeProcessedChannelsTransform(
+                modalities,
+                resolve_base_modality=_resolve_isles24_base_modality,
+            ),
+            EnsureTyped(keys=["image", "label"], dtype=torch.float32),
+        ]
+    )
+    return transforms
+
+
+def build_isles24_common_preprocessed_volume_pipeline(
+    modalities: list[str] | tuple[str, ...],
+    preprocessing_configs: Mapping[str, Any],
+) -> Compose:
+    return build_monai_compose_safe(
+        _build_isles24_common_preprocess_transforms(modalities, preprocessing_configs)
+    )
+
+
+def build_isles24_full_volumes_3d_pipeline(
+    modalities: list[str] | tuple[str, ...],
+    preprocessing_configs: Mapping[str, Any],
+) -> Compose:
+    transforms = _build_isles24_common_preprocess_transforms(
+        modalities,
+        preprocessing_configs,
+    )
+    fullvol_cfg = preprocessing_configs["full_volumes_3d"]
+    if bool(fullvol_cfg["pad_to_divisible"]):
+        roi_3d = LoaderDataUtils.as_int_tuple(
+            preprocessing_configs["roi"]["volume_3d"],
+            expected_len=3,
+            field_name="dataset.preprocessing_configs.roi.volume_3d",
+        )
+        transforms.append(SpatialPadd(keys=["image", "label"], spatial_size=roi_3d))
+    return build_monai_compose_safe(transforms)
+
+
+def datafold_read(
+    datalist,
+    basedir,
+    fold=0,
+    key="training",
+    subset_name: Optional[str] = None,
+    partitioning: str = "fold",
+    subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
+):
     """
-    Reads and parses the JSON datalist file to create file paths for training and validation sets.
+    Read and normalize ISLES24 datalist entries.
+
+    Backward compatibility:
+    - When `subset_name` and `subset_definitions` are omitted (legacy usage),
+      returns `(train_records, val_records)` using fold split.
+    - When `subset_name` is provided, returns records for that subset.
     """
     with open(datalist) as f:
         json_data = json.load(f)
@@ -62,10 +203,39 @@ def datafold_read(datalist, basedir, fold=0, key="training"):
             elif isinstance(v, (str, list)):
                 d[k] = LoaderDataUtils.resolve_path_value(basedir, v)
 
-    tr = [d for d in json_data if d.get("fold") != fold]
-    val = [d for d in json_data if d.get("fold") == fold]
+    if subset_name is None and subset_definitions is None and partitioning == "fold":
+        tr = [d for d in json_data if d.get("fold") != fold]
+        val = [d for d in json_data if d.get("fold") == fold]
+        return tr, val
 
-    return tr, val
+    if subset_name is None:
+        raise ValueError(
+            "ISLES24 datafold_read requires subset_name when subset_definitions are provided."
+        )
+
+    normalized_subset_definitions = subset_definitions
+    if normalized_subset_definitions is None:
+        if partitioning == "fold":
+            normalized_subset_definitions = {
+                "train": {"fold_not_in": (int(fold),)},
+                "val": {"fold_in": (int(fold),)},
+            }
+        elif partitioning == "split":
+            normalized_subset_definitions = {
+                str(subset_name): {"split_in": (str(subset_name),)}
+            }
+        else:
+            raise ValueError(
+                "ISLES24 datafold_read received unsupported partitioning mode: "
+                f"{partitioning!r}."
+            )
+
+    return filter_records_for_subset(
+        records=json_data,
+        partitioning=str(partitioning).strip().lower(),
+        subset_name=str(subset_name).strip(),
+        subset_definitions=normalized_subset_definitions,
+    )
 
 
 def _normalize_nnunet_slice_array(array: np.ndarray, source_path: str) -> np.ndarray:
@@ -100,6 +270,9 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "fold",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
@@ -129,13 +302,30 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
         self.preprocessing_configs = dict(preprocessing_configs)
         self.aug_cfg = aug_cfg
         self.is_training = bool(is_training)
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
         self.augmentation = None
         if self.is_training and self.aug_cfg is not None:
             self.augmentation = AugmentationPipeline3D(self.aug_cfg)
             print("Initialized 3D augmentation pipeline for ISLES24 training dataset")
 
-        train_files, val_files = datafold_read(datalist=datalist_json, basedir=self.directory, fold=fold)
-        self.database = val_files if test_flag else train_files
+        self.database = datafold_read(
+            datalist=datalist_json,
+            basedir=self.directory,
+            fold=fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
+        )
+        self.full_volume_pipeline = build_isles24_full_volumes_3d_pipeline(
+            modalities=self.modalities,
+            preprocessing_configs=self.preprocessing_configs,
+        )
 
     def __len__(self):
         return len(self.database)
@@ -168,30 +358,13 @@ class ISLES24Dataset3D(torch.utils.data.Dataset):
 
     def __getitem__(self, x):
         filedict = self.database[x]
-
-        # Load all required base modalities and the label
-        data = {}
-        case_input_paths = LoaderDataUtils.resolve_case_input_paths(
+        case_input = LoaderDataUtils.resolve_case_input_paths(
             filedict=filedict,
             base_modalities=self.base_modalities,
         )
-        for key, filepath in case_input_paths.items():
-            if os.path.exists(filepath):
-                nib_img = nibabel.load(filepath)
-                data[key] = torch.tensor(nib_img.get_fdata(), dtype=torch.float32)
-
-        # Process modalities to get normalized channels
-        processed_images = self._process_modalities(data)
-
-        # Stack processed channels to form the final image
-        image_channels = [processed_images[f"processed_{m}"] for m in self.modalities]
-        image = torch.stack(image_channels, dim=0)
-
-        label = data.get("label")
-        if label is None:  # Handle test sets with no labels
-            label = torch.zeros_like(image_channels[0]).unsqueeze(0)
-        else:
-            label = label.unsqueeze(0)
+        case_data = self.full_volume_pipeline(case_input)
+        image = case_data["image"]
+        label = case_data["label"]
 
         if self.augmentation is not None:
             data_dict = {"image": image, "label": label}
@@ -255,6 +428,9 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "fold",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
@@ -279,6 +455,13 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
         self.test_flag = bool(test_flag)
         self.aug_cfg = aug_cfg
         self.is_training = bool(is_training)
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if self.test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
         if not isinstance(preprocessing_configs, Mapping):
             raise ValueError(
                 "ISLES24RandomPatches3D requires dataset.preprocessing_configs mapping. "
@@ -286,14 +469,20 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
             )
         self.preprocessing_configs = dict(preprocessing_configs)
 
-        train_files, val_files = datafold_read(
+        self.database = datafold_read(
             datalist=datalist_json,
             basedir=self.directory,
             fold=fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
         )
-        self.database = val_files if self.test_flag else train_files
         self.patches_per_volume = int(
             self.preprocessing_configs["random_patches_3d"]["patches_per_volume"]["train"]
+        )
+        self.preprocessed_volume_pipeline = build_isles24_common_preprocessed_volume_pipeline(
+            modalities=self.modalities,
+            preprocessing_configs=self.preprocessing_configs,
         )
         self.patch_sampler_pipeline = _build_isles24_random_patch_sampler(
             self.preprocessing_configs,
@@ -330,26 +519,12 @@ class ISLES24RandomPatches3D(torch.utils.data.Dataset):
         return processed_images
 
     def _load_case_volume(self, filedict: Mapping[str, Any]) -> dict[str, torch.Tensor]:
-        data = {}
         case_input_paths = LoaderDataUtils.resolve_case_input_paths(
             filedict=filedict,
             base_modalities=self.base_modalities,
         )
-        for key, filepath in case_input_paths.items():
-            if os.path.exists(filepath):
-                nib_img = nibabel.load(filepath)
-                data[key] = torch.tensor(nib_img.get_fdata(), dtype=torch.float32)
-
-        processed_images = self._process_modalities(data)
-        image_channels = [processed_images[f"processed_{m}"] for m in self.modalities]
-        image = torch.stack(image_channels, dim=0)
-
-        label = data.get("label")
-        if label is None:
-            label = torch.zeros_like(image_channels[0]).unsqueeze(0)
-        else:
-            label = label.unsqueeze(0)
-        return {"image": image, "label": label}
+        case_data = self.preprocessed_volume_pipeline(case_input_paths)
+        return {"image": case_data["image"], "label": case_data["label"]}
 
     def _load_case_patches(self, filedict: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         data_dict = self._load_case_volume(filedict)
@@ -402,11 +577,15 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "fold",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
         image_size=32,
         use_caching=False,
+        cache_prefix: Optional[str] = None,
         shared_cache=None,
         cache_lock=None,
         aug_cfg=None,
@@ -425,9 +604,22 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
                 )
             )
         )
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
 
-        train_files, val_files = datafold_read(datalist=datalist_json, basedir=self.directory, fold=fold)
-        self.database = val_files if test_flag else train_files
+        self.database = datafold_read(
+            datalist=datalist_json,
+            basedir=self.directory,
+            fold=fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
+        )
 
         self.all_slices = []
 
@@ -439,7 +631,11 @@ class ISLES24Dataset2D(torch.utils.data.Dataset):
             )
         self.preprocessing_configs = dict(preprocessing_configs)
         self.use_caching = use_caching
-        self._cache_prefix = "ts" if test_flag else "tr"
+        self._cache_prefix = (
+            str(cache_prefix).strip()
+            if cache_prefix is not None
+            else ("ts" if test_flag else "tr")
+        )
 
         # NEW: Initialize augmentation pipeline
         self.aug_cfg = aug_cfg
