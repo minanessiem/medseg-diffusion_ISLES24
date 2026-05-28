@@ -6,6 +6,8 @@ import cc3d
 from scipy.ndimage import distance_transform_edt, binary_erosion
 from monai.metrics import compute_hausdorff_distance, compute_surface_dice
 from monai.networks.utils import one_hot
+from time import perf_counter
+from collections.abc import Sequence
 
 
 class DiceMedpyCoefficient(nn.Module):
@@ -530,7 +532,7 @@ class HausdorffDistance95MonaiMm(nn.Module):
         super().__init__()
         if not isinstance(spacing, (list, tuple)) or len(spacing) != 3:
             raise ValueError("`spacing` must be a tuple or list of 3 floats (x, y, z).")
-        self.spacing = spacing
+        self.spacing = tuple(float(v) for v in spacing)
         self.register_buffer('sum', torch.tensor(0.0))
         self.register_buffer('count', torch.tensor(0))
 
@@ -1096,24 +1098,86 @@ class VoxelF2Score2D(nn.Module):
         self.count.zero_()
 
 
+def _normalize_enabled_metric_names(
+    enabled_metrics,
+    *,
+    available_metric_names,
+    aggregator_name: str,
+):
+    """
+    Normalize and validate optional metric-selection lists for aggregators.
+    """
+    available = tuple(str(name) for name in available_metric_names)
+    if len(available) == 0:
+        raise ValueError(f"{aggregator_name} has no available metrics configured.")
+
+    if enabled_metrics is None:
+        return available
+
+    if isinstance(enabled_metrics, str):
+        requested_raw = [enabled_metrics]
+    elif isinstance(enabled_metrics, Sequence):
+        requested_raw = list(enabled_metrics)
+    else:
+        raise ValueError(
+            f"{aggregator_name}.enabled_metrics must be a string or a sequence, "
+            f"got: {type(enabled_metrics).__name__}."
+        )
+
+    requested = []
+    for metric_name in requested_raw:
+        token = str(metric_name).strip()
+        if token:
+            requested.append(token)
+
+    if len(requested) == 0:
+        raise ValueError(f"{aggregator_name}.enabled_metrics cannot be empty.")
+
+    unknown = [name for name in requested if name not in available]
+    if unknown:
+        raise ValueError(
+            f"{aggregator_name}.enabled_metrics contains unsupported keys: {unknown}. "
+            f"Supported: {list(available)}."
+        )
+
+    selected = []
+    for name in requested:
+        if name not in selected:
+            selected.append(name)
+    return tuple(selected)
+
+
 class SliceWiseMetricsAggregator(nn.Module):
     """
     Aggregates multiple slice-wise metrics and provides comprehensive statistics.
     Tracks both per-slice statistics and overall averages.
     """
-    def __init__(self):
+    _METRIC_FACTORIES = {
+        "dice_2d_fg": lambda: Dice2DForegroundOnly(),
+        "precision_2d": lambda: VoxelPrecision2D(),
+        "sensitivity_2d": lambda: VoxelSensitivity2D(),
+        "specificity_2d": lambda: VoxelSpecificity2D(),
+        "f1_2d": lambda: VoxelF1Score2D(),
+        "f2_2d": lambda: VoxelF2Score2D(),
+    }
+
+    def __init__(self, enabled_metrics=None):
         super().__init__()
         self.register_buffer('total_slices', torch.tensor(0))
         self.register_buffer('foreground_slices', torch.tensor(0))
         self.register_buffer('empty_slices', torch.tensor(0))
-        
-        # Individual metrics
-        self.dice_fg = Dice2DForegroundOnly()
-        self.precision = VoxelPrecision2D()
-        self.sensitivity = VoxelSensitivity2D()
-        self.specificity = VoxelSpecificity2D()
-        self.f1_score = VoxelF1Score2D()
-        self.f2_score = VoxelF2Score2D()
+
+        selected_metric_names = _normalize_enabled_metric_names(
+            enabled_metrics,
+            available_metric_names=self._METRIC_FACTORIES.keys(),
+            aggregator_name=self.__class__.__name__,
+        )
+        self.metrics = nn.ModuleDict(
+            {
+                metric_name: self._METRIC_FACTORIES[metric_name]()
+                for metric_name in selected_metric_names
+            }
+        )
 
     def forward(self, y_pred, y_true):
         with torch.no_grad():
@@ -1125,45 +1189,37 @@ class SliceWiseMetricsAggregator(nn.Module):
                 self.foreground_slices += 1
             else:
                 self.empty_slices += 1
-            
-            # Compute all metrics
+
+            # Compute enabled metrics
             results = {
-                'dice_2d_fg': self.dice_fg(y_pred, y_true),
-                'precision_2d': self.precision(y_pred, y_true),
-                'sensitivity_2d': self.sensitivity(y_pred, y_true),
-                'specificity_2d': self.specificity(y_pred, y_true),
-                'f1_2d': self.f1_score(y_pred, y_true),
-                'f2_2d': self.f2_score(y_pred, y_true),
+                metric_name: metric(y_pred, y_true)
+                for metric_name, metric in self.metrics.items()
             }
-            
+
             return results
 
     def compute(self):
         results = {
-            'dice_2d_fg': self.dice_fg.compute(),
-            'precision_2d': self.precision.compute(),
-            'sensitivity_2d': self.sensitivity.compute(),
-            'specificity_2d': self.specificity.compute(),
-            'f1_2d': self.f1_score.compute(),
-            'f2_2d': self.f2_score.compute(),
-            'total_slices': self.total_slices.float(),
-            'foreground_slices': self.foreground_slices.float(),
-            'empty_slices': self.empty_slices.float(),
-            'foreground_ratio': self.foreground_slices.float() / (self.total_slices.float() + 1e-6)
+            metric_name: metric.compute()
+            for metric_name, metric in self.metrics.items()
         }
+        results.update(
+            {
+                'total_slices': self.total_slices.float(),
+                'foreground_slices': self.foreground_slices.float(),
+                'empty_slices': self.empty_slices.float(),
+                'foreground_ratio': self.foreground_slices.float() / (self.total_slices.float() + 1e-6),
+            }
+        )
         return results
 
     def reset(self):
         self.total_slices.zero_()
         self.foreground_slices.zero_()
         self.empty_slices.zero_()
-        
-        self.dice_fg.reset()
-        self.precision.reset()
-        self.sensitivity.reset()
-        self.specificity.reset()
-        self.f1_score.reset()
-        self.f2_score.reset()
+
+        for metric in self.metrics.values():
+            metric.reset()
 
 
 class ThreeDMetricsAggregator(nn.Module):
@@ -1185,6 +1241,7 @@ class ThreeDMetricsAggregator(nn.Module):
         spacing=(1.0, 1.0, 1.0),
         tolerance_mm=1.0,
         voxel_size=None,
+        enabled_metrics=None,
     ):
         super().__init__()
         spacing_tuple = tuple(float(v) for v in spacing)
@@ -1202,33 +1259,45 @@ class ThreeDMetricsAggregator(nn.Module):
         self.register_buffer("foreground_volumes", torch.tensor(0))
         self.register_buffer("empty_volumes", torch.tensor(0))
 
-        # Keep a stable key set so downstream configs/checkpoint keys remain explicit.
+        metric_factories = {
+            "dice_medpy_3d": lambda: DiceMedpyCoefficient(),
+            "dice_3d": lambda: DiceNativeCoefficient(threshold=0.5),
+            "abs_volume_diff_3d": lambda: AbsoluteVolumeDifferenceNative(
+                voxel_size=voxel_size_value
+            ),
+            "abs_lesion_count_diff_3d": lambda: AbsoluteLesionCountDifferenceCC3D(),
+            "lesion_f1_3d": lambda: LesionF1CC3DScore(),
+            "hd95_medpy_3d": lambda: HausdorffDistance95Medpy(),
+            "hd95_3d": lambda: HausdorffDistance95Native(),
+            # Disabled: MONAI percentile HD95 can fail on large tensors
+            # (`quantile() input tensor is too large`).
+            # "hd95_monai_mm_3d": lambda: HausdorffDistance95MonaiMm(
+            #     spacing=spacing_tuple
+            # ),
+            "surface_dice_monai_3d": lambda: SurfaceDiceMonai(
+                spacing=spacing_tuple,
+                tolerance_mm=tolerance_mm_value,
+            ),
+            "voxel_tp_3d": lambda: VoxelTruePositives(),
+            "voxel_fp_3d": lambda: VoxelFalsePositives(),
+            "voxel_fn_3d": lambda: VoxelFalseNegatives(),
+            "voxel_tn_3d": lambda: VoxelTrueNegatives(),
+            "predicted_volume_mm3": lambda: PredictedVolumeMm3(spacing=spacing_tuple),
+            "ground_truth_volume_mm3": lambda: GroundTruthVolumeMm3(
+                spacing=spacing_tuple
+            ),
+        }
+        selected_metric_names = _normalize_enabled_metric_names(
+            enabled_metrics,
+            available_metric_names=metric_factories.keys(),
+            aggregator_name=self.__class__.__name__,
+        )
+
+        # Keep a stable, explicit metric key set driven by config.
         self.metrics = nn.ModuleDict(
             {
-                "dice_medpy_3d": DiceMedpyCoefficient(),
-                "dice_3d": DiceNativeCoefficient(threshold=0.5),
-                "abs_volume_diff_3d": AbsoluteVolumeDifferenceNative(
-                    voxel_size=voxel_size_value
-                ),
-                "abs_lesion_count_diff_3d": AbsoluteLesionCountDifferenceCC3D(),
-                "lesion_f1_3d": LesionF1CC3DScore(),
-                "hd95_medpy_3d": HausdorffDistance95Medpy(),
-                "hd95_3d": HausdorffDistance95Native(),
-                "hd95_monai_mm_3d": HausdorffDistance95MonaiMm(
-                    spacing=spacing_tuple
-                ),
-                "surface_dice_monai_3d": SurfaceDiceMonai(
-                    spacing=spacing_tuple,
-                    tolerance_mm=tolerance_mm_value,
-                ),
-                "voxel_tp_3d": VoxelTruePositives(),
-                "voxel_fp_3d": VoxelFalsePositives(),
-                "voxel_fn_3d": VoxelFalseNegatives(),
-                "voxel_tn_3d": VoxelTrueNegatives(),
-                "predicted_volume_mm3": PredictedVolumeMm3(spacing=spacing_tuple),
-                "ground_truth_volume_mm3": GroundTruthVolumeMm3(
-                    spacing=spacing_tuple
-                ),
+                metric_name: metric_factories[metric_name]()
+                for metric_name in selected_metric_names
             }
         )
 
@@ -1250,6 +1319,7 @@ class ThreeDMetricsAggregator(nn.Module):
 
     def forward(self, y_pred, y_true):
         with torch.no_grad():
+            metrics_start = perf_counter()
             y_pred = self._ensure_batched_channel_first_volume(y_pred)
             y_true = self._ensure_batched_channel_first_volume(y_true)
             y_pred_cpu = y_pred.detach().cpu()
@@ -1262,10 +1332,29 @@ class ThreeDMetricsAggregator(nn.Module):
             else:
                 self.empty_volumes += 1
 
-            results = {
-                metric_name: metric(y_pred_cpu, y_true_cpu)
-                for metric_name, metric in self.metrics.items()
-            }
+            results = {}
+            metric_timings = []
+            for metric_name, metric in self.metrics.items():
+                metric_start = perf_counter()
+                results[metric_name] = metric(y_pred_cpu, y_true_cpu)
+                metric_timings.append((metric_name, perf_counter() - metric_start))
+
+            metrics_total = perf_counter() - metrics_start
+            volume_idx = int(self.total_volumes.item())
+            sorted_timings = sorted(
+                metric_timings, key=lambda item: item[1], reverse=True
+            )
+            top_timing_text = " | ".join(
+                f"{metric_name}={elapsed:.2f}s"
+                for metric_name, elapsed in sorted_timings[:6]
+            )
+            print(
+                "[ValMetricTiming] "
+                f"volume_idx={volume_idx} "
+                f"has_foreground={bool(has_foreground)} "
+                f"total_metrics={metrics_total:.2f}s "
+                f"top={top_timing_text}"
+            )
             return results
 
     def compute(self):

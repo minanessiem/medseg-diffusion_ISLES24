@@ -2,7 +2,7 @@ defaults:
   - sliding_window
   - _self_
 
-# 3D volume-wise metric bundle for sliding-window validation runs.
+# Full 3D metric bundle for offline/expensive validation runs.
 metrics:
   - name: ThreeDMetricsAggregator
     params: {}
@@ -11,6 +11,9 @@ metrics:
 progress_metrics:
   - dice_3d
   - lesion_f1_3d
+  - hd95_3d
 
-# If best-checkpointing is enabled with this preset, use:
-# training.checkpoint_best.metric_name=dice_3d
+# Align best-checkpoint metric with this 3D validation bundle.
+training:
+  checkpoint_best:
+    metric_name: dice_3d

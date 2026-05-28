@@ -1,0 +1,23 @@
+defaults:
+  - sliding_window
+  - _self_
+
+# Fast 3D metric bundle for online sliding-window validation runs.
+metrics:
+  - name: ThreeDMetricsAggregator
+    params:
+      enabled_metrics:
+        - dice_3d
+        - surface_dice_monai_3d
+        - hd95_3d
+
+# Metric keys shown in tqdm validation postfix.
+progress_metrics:
+  - dice_3d
+  - surface_dice_monai_3d
+  - hd95_3d
+
+# Align best-checkpoint metric with this 3D validation bundle.
+training:
+  checkpoint_best:
+    metric_name: dice_3d
