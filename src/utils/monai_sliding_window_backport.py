@@ -60,6 +60,10 @@ def sliding_window_inference(
     sw_device: torch.device | str | None = None,
     device: torch.device | str | None = None,
     progress: bool = False,
+    progress_desc: str | None = None,
+    progress_position: int | None = None,
+    progress_leave: bool = False,
+    progress_dynamic_ncols: bool = True,
     roi_weight_map: torch.Tensor | None = None,
     process_fn: Callable | None = None,
     buffer_steps: int | None = None,
@@ -164,7 +168,19 @@ def sliding_window_inference(
 
     # stores output and count map
     output_image_list, count_map_list, sw_device_buffer, b_s, b_i = [], [], [], 0, 0  # type: ignore
-    for slice_g in tqdm(windows_range) if progress else windows_range:
+    if progress:
+        tqdm_kwargs: dict[str, Any] = {
+            "desc": progress_desc or "Sliding Window",
+            "leave": bool(progress_leave),
+            "dynamic_ncols": bool(progress_dynamic_ncols),
+        }
+        if progress_position is not None:
+            tqdm_kwargs["position"] = int(progress_position)
+        windows_iterator = tqdm(windows_range, **tqdm_kwargs)
+    else:
+        windows_iterator = windows_range
+
+    for slice_g in windows_iterator:
         slice_range = range(slice_g, min(slice_g + sw_batch_size, b_slices[b_s][0] if buffered else total_slices))
         unravel_slice = [
             [slice(idx // num_win, idx // num_win + 1), slice(None)] + list(slices[idx % num_win])

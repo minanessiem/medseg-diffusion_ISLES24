@@ -264,6 +264,26 @@ def _build_validation_progress_postfix(metric_values, progress_metric_keys):
     return postfix
 
 
+def _resolve_validation_batch_label(sample_ids):
+    """
+    Build concise batch label for validation progress display.
+    """
+    if isinstance(sample_ids, (list, tuple)):
+        labels = []
+        for item in sample_ids:
+            token = str(item).strip()
+            if token:
+                labels.append(token)
+        if len(labels) == 0:
+            return "volume"
+        if len(labels) == 1:
+            return labels[0]
+        return f"{labels[0]} (+{len(labels) - 1})"
+
+    token = str(sample_ids).strip()
+    return token if token else "volume"
+
+
 @device_grad_decorator(no_grad=True)
 def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
     """
@@ -298,16 +318,21 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
     progress_metric_keys = _resolve_validation_progress_metric_keys(cfg)
     
     pbar = tqdm(val_dl, desc="Validation", leave=True)
-    for img, true_mask, _ in pbar:
+    for img, true_mask, sample_ids in pbar:
         img = img.to(cfg.device)
         true_mask = true_mask.to(cfg.device)
+        batch_label = _resolve_validation_batch_label(sample_ids)
         
         # Generate predictions with optional ensemble
         if use_ensemble:
             # Generate multiple samples and combine
             samples = []
-            for _ in range(num_ensemble_samples):
-                sample = infer_batch(img)
+            for ensemble_idx in range(num_ensemble_samples):
+                sample = infer_batch(
+                    img,
+                    volume_label=batch_label,
+                    show_window_progress=(ensemble_idx == 0),
+                )
                 samples.append(sample)
             # Stack: [N, B, C, *spatial]
             samples = torch.stack(samples, dim=0)
@@ -315,7 +340,11 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
             pred_mask = ensemble_predictions(samples, cfg.validation.ensemble)
         else:
             # Single sample (original behavior)
-            pred_mask = infer_batch(img)
+            pred_mask = infer_batch(
+                img,
+                volume_label=batch_label,
+                show_window_progress=True,
+            )
         
         # Process each sample in batch (since metrics are slice-wise)
         batch_size = img.shape[0]

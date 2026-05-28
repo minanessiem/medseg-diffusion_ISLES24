@@ -261,12 +261,19 @@ def build_validation_inferer(diffusion, cfg):
     """
     Build callable inferer used by single-process validation loops.
 
-    Returns a callable with signature: `inferer(conditioned_image) -> pred_mask`.
+    Returns a callable with signature:
+        `inferer(conditioned_image, volume_label=None, show_window_progress=True) -> pred_mask`.
     """
     if not should_use_sliding_window_validation(cfg):
-        return lambda conditioned_image: diffusion.sample(
-            conditioned_image, disable_tqdm=True
-        )
+        def _inferer(
+            conditioned_image: torch.Tensor,
+            volume_label: Optional[str] = None,
+            show_window_progress: bool = True,
+        ) -> torch.Tensor:
+            del volume_label, show_window_progress
+            return diffusion.sample(conditioned_image, disable_tqdm=True)
+
+        return _inferer
 
     roi_size = resolve_validation_sliding_window_roi(cfg)
     sw_batch_size = int(
@@ -323,7 +330,17 @@ def build_validation_inferer(diffusion, cfg):
     def _predictor(window_batch: torch.Tensor) -> torch.Tensor:
         return diffusion.sample(window_batch, disable_tqdm=True)
 
-    def _inferer(conditioned_image: torch.Tensor) -> torch.Tensor:
+    def _inferer(
+        conditioned_image: torch.Tensor,
+        volume_label: Optional[str] = None,
+        show_window_progress: bool = True,
+    ) -> torch.Tensor:
+        if volume_label is None:
+            progress_desc = "SW Volume"
+        else:
+            trimmed = str(volume_label).strip()
+            progress_desc = f"SW {trimmed}" if trimmed else "SW Volume"
+
         return monai_sliding_window_inference(
             conditioned_image,
             roi_size=roi_size,
@@ -332,7 +349,10 @@ def build_validation_inferer(diffusion, cfg):
             overlap=overlap,
             mode=blend_mode,
             padding_mode=padding_mode,
-            progress=False,
+            progress=bool(show_window_progress),
+            progress_desc=progress_desc,
+            progress_position=1,
+            progress_leave=False,
         )
 
     return _inferer
