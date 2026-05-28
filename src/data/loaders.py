@@ -9,6 +9,10 @@ import threading
 from src.data.loader_stack.core import _build_loader_kwargs, _is_set
 from src.data.loader_stack.factory import resolve_loader_contract
 from src.data.loader_stack.registry import DatasetCapabilities
+from src.data.loader_stack.subset_contract import (
+    describe_subset_selector,
+    resolve_subset_contract,
+)
 from src.utils.distribution_utils import resolve_strategy, resolve_train_batch_sizes
 
 from src.data.loader_stack.isles24_loader import (
@@ -56,6 +60,19 @@ def _resolve_active_dataset_contract(cfg) -> tuple[str, str, DatasetCapabilities
     return resolution.dataset_id, resolution.loader_mode, resolution.capabilities
 
 
+def _resolve_subset_contract_from_cfg(cfg):
+    partitioning = OmegaConf.select(cfg, "dataset.partitioning")
+    subsets = OmegaConf.select(cfg, "dataset.subsets")
+    active_subsets = OmegaConf.select(cfg, "dataset.active_subsets")
+    fold_value = OmegaConf.select(cfg, "dataset.fold", default=None)
+    return resolve_subset_contract(
+        partitioning=partitioning,
+        subsets=subsets,
+        active_subsets=active_subsets,
+        fold_value=fold_value,
+    )
+
+
 def validate_dataset_contract(cfg):
     """Validate explicit data contract before constructing datasets/dataloaders."""
     _dataset_id, loader_mode, _capabilities = _resolve_active_dataset_contract(cfg)
@@ -64,6 +81,7 @@ def validate_dataset_contract(cfg):
     channel_layout = OmegaConf.select(cfg, "data_mode.channel_layout")
     modalities = OmegaConf.select(cfg, "dataset.modalities")
     num_modalities = OmegaConf.select(cfg, "dataset.num_modalities")
+    partitioning, _subset_definitions, _active_subsets = _resolve_subset_contract_from_cfg(cfg)
 
     # Accept plain Python sequences and Hydra ListConfig for modality contracts.
     modalities_is_sequence = isinstance(modalities, (list, tuple)) or OmegaConf.is_list(modalities)
@@ -74,6 +92,8 @@ def validate_dataset_contract(cfg):
             "Global invariant violated: len(dataset.modalities) must equal dataset.num_modalities. "
             f"Got len(modalities)={len(modalities)}, num_modalities={num_modalities}."
         )
+    if partitioning == "fold" and not _is_set(OmegaConf.select(cfg, "dataset.fold")):
+        raise ValueError("dataset.partitioning='fold' requires dataset.fold.")
 
     runtime_required = [
         "data_runtime.train_batch_size",
@@ -216,6 +236,23 @@ def get_dataloaders(cfg):
     data_root = cfg.data_io.paths.data_root
     split_file = cfg.data_io.paths.split_file
     preprocessing_configs = OmegaConf.select(cfg, "dataset.preprocessing_configs")
+    partitioning, subset_definitions, active_subsets = _resolve_subset_contract_from_cfg(cfg)
+    train_subset = active_subsets["train"]
+    val_subset = active_subsets["val"]
+    sample_subset = active_subsets["sample"]
+    fold_value = OmegaConf.select(cfg, "dataset.fold", default=None)
+    normalized_fold_value = int(fold_value) if _is_set(fold_value) else 0
+    print(
+        "[Data Contract] subset routing: "
+        f"partitioning={partitioning}, "
+        f"train={train_subset}, val={val_subset}, sample={sample_subset}"
+    )
+    print(
+        "[Data Contract] selectors: "
+        f"{describe_subset_selector(partitioning=partitioning, subset_name=train_subset, subset_definitions=subset_definitions)} | "
+        f"{describe_subset_selector(partitioning=partitioning, subset_name=val_subset, subset_definitions=subset_definitions)} | "
+        f"{describe_subset_selector(partitioning=partitioning, subset_name=sample_subset, subset_definitions=subset_definitions)}"
+    )
 
     if loader_mode == "nnunet_slices_2d":
         if capabilities.loader_module not in {_ISLES24_LOADER_MODULE, _ISLES26_LOADER_MODULE}:
@@ -242,7 +279,7 @@ def get_dataloaders(cfg):
             per_side_context_slices=per_side_context_slices,
             channel_layout=channel_layout,
         )
-        test_dataset = ISLES24NNUNet2D(
+        val_source_dataset = ISLES24NNUNet2D(
             nnunet_root=cfg.data_io.paths.nnunet_root,
             dataset_id=cfg.dataset.nnunet.dataset_id,
             dataset_name=cfg.dataset.nnunet.dataset_name,
@@ -258,6 +295,7 @@ def get_dataloaders(cfg):
             per_side_context_slices=per_side_context_slices,
             channel_layout=channel_layout,
         )
+        sample_dataset = val_source_dataset
 
     elif loader_mode == "online_slices_3d_to_2d":
         if capabilities.loader_module == _ISLES24_LOADER_MODULE:
@@ -275,33 +313,63 @@ def get_dataloaders(cfg):
         train_dataset = online_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=train_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=False,
             image_size=cfg.model.image_size,
             use_caching=cfg.data_runtime.use_caching,
+            cache_prefix=f"subset:{train_subset}",
             shared_cache=shared_cache,
             cache_lock=cache_lock,
             aug_cfg=aug_cfg,
             is_training=True,
             preprocessing_configs=preprocessing_configs,
         )
-        test_dataset = online_dataset_cls(
+        val_source_dataset = online_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=val_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=True,
             image_size=cfg.model.image_size,
             use_caching=cfg.data_runtime.use_caching,
+            cache_prefix=f"subset:{val_subset}",
             shared_cache=shared_cache,
             cache_lock=cache_lock,
             aug_cfg=None,
             is_training=False,
             preprocessing_configs=preprocessing_configs,
         )
+        if sample_subset == val_subset:
+            sample_dataset = val_source_dataset
+        else:
+            sample_dataset = online_dataset_cls(
+                directory=data_root,
+                datalist_json=split_file,
+                fold=normalized_fold_value,
+                subset_name=sample_subset,
+                partitioning=partitioning,
+                subset_definitions=subset_definitions,
+                transform=None,
+                modalities=cfg.dataset.modalities,
+                test_flag=True,
+                image_size=cfg.model.image_size,
+                use_caching=cfg.data_runtime.use_caching,
+                cache_prefix=f"subset:{sample_subset}",
+                shared_cache=shared_cache,
+                cache_lock=cache_lock,
+                aug_cfg=None,
+                is_training=False,
+                preprocessing_configs=preprocessing_configs,
+            )
     elif loader_mode == "full_volumes_3d":
         if capabilities.loader_module == _ISLES24_LOADER_MODULE:
             fullvol_dataset_cls = ISLES24Dataset3D
@@ -315,7 +383,10 @@ def get_dataloaders(cfg):
         train_dataset = fullvol_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=train_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=False,
@@ -324,10 +395,13 @@ def get_dataloaders(cfg):
             aug_cfg=aug_cfg,
             is_training=True,
         )
-        test_dataset = fullvol_dataset_cls(
+        val_source_dataset = fullvol_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=val_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=True,
@@ -336,6 +410,24 @@ def get_dataloaders(cfg):
             aug_cfg=None,
             is_training=False,
         )
+        if sample_subset == val_subset:
+            sample_dataset = val_source_dataset
+        else:
+            sample_dataset = fullvol_dataset_cls(
+                directory=data_root,
+                datalist_json=split_file,
+                fold=normalized_fold_value,
+                subset_name=sample_subset,
+                partitioning=partitioning,
+                subset_definitions=subset_definitions,
+                transform=None,
+                modalities=cfg.dataset.modalities,
+                test_flag=True,
+                image_size=cfg.model.image_size,
+                preprocessing_configs=preprocessing_configs,
+                aug_cfg=None,
+                is_training=False,
+            )
     elif loader_mode == "random_patches_3d":
         if capabilities.loader_module == _ISLES24_LOADER_MODULE:
             patch_dataset_cls = ISLES24RandomPatches3D
@@ -351,7 +443,10 @@ def get_dataloaders(cfg):
         train_dataset = patch_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=train_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=False,
@@ -361,10 +456,13 @@ def get_dataloaders(cfg):
             is_training=True,
         )
         # Random patch mode trains on patches but validates/samples on full volumes.
-        test_dataset = fullvol_dataset_cls(
+        val_source_dataset = fullvol_dataset_cls(
             directory=data_root,
             datalist_json=split_file,
-            fold=cfg.dataset.fold,
+            fold=normalized_fold_value,
+            subset_name=val_subset,
+            partitioning=partitioning,
+            subset_definitions=subset_definitions,
             transform=None,
             modalities=cfg.dataset.modalities,
             test_flag=True,
@@ -373,6 +471,24 @@ def get_dataloaders(cfg):
             aug_cfg=None,
             is_training=False,
         )
+        if sample_subset == val_subset:
+            sample_dataset = val_source_dataset
+        else:
+            sample_dataset = fullvol_dataset_cls(
+                directory=data_root,
+                datalist_json=split_file,
+                fold=normalized_fold_value,
+                subset_name=sample_subset,
+                partitioning=partitioning,
+                subset_definitions=subset_definitions,
+                transform=None,
+                modalities=cfg.dataset.modalities,
+                test_flag=True,
+                image_size=cfg.model.image_size,
+                preprocessing_configs=preprocessing_configs,
+                aug_cfg=None,
+                is_training=False,
+            )
     else:
         raise ValueError(f"Unsupported loader_mode: {loader_mode}")
 
@@ -386,23 +502,23 @@ def get_dataloaders(cfg):
         f"per_rank={per_rank_train_batch_size}, strategy={strategy}"
     )
 
-    val_dataset = test_dataset
+    val_dataset = val_source_dataset
     if bool(OmegaConf.select(cfg, "data_runtime.loader_smoke_testing", default=False)):
         train_limit = min(_LOADER_SMOKE_ITEMS, len(train_dataset))
-        val_limit = min(_LOADER_SMOKE_ITEMS, len(test_dataset))
+        val_limit = min(_LOADER_SMOKE_ITEMS, len(val_source_dataset))
         if train_limit == 0:
             raise ValueError(
                 "data_runtime.loader_smoke_testing=true but train dataset is empty "
-                "(0 items after route/fold split)."
+                "(0 items after route/subset split)."
             )
         if val_limit == 0:
             raise ValueError(
                 "data_runtime.loader_smoke_testing=true but validation dataset is empty "
-                "(0 items after route/fold split)."
+                "(0 items after route/subset split)."
             )
 
         train_dataset = Subset(train_dataset, list(range(train_limit)))
-        val_dataset = Subset(test_dataset, list(range(val_limit)))
+        val_dataset = Subset(val_source_dataset, list(range(val_limit)))
         print(
             "[Data Runtime] loader_smoke_testing enabled: "
             f"train_items={train_limit}, val_items={val_limit}, "
@@ -457,7 +573,7 @@ def get_dataloaders(cfg):
         **val_kwargs,
     )
     sample_dataloader = DataLoader(
-        test_dataset,
+        sample_dataset,
         batch_size=int(cfg.data_runtime.test_batch_size),
         shuffle=True,
         **sample_kwargs,

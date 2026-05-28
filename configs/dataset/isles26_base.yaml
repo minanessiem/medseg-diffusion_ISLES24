@@ -1,6 +1,20 @@
 id: isles26
 name: isles26
 fold: 1
+partitioning: split
+subsets:
+  train:
+    split_in: [train]
+  val_fast:
+    split_in: [val_fast]
+  val_rest:
+    split_in: [val_rest]
+  val_full:
+    split_in: [val_fast, val_rest]
+active_subsets:
+  train: train
+  val: val_fast
+  sample: val_fast
 label_spec:
   background: 0
   foreground: 1

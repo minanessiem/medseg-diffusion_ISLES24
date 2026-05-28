@@ -28,6 +28,7 @@ from monai.transforms import (
 )
 
 from src.data.augmentation import AugmentationPipeline2D, AugmentationPipeline3D
+from src.data.loader_stack.subset_contract import filter_records_for_subset
 from src.utils.loader_monai_utils import build_monai_compose_safe
 from src.utils.loader_transforms import (
     MergeProcessedChannelsTransform,
@@ -38,8 +39,8 @@ from src.utils.loader_utils import LoaderDataUtils
 ISLES26_MODALITY_KEY = "T1"
 ISLES26_SUPPORTED_MODALITY_KEYS = (ISLES26_MODALITY_KEY,)
 ISLES26_SUPPORTED_PREPROCESSING_KEYS = ("RAW",)
-ISLES26_REQUIRED_RECORD_KEYS = ("fold", "caseID", ISLES26_MODALITY_KEY, "label")
-ISLES26_OPTIONAL_RECORD_KEYS = ("siteID", "metadata_csv", "metadata")
+ISLES26_REQUIRED_RECORD_KEYS = ("caseID", ISLES26_MODALITY_KEY, "label", "split")
+ISLES26_OPTIONAL_RECORD_KEYS = ("siteID", "metadata_csv", "metadata", "fold")
 ISLES26_VIRTUAL_PATH_TEMPLATE = "{case_id}_slice{slice_idx}"
 ISLES26_PATCH_PATH_TEMPLATE = "{case_id}_patch{patch_idx}"
 
@@ -338,12 +339,18 @@ def _normalize_case_record(record: Mapping[str, Any], basedir: str) -> Dict[str,
         field_name="caseID",
     )
 
-    try:
-        normalized["fold"] = int(record.get("fold"))
-    except Exception as exc:
-        raise ValueError(
-            f"ISLES26 record has invalid 'fold' value: {record.get('fold')}."
-        ) from exc
+    split_value = record.get("split")
+    if not LoaderDataUtils.is_non_empty(split_value):
+        raise ValueError("ISLES26 record requires non-empty 'split' label.")
+    normalized["split"] = str(split_value).strip()
+
+    if "fold" in record and LoaderDataUtils.is_non_empty(record.get("fold")):
+        try:
+            normalized["fold"] = int(record.get("fold"))
+        except Exception as exc:
+            raise ValueError(
+                f"ISLES26 record has invalid optional 'fold' value: {record.get('fold')}."
+            ) from exc
 
     normalized[ISLES26_MODALITY_KEY] = _normalize_t1_paths(
         t1_value=record.get(ISLES26_MODALITY_KEY),
@@ -374,17 +381,9 @@ def _normalize_case_record(record: Mapping[str, Any], basedir: str) -> Dict[str,
     return normalized
 
 
-def datafold_read(datalist, basedir, fold=0, key="training"):
-    """
-    Read and normalize ISLES26 datalist entries with fold-based split.
-
-    Behavior mirrors ISLES24 splitting semantics:
-    - records with `record["fold"] != fold` go to train
-    - records with `record["fold"] == fold` go to val
-    """
+def _read_normalized_records(datalist, basedir, key="training"):
     datalist_path = os.path.expanduser(str(datalist))
     basedir_path = os.path.expanduser(str(basedir))
-    target_fold = int(fold)
 
     with open(datalist_path, encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -410,10 +409,46 @@ def datafold_read(datalist, basedir, fold=0, key="training"):
         normalized_records.append(
             _normalize_case_record(record=record, basedir=basedir_path)
         )
+    return normalized_records
 
-    train_records = [record for record in normalized_records if record.get("fold") != target_fold]
-    val_records = [record for record in normalized_records if record.get("fold") == target_fold]
-    return train_records, val_records
+
+def datafold_read(
+    datalist,
+    basedir,
+    subset_name="train",
+    key="training",
+    partitioning: str = "split",
+    subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
+):
+    """
+    Read and normalize ISLES26 datalist entries with subset-based selection.
+    """
+    normalized_records = _read_normalized_records(
+        datalist=datalist,
+        basedir=basedir,
+        key=key,
+    )
+    requested_subset = str(subset_name).strip()
+    if len(requested_subset) == 0:
+        raise ValueError("ISLES26 subset_name must be non-empty.")
+
+    normalized_subset_definitions = subset_definitions
+    if normalized_subset_definitions is None:
+        if str(partitioning).strip().lower() != "split":
+            raise ValueError(
+                "ISLES26 datafold_read requires partitioning='split' when "
+                "subset_definitions are omitted."
+            )
+        normalized_subset_definitions = {
+            requested_subset: {"split_in": (requested_subset,)}
+        }
+
+    return filter_records_for_subset(
+        records=normalized_records,
+        partitioning=str(partitioning).strip().lower(),
+        subset_name=requested_subset,
+        subset_definitions=normalized_subset_definitions,
+    )
 
 
 class ISLES26Dataset3D(torch.utils.data.Dataset):
@@ -428,6 +463,9 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "split",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
@@ -442,6 +480,15 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
         self.fold = int(fold)
         self.transform = transform
         self.test_flag = bool(test_flag)
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if self.test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
+        if len(self.subset_name) == 0:
+            raise ValueError("ISLES26Dataset3D requires a non-empty subset_name.")
         self.image_size = int(image_size)
         self.aug_cfg = aug_cfg
         self.is_training = bool(is_training)
@@ -456,12 +503,13 @@ class ISLES26Dataset3D(torch.utils.data.Dataset):
             list(set(_parse_modality_config(modality)[0] for modality in self.modalities))
         )
 
-        train_files, val_files = datafold_read(
+        self.database = datafold_read(
             datalist=self.datalist_json,
             basedir=self.directory,
-            fold=self.fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
         )
-        self.database = val_files if self.test_flag else train_files
         self.full_volume_pipeline = build_full_volumes_3d_pipeline(
             modalities=self.modalities,
             preprocessing_configs=self.preprocessing_configs,
@@ -520,6 +568,9 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "split",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
@@ -534,6 +585,15 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         self.fold = int(fold)
         self.transform = transform
         self.test_flag = bool(test_flag)
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if self.test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
+        if len(self.subset_name) == 0:
+            raise ValueError("ISLES26RandomPatches3D requires a non-empty subset_name.")
         self.image_size = int(image_size)
         self.aug_cfg = aug_cfg
         self.is_training = bool(is_training)
@@ -547,12 +607,13 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
         self.base_modalities = sorted(
             list(set(_parse_modality_config(modality)[0] for modality in self.modalities))
         )
-        train_files, val_files = datafold_read(
+        self.database = datafold_read(
             datalist=self.datalist_json,
             basedir=self.directory,
-            fold=self.fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
         )
-        self.database = val_files if self.test_flag else train_files
 
         self.patches_per_volume = int(
             self.preprocessing_configs["random_patches_3d"]["patches_per_volume"]["train"]
@@ -646,11 +707,15 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
         directory,
         datalist_json,
         fold=0,
+        subset_name: Optional[str] = None,
+        partitioning: str = "split",
+        subset_definitions: Optional[Mapping[str, Mapping[str, tuple[Any, ...]]]] = None,
         transform=None,
         modalities=None,
         test_flag=False,
         image_size=32,
         use_caching=False,
+        cache_prefix: Optional[str] = None,
         shared_cache=None,
         cache_lock=None,
         aug_cfg=None,
@@ -662,20 +727,30 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
         self.datalist_json = datalist_json
         self.fold = int(fold)
         self.transform = transform
+        self.test_flag = bool(test_flag)
+        self.subset_name = (
+            str(subset_name).strip()
+            if subset_name is not None
+            else ("val" if self.test_flag else "train")
+        )
+        self.partitioning = str(partitioning).strip().lower()
+        self.subset_definitions = subset_definitions
+        if len(self.subset_name) == 0:
+            raise ValueError("ISLES26Dataset2D requires a non-empty subset_name.")
         self.modalities = _normalize_modalities(modalities)
         self.base_modalities = sorted(
             list(set(_parse_modality_config(modality)[0] for modality in self.modalities))
         )
 
-        train_files, val_files = datafold_read(
+        self.database = datafold_read(
             datalist=self.datalist_json,
             basedir=self.directory,
-            fold=self.fold,
+            subset_name=self.subset_name,
+            partitioning=self.partitioning,
+            subset_definitions=self.subset_definitions,
         )
-        self.database = val_files if bool(test_flag) else train_files
 
         self.all_slices = []
-        self.test_flag = bool(test_flag)
         self.image_size = int(image_size)
         if not isinstance(preprocessing_configs, Mapping):
             raise ValueError(
@@ -717,7 +792,11 @@ class ISLES26Dataset2D(torch.utils.data.Dataset):
             mode="nearest",
         )
         self.use_caching = bool(use_caching)
-        self._cache_prefix = "ts" if self.test_flag else "tr"
+        self._cache_prefix = (
+            str(cache_prefix).strip()
+            if cache_prefix is not None
+            else f"subset:{self.subset_name}"
+        )
         self.shared_cache = shared_cache
         self._shared_cache_lock = cache_lock
         self.aug_cfg = aug_cfg

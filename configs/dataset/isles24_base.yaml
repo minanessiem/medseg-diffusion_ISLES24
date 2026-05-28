@@ -1,6 +1,16 @@
 id: isles24
 name: isles24
 fold: 0
+partitioning: fold
+subsets:
+  train:
+    fold_not_in: ["${dataset.fold}"]
+  val:
+    fold_in: ["${dataset.fold}"]
+active_subsets:
+  train: train
+  val: val
+  sample: val
 label_spec:
   background: 0
   foreground: 1
