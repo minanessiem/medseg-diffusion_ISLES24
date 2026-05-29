@@ -19,6 +19,10 @@ from scripts.nnunet.core.exporters import (
     count_files_in_directory,
     write_provenance_jsonl,
 )
+from src.data.loader_stack.subset_contract import (
+    describe_subset_selector,
+    resolve_subset_contract,
+)
 from src.data.loader_stack.factory import resolve_loader_contract
 from src.data.loaders import get_dataloaders, validate_dataset_contract
 from src.utils.train_utils import setup_seeds
@@ -85,6 +89,32 @@ def _resolve_nnunet_configuration(cfg: DictConfig) -> str:
     if dim == "3d":
         return "3d_fullres"
     return "2d"
+
+
+def _resolve_subset_context(cfg: DictConfig) -> Dict[str, Any]:
+    partitioning, subset_definitions, active_subsets = resolve_subset_contract(
+        partitioning=OmegaConf.select(cfg, "dataset.partitioning"),
+        subsets=OmegaConf.select(cfg, "dataset.subsets"),
+        active_subsets=OmegaConf.select(cfg, "dataset.active_subsets"),
+        fold_value=OmegaConf.select(cfg, "dataset.fold", default=None),
+    )
+    selectors_by_role = {
+        role: describe_subset_selector(
+            partitioning=partitioning,
+            subset_name=active_subsets[role],
+            subset_definitions=subset_definitions,
+        )
+        for role in ("train", "val", "sample")
+    }
+    context: Dict[str, Any] = {
+        "partitioning": partitioning,
+        "active_subsets": dict(active_subsets),
+        "selectors_by_role": selectors_by_role,
+    }
+    fold_value = OmegaConf.select(cfg, "dataset.fold", default=None)
+    if partitioning == "fold" and _is_set(fold_value):
+        context["fold"] = int(fold_value)
+    return context
 
 
 def validate_converter_contract(cfg: DictConfig) -> None:
@@ -220,6 +250,7 @@ def _build_dataset_json_payload(
     num_test: int,
     is_test_mode: bool,
     mode_key: str,
+    subset_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     dataset_label = _resolve_dataset_label(cfg)
     if mode_key == "volumes_3d":
@@ -228,6 +259,23 @@ def _build_dataset_json_payload(
         description = f"{dataset_label} 2D slices preprocessed with MedSegDiff pipeline"
 
     channel_names = {str(i): cfg.dataset.modalities[i] for i in range(num_channels)}
+    source_config: Dict[str, Any] = {
+        "dataset": dataset_label,
+        "modalities": list(cfg.dataset.modalities),
+        "image_size": cfg.model.image_size,
+        "partitioning": subset_context["partitioning"],
+        "active_subsets": dict(subset_context["active_subsets"]),
+        "active_subset_selectors": dict(subset_context["selectors_by_role"]),
+        "export_split_mapping": {
+            "train": subset_context["active_subsets"]["train"],
+            "test": subset_context["active_subsets"]["val"],
+        },
+        "test_mode": is_test_mode,
+        "num_test": num_test,
+    }
+    if "fold" in subset_context:
+        source_config["fold"] = subset_context["fold"]
+
     return {
         "channel_names": channel_names,
         "labels": {
@@ -238,14 +286,7 @@ def _build_dataset_json_payload(
         "file_ending": ".nii.gz",
         "description": description,
         "reference": "Converted from MedSegDiff preprocessing",
-        "source_config": {
-            "dataset": dataset_label,
-            "modalities": list(cfg.dataset.modalities),
-            "image_size": cfg.model.image_size,
-            "fold": cfg.dataset.fold,
-            "test_mode": is_test_mode,
-            "num_test": num_test,
-        },
+        "source_config": source_config,
     }
 
 
@@ -262,6 +303,11 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
     dim_label = str(OmegaConf.select(cfg, "data_mode.dim", default="2d")).upper()
     nnunet_configuration = _resolve_nnunet_configuration(cfg)
     unit_label = strategy.sample_unit_name
+    subset_context = _resolve_subset_context(cfg)
+    active_subsets = subset_context["active_subsets"]
+    train_subset = active_subsets["train"]
+    val_subset = active_subsets["val"]
+    sample_subset = active_subsets["sample"]
 
     print(f"\n{'=' * 60}")
     print(f"{_resolve_dataset_label(cfg)} {dim_label} Dataset → nnU-Net Conversion")
@@ -282,7 +328,17 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
     print(f"Source dataset: {_resolve_dataset_label(cfg)}")
     print(f"Modalities: {list(cfg.dataset.modalities)}")
     print(f"Image size: {cfg.model.image_size}")
-    print(f"Validation fold: {cfg.dataset.fold}")
+    print(f"Partitioning: {subset_context['partitioning']}")
+    print(
+        "Active subsets: "
+        f"train={train_subset}, val={val_subset}, sample={sample_subset}"
+    )
+    print(
+        "Subset selectors: "
+        f"{subset_context['selectors_by_role']['train']} | "
+        f"{subset_context['selectors_by_role']['val']} | "
+        f"{subset_context['selectors_by_role']['sample']}"
+    )
     print(f"Augmentation: {_resolve_augmentation_label(cfg)}")
     print(f"Output: {request.dataset_folder}")
     print(f"{'=' * 60}\n")
@@ -316,7 +372,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
             images_dir=request.images_tr,
             labels_dir=request.labels_tr,
             num_channels=num_channels,
-            desc="Exporting training set",
+            desc=f"Exporting training set (subset: {train_subset})",
             max_slices=request.max_slices,
             split_name="train",
             use_parallel=request.use_parallel,
@@ -339,7 +395,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
             images_dir=request.images_ts,
             labels_dir=request.labels_ts,
             num_channels=num_channels,
-            desc="Exporting test set (validation fold)",
+            desc=f"Exporting test set (validation subset: {val_subset})",
             max_slices=request.max_slices,
             split_name="test",
             use_parallel=request.use_parallel,
@@ -368,6 +424,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
         num_test=num_test,
         is_test_mode=request.is_test_mode,
         mode_key=str(strategy.mode_key),
+        subset_context=subset_context,
     )
 
     with (request.dataset_folder / "dataset.json").open("w", encoding="utf-8") as handle:
@@ -379,7 +436,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
     print("Conversion complete!")
     print(f"{'=' * 60}")
     print(f"Training {unit_label}: {num_training}")
-    print(f"Test {unit_label} (fold {cfg.dataset.fold}): {num_test}")
+    print(f"Test {unit_label} ({val_subset} subset): {num_test}")
     if request.is_test_mode:
         print(f"\n⚠️  TEST MODE: Only exported {request.max_slices} {unit_label} per split")
         print("   Run with nnunet.test=false for full export")
@@ -436,4 +493,7 @@ def run_conversion(cfg: DictConfig) -> Dict[str, Any]:
         "num_training": num_training,
         "num_test": num_test,
         "provenance_records": len(provenance_records),
+        "partitioning": subset_context["partitioning"],
+        "train_subset": train_subset,
+        "val_subset": val_subset,
     }

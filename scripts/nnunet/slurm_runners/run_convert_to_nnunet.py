@@ -17,10 +17,12 @@ Examples:
     python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
         --convert-config-name nnunet/convert/isles24_cluster_baseline
 
-    # Full export with custom fold
+    # Full export with val_full as test subset (split-based datasets)
     python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
-        --convert-config-name nnunet/convert/isles24_cluster_baseline \
-        nnunet.test=false dataset.fold=2
+        --convert-config-name nnunet/convert/isles26_cluster_t1raw \
+        nnunet.test=false \
+        dataset.active_subsets.val=val_full \
+        dataset.active_subsets.sample=val_full
 
     # Custom resources then overrides
     python3 -m scripts.nnunet.slurm_runners.run_convert_to_nnunet \
@@ -150,7 +152,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "hydra_overrides",
         nargs="*",
-        help="Hydra config overrides (e.g., nnunet.test=false dataset.fold=2)",
+        help=(
+            "Hydra config overrides "
+            "(e.g., nnunet.test=false dataset.active_subsets.val=val_full "
+            "dataset.active_subsets.sample=val_full)"
+        ),
     )
 
     # Control arguments (last)

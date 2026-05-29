@@ -1,6 +1,6 @@
 # @package _global_
 #
-# ISLES24 conversion preset (local environment, baseline modalities, 3D volumes).
+# ISLES24 conversion preset (local environment, baseline modalities, 3D volumes, full validation export).
 # Canonical usage:
 #   python3 -m scripts.nnunet.convert_to_nnunet \
 #       --config-name=nnunet/convert/isles24_local_3d_baseline
@@ -10,3 +10,9 @@ defaults:
   - /environment: isles_local
   - /data_profile: isles24_3d_fullvol_baseline
   - _self_
+
+dataset:
+  active_subsets:
+    train: train
+    val: val
+    sample: val

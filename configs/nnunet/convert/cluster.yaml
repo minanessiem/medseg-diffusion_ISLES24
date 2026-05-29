@@ -5,7 +5,8 @@
 #
 # Override examples:
 #   Full export:     nnunet.test=false
-#   Different fold:  dataset.fold=2
+#   Full val_full:   dataset.active_subsets.val=val_full dataset.active_subsets.sample=val_full
+#   ISLES24 fold:    dataset.fold=2
 #   Custom output:   nnunet.output_dir=/mnt/data/nnUNet_raw
 
 defaults:

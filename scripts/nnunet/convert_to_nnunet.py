@@ -43,10 +43,12 @@ Usage:
         --config-name=nnunet/convert/isles24_local \
         nnunet.output_dir=/mnt/data/nnUNet_raw
 
-    # Different fold
+    # Export full validation subset in split-based datasets (e.g., ISLES26)
     python3 -m scripts.nnunet.convert_to_nnunet \
-        --config-name=nnunet/convert/isles24_local \
-        dataset.fold=2
+        --config-name=nnunet/convert/isles26_local_t1raw \
+        nnunet.test=false \
+        dataset.active_subsets.val=val_full \
+        dataset.active_subsets.sample=val_full
 """
 
 import os
