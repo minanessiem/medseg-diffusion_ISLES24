@@ -1,0 +1,44 @@
+# Dice+BCE discriminative loss with deep supervision enabled.
+#
+# Inherits the no-DS baseline and only activates deep supervision behavior.
+# Existing discriminative.dice / discriminative.bce keys are preserved for
+# backward compatibility while terms[] defines the generic DS schedule contract.
+
+defaults:
+  - discriminative_dicebce
+
+discriminative:
+  deep_supervision:
+    enabled: true
+    final_head: 0
+    head_parser: stacked
+    default_supervision:
+      mode: all_heads
+      weighting: geometric
+      decay: 0.5
+      normalize: false
+
+  terms:
+    - name: dice
+      enabled: true
+      loss: dice
+      weight: 1.0
+      params:
+        smooth: 1.0e-5
+        apply_sigmoid: false
+      supervision:
+        mode: inherit_default
+        heads: null
+        weights: null
+
+    - name: bce
+      enabled: true
+      loss: bce
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: false
+      supervision:
+        mode: inherit_default
+        heads: null
+        weights: null

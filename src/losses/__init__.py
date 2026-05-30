@@ -11,11 +11,27 @@ from .segmentation_losses import (
     BCELoss,
     CombinedSegmentationLoss,
 )
+from .discriminative_deep_supervision import (
+    DiscriminativeDeepSupervisionResult,
+    DiscriminativeTermSpec,
+    SupervisionPlan,
+    compute_discriminative_deep_supervision_loss,
+    normalize_discriminative_head_outputs,
+    resolve_discriminative_supervision_plan,
+    resolve_discriminative_terms,
+)
 
 __all__ = [
     'DiceLoss',
     'DiceLossPerSample',
     'BCELoss',
     'CombinedSegmentationLoss',
+    'DiscriminativeDeepSupervisionResult',
+    'DiscriminativeTermSpec',
+    'SupervisionPlan',
+    'compute_discriminative_deep_supervision_loss',
+    'normalize_discriminative_head_outputs',
+    'resolve_discriminative_supervision_plan',
+    'resolve_discriminative_terms',
 ]
 

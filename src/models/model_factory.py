@@ -179,3 +179,35 @@ def build_swinunetr(cfg: DictConfig) -> nn.Module:
     """
     from .SwinUNetR import SwinUNetRAdapter
     return SwinUNetRAdapter(cfg)
+
+
+@register_architecture('dynunet')
+def build_dynunet(cfg: DictConfig) -> nn.Module:
+    """
+    Build MONAI DynUNet for discriminative segmentation.
+
+    This is a discriminative model (no diffusion) that takes only
+    the input modalities and directly predicts the segmentation mask.
+
+    Required config keys:
+        cfg.model.architecture: "dynunet"
+        cfg.model.image_size: int
+        cfg.model.spatial_dims: 2/3 or "2d"/"3d"
+        cfg.model.image_channels: int
+        cfg.model.out_channels: int
+        cfg.model.kernel_size: stage-wise sequence
+        cfg.model.strides: stage-wise sequence
+        cfg.model.upsample_kernel_size: stage-wise sequence
+
+    Optional config keys:
+        cfg.model.filters: list[int] or null
+        cfg.model.dropout: float or null
+        cfg.model.norm_name: str/tuple
+        cfg.model.act_name: str/tuple
+        cfg.model.deep_supervision: bool
+        cfg.model.deep_supr_num: int
+        cfg.model.res_block: bool
+        cfg.model.trans_bias: bool
+    """
+    from .DynUNet import DynUNetAdapter
+    return DynUNetAdapter(cfg)

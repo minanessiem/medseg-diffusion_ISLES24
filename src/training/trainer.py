@@ -388,6 +388,10 @@ def validate_one_epoch(diffusion, val_dl, metrics, logger, global_step, cfg):
     for metric in metrics:
         metric.reset()
 
+    # Validation temporarily switches model to eval mode; restore train mode
+    # so subsequent training/logging paths keep expected behavior.
+    diffusion.train()
+
     return results
 
 

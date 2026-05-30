@@ -94,6 +94,25 @@ def format_dice_smooth(smooth):
     
     return f"sm{neg_exp}"
 
+
+def _format_stage_sequence(value):
+    """
+    Format stage-wise sequences (e.g., DynUNet kernel/stride config) compactly.
+
+    Examples:
+        [3, 3, 3, 3] -> "3-3-3-3"
+        [[1,2,2], [2,2,2]] -> "1x2x2-2x2x2"
+    """
+    if hasattr(value, "__iter__") and not isinstance(value, (str, dict)):
+        parts = []
+        for item in value:
+            if hasattr(item, "__iter__") and not isinstance(item, (str, dict)):
+                parts.append('x'.join(str(x) for x in item))
+            else:
+                parts.append(str(item))
+        return '-'.join(parts)
+    return str(value)
+
 def generate_loss_string(loss_cfg):
     """Generate loss substring for run name.
     
@@ -129,6 +148,41 @@ def generate_loss_string(loss_cfg):
         if bce.get('enabled', False):
             weight_str = format_loss_weight(bce.get('weight', 1.0))
             disc_parts.append(f"b{weight_str}")
+
+        # Terms-based discriminative config (generic deep-supervision schema)
+        # only used if legacy dice/bce keys are unavailable.
+        if not disc_parts:
+            terms = disc.get('terms', [])
+            for term in terms:
+                if not hasattr(term, 'get'):
+                    continue
+                if not term.get('enabled', True):
+                    continue
+                if float(term.get('weight', 0.0)) <= 0:
+                    continue
+                loss_name = str(term.get('loss', term.get('name', 'term'))).lower()
+                weight_str = format_loss_weight(float(term.get('weight', 1.0)))
+                if loss_name == 'dice':
+                    smooth = term.get('params', {}).get('smooth', 1e-5)
+                    smooth_str = format_dice_smooth(float(smooth))
+                    disc_parts.append(f"d{weight_str}{smooth_str}")
+                elif loss_name == 'bce':
+                    disc_parts.append(f"b{weight_str}")
+                else:
+                    # Generic fallback for custom terms.
+                    name = str(term.get('name', loss_name)).lower()
+                    disc_parts.append(f"{name}{weight_str}")
+
+        # Deep supervision marker token (only when enabled)
+        deep_supervision = disc.get('deep_supervision', {})
+        if hasattr(deep_supervision, 'get'):
+            ds_enabled = deep_supervision.get('enabled', False)
+        elif isinstance(deep_supervision, dict):
+            ds_enabled = deep_supervision.get('enabled', False)
+        else:
+            ds_enabled = False
+        if bool(ds_enabled):
+            disc_parts.append("dsup")
         
         if disc_parts:
             return 'l' + '_'.join(disc_parts)
@@ -631,6 +685,20 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
         
         model_str = (f"{architecture}_{model['image_size']}_"
                      f"{model['feature_size']}f_{depths_str}_{heads_str}h")
+
+    elif architecture == 'dynunet':
+        # DynUNet (discriminative): dynunet_{size}_{spatial}d_k{kernel}_s{strides}_u{upsample}_f{filters}
+        # Example: dynunet_64_3d_k3-3-3-3_s1-2-2-2_u2-2-2_f32-64-128-256
+        spatial_dims = str(model.get('spatial_dims', 'na')).lower()
+        kernel_str = _format_stage_sequence(model.get('kernel_size', []))
+        strides_str = _format_stage_sequence(model.get('strides', []))
+        upsample_str = _format_stage_sequence(model.get('upsample_kernel_size', []))
+        filters_str = _format_stage_sequence(model.get('filters', 'auto'))
+
+        model_str = (
+            f"{architecture}_{model['image_size']}_{spatial_dims}_"
+            f"k{kernel_str}_s{strides_str}_u{upsample_str}_f{filters_str}"
+        )
     
     else:
         # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl

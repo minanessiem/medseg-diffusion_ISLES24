@@ -1,0 +1,53 @@
+# MONAI DynUNet for discriminative segmentation (2D or 3D).
+#
+# Key differences from diffusion models:
+# - NO timestep conditioning
+# - NO mask concatenation
+# - Direct mask prediction from modalities
+#
+# Notes:
+# - `kernel_size` / `strides` / `upsample_kernel_size` are stage-wise.
+# - `strides` controls encoder/decoder scale changes (conv stride), not
+#   sliding-window inference traversal.
+# - Deep supervision can be enabled at model level, but loss scheduling is
+#   configured in loss/discriminative_*_deepsupervision.yaml.
+
+architecture: dynunet
+
+# ==================== Core Dimensions ====================
+image_size: 64                              # Scalar edge length
+spatial_dims: ${data_mode.dim}              # "2d" or "3d"
+image_channels: ${dataset.num_modalities}   # Dynamic based on dataset
+out_channels: 1                             # Binary segmentation
+
+# ==================== DynUNet Topology ====================
+# Stage-wise kernel sizes. Length must match `strides` and be >= 3.
+kernel_size: [3, 3, 3, 3]
+
+# Stage-wise conv strides (encoder downsample pattern).
+# First stride is input block stride.
+strides: [1, 2, 2, 2]
+
+# Transposed-conv kernel sizes for decoder upsampling.
+# Must align with strides[1:].
+upsample_kernel_size: [2, 2, 2]
+
+# Optional explicit channels per stage.
+# If null, MONAI computes defaults from spatial dims and number of stages.
+filters: [32, 64, 128, 256]
+
+# ==================== Block / Normalization Options ====================
+dropout: null
+norm_name: INSTANCE
+act_name: leakyrelu
+res_block: true
+trans_bias: false
+
+# ==================== Deep Supervision (Model-Side) ====================
+# Enabled by default for discriminative DynUNet experiments.
+# For current strides=[1,2,2,2]:
+#   num_up_layers = len(strides)-1 = 3
+#   deep_supr_num max = num_up_layers-1 = 2
+#   total returned heads during training = 1 + deep_supr_num = 3 (head0, head1, head2)
+deep_supervision: true
+deep_supr_num: 2

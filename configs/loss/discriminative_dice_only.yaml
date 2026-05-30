@@ -11,6 +11,8 @@ defaults:
 
 # Override: disable BCE, keep only Dice
 discriminative:
+  deep_supervision:
+    enabled: false       # Baseline: single-head supervision
   dice:
     enabled: true
     weight: 1.0
