@@ -27,6 +27,7 @@ model:
 data_runtime:
   loader_smoke_testing: false
   train_batch_size: 3
+  num_train_workers: 8
   num_valid_workers: 8
 
 validation:
@@ -45,6 +46,8 @@ environment:
     output_root: '/mnt/outputs/discriminative_swinunetr_isles26_3d_randompatch_250526/'
 
 dataset:
+  active_subsets:
+    val: val_full
   preprocessing_configs:
     random_patches_3d:
       patches_per_volume:
