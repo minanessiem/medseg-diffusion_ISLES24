@@ -27,6 +27,7 @@ model:
 data_runtime:
   loader_smoke_testing: false
   train_batch_size: 3
+  num_valid_workers: 8
 
 validation:
   val_batch_size: 1
