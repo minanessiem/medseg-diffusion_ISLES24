@@ -275,25 +275,18 @@ def setup_logger(
     Args:
         cfg: Config with logging settings
         run_dir: Path to run directory (with trailing slash)
-        mode: 'train' or 'evaluate'
-        timestamp: Timestamp string for eval mode log naming
+        mode: Reserved for backwards-compatible callers.
+        timestamp: Reserved for backwards-compatible callers.
     
     Returns:
         Tuple of (Logger instance, SummaryWriter instance)
     """
     from src.utils.logger import Logger
-    from datetime import datetime
     
     main_process = is_main_process()
-    if mode == 'train':
-        log_dir = f"{run_dir}tensorboard/"
-        writer = SummaryWriter(log_dir=log_dir) if main_process else None
-    else:
-        # In evaluate mode, still create a writer for consistency (logs under runs/eval-<timestamp>)
-        if timestamp is None:
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        log_dir = f"runs/eval_{timestamp}/"
-        writer = SummaryWriter(log_dir=log_dir) if main_process else None
+    _ = (mode, timestamp)
+    log_dir = f"{run_dir}tensorboard/"
+    writer = SummaryWriter(log_dir=log_dir) if main_process else None
     
     enabled_outputs = list(cfg.logging.outputs) if main_process else []
     logger = Logger(

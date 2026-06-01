@@ -9,6 +9,10 @@ The runtime is streaming-first: slices are consumed in order, and volume metrics
 are updated when a volume boundary is reached (no full-dataset volume buffering
 required for metric computation).
 
+This package is the supported evaluation path for campaign metrics. Training
+entrypoints such as `main.py` and `start_training.py` do not provide an
+evaluation mode.
+
 ## Entry points
 
 - Diffusion/custom model:

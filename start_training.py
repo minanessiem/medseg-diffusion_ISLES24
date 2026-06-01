@@ -66,9 +66,6 @@ from src.utils.train_utils import (
     apply_environment_runtime_context,
     setup_output_directory,
     setup_and_start_training,
-    setup_device,
-    setup_logger,
-    build_model_and_diffusion,
 )
 
 # Debug flag - set via config override: debug=true
@@ -92,7 +89,7 @@ def main(cfg: DictConfig):
     - Random seed initialization
     - Output directory creation
     - Moving Hydra logs to run directory
-    - Training or evaluation based on cfg.mode
+    - Training based on cfg.mode
     """
     global DEBUG
     DEBUG = cfg.get("debug", False)
@@ -167,12 +164,12 @@ def main(cfg: DictConfig):
             debug_print("STEP 9: Entering setup_and_start_training()...")
             setup_and_start_training(cfg, run_output_dir)
             debug_print("STEP 9: Training complete")
-            
-        elif cfg.mode == "evaluate":
-            # Evaluation mode: Load model and visualize
-            debug_print("STEP 9: Entering _run_evaluation()...")
-            _run_evaluation(cfg, run_output_dir, timestamp)
-            debug_print("STEP 9: Evaluation complete")
+        else:
+            raise ValueError(
+                f"Unsupported mode '{cfg.mode}'. start_training.py supports only "
+                "mode='train'. Use the scripts/evaluation package for evaluation "
+                "entrypoints."
+            )
     finally:
         destroy_process_group_if_needed()
 
@@ -265,43 +262,6 @@ def _move_hydra_artifacts(source_dir: str, run_output_dir: str) -> None:
             target_hydra = f"{run_output_dir}/.hydra"
             _copy_dir_replace(cwd_hydra, target_hydra)
             print(f"   [OK] Copied .hydra/ from CWD -> {target_hydra}")
-
-
-def _run_evaluation(cfg: DictConfig, run_output_dir: str, timestamp: str) -> None:
-    """
-    Run evaluation mode: load model and visualize predictions.
-    
-    Args:
-        cfg: Hydra config
-        run_output_dir: Path to output directory
-        timestamp: Timestamp for logging
-    """
-    import torch
-    from src.evaluation.evaluator import visualize_best_model_predictions
-    from src.data.loaders import get_dataloaders
-    
-    device = setup_device(cfg)
-    logger, writer = setup_logger(cfg, run_output_dir, mode='evaluate', timestamp=timestamp)
-    diffusion = build_model_and_diffusion(cfg, device)
-    
-    # Get dataloaders (need sample_dl for visualization)
-    dataloaders = get_dataloaders(cfg)
-    sample_dl = dataloaders['sample']
-    
-    # Load checkpoint
-    # Stub for evaluation: Load model/EMA from config and visualize
-    # Assuming load_checkpoint function exists or add a simple loader
-    checkpoint_path = f"{cfg.training.evaluation.run_dir}{cfg.training.checkpoint_path_template.format(cfg.training.evaluation.step)}"
-    if cfg.training.evaluation.ema_rate is not None:
-        checkpoint_path = checkpoint_path.replace(
-            '.pth', 
-            f'_ema_{cfg.training.evaluation.ema_rate}_{cfg.training.evaluation.step:06d}.pth'
-        )
-    diffusion.load_state_dict(torch.load(checkpoint_path))
-    
-    visualize_best_model_predictions(diffusion, sample_dl.dataset, cfg)
-    logger.close()
-
 
 if __name__ == '__main__':
     main()

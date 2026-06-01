@@ -65,6 +65,9 @@ Run the project with Hydra, overriding groups as needed:
 - Cluster run with custom optimizer: `python main.py --config-name cluster optimizer=high_lr` (assuming high_lr.yaml exists in optimizer/).
 - Test new diffusion: `python main.py --config-name local diffusion=openai_ddpm_100ts_debug` (to use OpenAI implementation).
 
+Evaluation is handled by the dedicated `scripts/evaluation` package rather than
+by `main.py` or `start_training.py` modes.
+
 Interpolation is used (e.g., ${environment.training.output_root} in training templates).
 
 ## nnUNet 2D Context Window

@@ -17,7 +17,7 @@ defaults:
   - validation: default
 
 random_seed: 42
-mode: train  # or evaluate
+mode: train
 
 timestamp: null
 run_name: null
