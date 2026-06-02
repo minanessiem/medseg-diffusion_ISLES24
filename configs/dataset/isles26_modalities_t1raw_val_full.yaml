@@ -1,7 +1,0 @@
-defaults:
-  - isles26_modalities_t1raw
-
-active_subsets:
-  train: train
-  val: val_full
-  sample: val_full

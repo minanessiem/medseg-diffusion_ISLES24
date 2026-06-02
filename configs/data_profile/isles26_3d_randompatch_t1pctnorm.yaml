@@ -1,0 +1,7 @@
+# @package _global_
+
+defaults:
+  - /dataset: isles26_modalities_t1pctnorm
+  - /data_mode: random_patches_3d
+  - /data_io: isles26_online_volumes
+  - _self_

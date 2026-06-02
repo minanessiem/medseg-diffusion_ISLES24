@@ -38,7 +38,7 @@ from src.utils.loader_utils import LoaderDataUtils
 
 ISLES26_MODALITY_KEY = "T1"
 ISLES26_SUPPORTED_MODALITY_KEYS = (ISLES26_MODALITY_KEY,)
-ISLES26_SUPPORTED_PREPROCESSING_KEYS = ("RAW",)
+ISLES26_SUPPORTED_PREPROCESSING_KEYS = ("RAW", "ZSCORE", "PCTNORM", "PCT_ZSCORE")
 ISLES26_REQUIRED_RECORD_KEYS = ("caseID", ISLES26_MODALITY_KEY, "label", "split")
 ISLES26_OPTIONAL_RECORD_KEYS = ("siteID", "metadata_csv", "metadata", "fold")
 ISLES26_VIRTUAL_PATH_TEMPLATE = "{case_id}_slice{slice_idx}"
@@ -60,12 +60,116 @@ def _resolve_base_modality(modality_config: str) -> str:
     return base_modality
 
 
+def _validate_percentile_range(
+    *,
+    lower_percentile: float,
+    upper_percentile: float,
+    field_name: str,
+) -> None:
+    if lower_percentile < 0.0 or upper_percentile > 100.0:
+        raise ValueError(
+            f"{field_name} must be within [0, 100]. "
+            f"Got lower={lower_percentile}, upper={upper_percentile}."
+        )
+    if lower_percentile >= upper_percentile:
+        raise ValueError(
+            f"{field_name} requires lower_percentile < upper_percentile. "
+            f"Got lower={lower_percentile}, upper={upper_percentile}."
+        )
+
+
+def _validate_positive_eps(*, eps: float, field_name: str) -> None:
+    if eps <= 0.0:
+        raise ValueError(f"{field_name} must be > 0. Got {eps}.")
+
+
 def _resolve_t1_preprocessing_params(
     preprocessing_key: str,
     data_stats: Mapping[str, float],
+    preprocessing_configs: Mapping[str, Any],
 ) -> Dict[str, Any]:
     if preprocessing_key == "RAW":
         return {}
+
+    if "t1" not in preprocessing_configs:
+        raise KeyError(
+            "ISLES26 preprocessing key "
+            f"'{preprocessing_key}' requires dataset.preprocessing_configs.t1 settings. "
+            f"Observed stats: {dict(data_stats)}"
+        )
+
+    t1_cfg = preprocessing_configs["t1"]
+    foreground_cfg = t1_cfg["foreground"]
+    shared_params = {
+        "foreground_threshold": float(foreground_cfg["threshold"]),
+        "use_finite_mask": bool(foreground_cfg["use_finite"]),
+    }
+
+    if preprocessing_key == "ZSCORE":
+        zscore_cfg = t1_cfg["zscore"]
+        eps = float(zscore_cfg["eps"])
+        _validate_positive_eps(
+            eps=eps,
+            field_name="dataset.preprocessing_configs.t1.zscore.eps",
+        )
+        return {
+            **shared_params,
+            "eps": eps,
+        }
+
+    if preprocessing_key == "PCTNORM":
+        pctnorm_cfg = t1_cfg["pctnorm"]
+        lower_percentile = float(pctnorm_cfg["lower_percentile"])
+        upper_percentile = float(pctnorm_cfg["upper_percentile"])
+        _validate_percentile_range(
+            lower_percentile=lower_percentile,
+            upper_percentile=upper_percentile,
+            field_name="dataset.preprocessing_configs.t1.pctnorm",
+        )
+        output_min, output_max = LoaderDataUtils.as_float_tuple(
+            pctnorm_cfg["output_range"],
+            expected_len=2,
+            field_name="dataset.preprocessing_configs.t1.pctnorm.output_range",
+        )
+        if output_max <= output_min:
+            raise ValueError(
+                "dataset.preprocessing_configs.t1.pctnorm.output_range requires "
+                f"min < max, got [{output_min}, {output_max}]."
+            )
+        eps = float(pctnorm_cfg["eps"])
+        _validate_positive_eps(
+            eps=eps,
+            field_name="dataset.preprocessing_configs.t1.pctnorm.eps",
+        )
+        return {
+            **shared_params,
+            "lower_percentile": lower_percentile,
+            "upper_percentile": upper_percentile,
+            "output_min": output_min,
+            "output_max": output_max,
+            "eps": eps,
+        }
+
+    if preprocessing_key == "PCT_ZSCORE":
+        pct_zscore_cfg = t1_cfg["pct_zscore"]
+        lower_percentile = float(pct_zscore_cfg["lower_percentile"])
+        upper_percentile = float(pct_zscore_cfg["upper_percentile"])
+        _validate_percentile_range(
+            lower_percentile=lower_percentile,
+            upper_percentile=upper_percentile,
+            field_name="dataset.preprocessing_configs.t1.pct_zscore",
+        )
+        eps = float(pct_zscore_cfg["eps"])
+        _validate_positive_eps(
+            eps=eps,
+            field_name="dataset.preprocessing_configs.t1.pct_zscore.eps",
+        )
+        return {
+            **shared_params,
+            "lower_percentile": lower_percentile,
+            "upper_percentile": upper_percentile,
+            "eps": eps,
+        }
 
     raise NotImplementedError(
         "Unsupported ISLES26 T1 preprocessing key "
@@ -78,9 +182,164 @@ def _process_t1_raw(raw_tensor: torch.Tensor, **_: Any) -> torch.Tensor:
     return raw_tensor.float()
 
 
+def _sanitize_float_tensor(raw_tensor: torch.Tensor) -> torch.Tensor:
+    tensor = raw_tensor.float()
+    finite_mask = torch.isfinite(tensor)
+    if bool(torch.all(finite_mask)):
+        return tensor
+    if bool(torch.any(finite_mask)):
+        fill_value = torch.mean(tensor[finite_mask])
+    else:
+        fill_value = torch.tensor(0.0, dtype=tensor.dtype, device=tensor.device)
+    return torch.where(finite_mask, tensor, fill_value)
+
+
+def _build_foreground_mask(
+    tensor: torch.Tensor,
+    *,
+    foreground_threshold: float,
+    use_finite_mask: bool,
+) -> torch.Tensor:
+    threshold_mask = tensor > float(foreground_threshold)
+    if use_finite_mask:
+        finite_mask = torch.isfinite(tensor)
+        threshold_mask = threshold_mask & finite_mask
+        if bool(torch.any(threshold_mask)):
+            return threshold_mask
+        if bool(torch.any(finite_mask)):
+            return finite_mask
+    elif bool(torch.any(threshold_mask)):
+        return threshold_mask
+
+    finite_mask = torch.isfinite(tensor)
+    if bool(torch.any(finite_mask)):
+        return finite_mask
+    return torch.ones_like(tensor, dtype=torch.bool)
+
+
+def _extract_masked_values(tensor: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    values = tensor[mask]
+    if values.numel() > 0:
+        return values
+
+    finite_values = tensor[torch.isfinite(tensor)]
+    if finite_values.numel() > 0:
+        return finite_values
+    return tensor.reshape(-1)
+
+
+def _compute_percentile_bounds(
+    values: torch.Tensor,
+    *,
+    lower_percentile: float,
+    upper_percentile: float,
+) -> Tuple[float, float]:
+    lower_q = float(torch.quantile(values, lower_percentile / 100.0).item())
+    upper_q = float(torch.quantile(values, upper_percentile / 100.0).item())
+    return lower_q, upper_q
+
+
+def _process_t1_zscore(
+    raw_tensor: torch.Tensor,
+    *,
+    foreground_threshold: float,
+    use_finite_mask: bool,
+    eps: float,
+    **_: Any,
+) -> torch.Tensor:
+    tensor = _sanitize_float_tensor(raw_tensor)
+    foreground_mask = _build_foreground_mask(
+        tensor,
+        foreground_threshold=foreground_threshold,
+        use_finite_mask=use_finite_mask,
+    )
+    values = _extract_masked_values(tensor, foreground_mask)
+    mean_val = torch.mean(values)
+    std_val = torch.std(values, unbiased=False)
+    denom = torch.clamp(std_val, min=float(eps))
+    return (tensor - mean_val) / denom
+
+
+def _process_t1_pctnorm(
+    raw_tensor: torch.Tensor,
+    *,
+    foreground_threshold: float,
+    use_finite_mask: bool,
+    lower_percentile: float,
+    upper_percentile: float,
+    output_min: float,
+    output_max: float,
+    eps: float,
+    **_: Any,
+) -> torch.Tensor:
+    tensor = _sanitize_float_tensor(raw_tensor)
+    foreground_mask = _build_foreground_mask(
+        tensor,
+        foreground_threshold=foreground_threshold,
+        use_finite_mask=use_finite_mask,
+    )
+    values = _extract_masked_values(tensor, foreground_mask)
+    lower_q, upper_q = _compute_percentile_bounds(
+        values,
+        lower_percentile=lower_percentile,
+        upper_percentile=upper_percentile,
+    )
+    lower_bound = torch.tensor(lower_q, dtype=tensor.dtype, device=tensor.device)
+    upper_bound = torch.tensor(upper_q, dtype=tensor.dtype, device=tensor.device)
+
+    clipped = torch.clamp(tensor, min=lower_bound, max=upper_bound)
+    denom = torch.clamp(upper_bound - lower_bound, min=float(eps))
+    normalized = (clipped - lower_bound) / denom
+    scaled = normalized * float(output_max - output_min) + float(output_min)
+    return scaled
+
+
+def _process_t1_pct_zscore(
+    raw_tensor: torch.Tensor,
+    *,
+    foreground_threshold: float,
+    use_finite_mask: bool,
+    lower_percentile: float,
+    upper_percentile: float,
+    eps: float,
+    **_: Any,
+) -> torch.Tensor:
+    tensor = _sanitize_float_tensor(raw_tensor)
+    foreground_mask = _build_foreground_mask(
+        tensor,
+        foreground_threshold=foreground_threshold,
+        use_finite_mask=use_finite_mask,
+    )
+    values = _extract_masked_values(tensor, foreground_mask)
+    lower_q, upper_q = _compute_percentile_bounds(
+        values,
+        lower_percentile=lower_percentile,
+        upper_percentile=upper_percentile,
+    )
+    lower_bound = torch.tensor(lower_q, dtype=tensor.dtype, device=tensor.device)
+    upper_bound = torch.tensor(upper_q, dtype=tensor.dtype, device=tensor.device)
+    clipped = torch.clamp(tensor, min=lower_bound, max=upper_bound)
+
+    clipped_values = _extract_masked_values(clipped, foreground_mask)
+    mean_val = torch.mean(clipped_values)
+    std_val = torch.std(clipped_values, unbiased=False)
+    denom = torch.clamp(std_val, min=float(eps))
+    return (clipped - mean_val) / denom
+
+
+ISLES26_T1_PROCESSORS = {
+    "RAW": _process_t1_raw,
+    "ZSCORE": _process_t1_zscore,
+    "PCTNORM": _process_t1_pctnorm,
+    "PCT_ZSCORE": _process_t1_pct_zscore,
+}
+
+
 def _process_t1_modality(
     modality_config: str,
     raw_tensor: torch.Tensor,
+    *,
+    preprocessing_configs: Mapping[str, Any],
 ) -> torch.Tensor:
     base_modality, preprocessing_key = _parse_modality_config(modality_config)
     if base_modality != ISLES26_MODALITY_KEY:
@@ -93,8 +352,9 @@ def _process_t1_modality(
     params = _resolve_t1_preprocessing_params(
         preprocessing_key=preprocessing_key,
         data_stats=data_stats,
+        preprocessing_configs=preprocessing_configs,
     )
-    processor = _process_t1_raw if preprocessing_key == "RAW" else None
+    processor = ISLES26_T1_PROCESSORS.get(preprocessing_key)
     if processor is None:
         raise NotImplementedError(
             "Unsupported ISLES26 T1 preprocessing key "
@@ -113,6 +373,8 @@ def _build_common_preprocess_transforms(
     common_cfg = preprocessing_configs["common"]
     orientation_cfg = common_cfg["orientation"]
     spacing_cfg = common_cfg["spacing"]
+    spacing_enabled = bool(spacing_cfg["enabled"])
+    allow_native_spacing = bool(spacing_cfg["allow_native_spacing"])
 
     transforms: list[Any] = [
         LoadImaged(
@@ -129,7 +391,13 @@ def _build_common_preprocess_transforms(
             )
         )
 
-    if bool(spacing_cfg["enabled"]):
+    if not spacing_enabled and not allow_native_spacing:
+        raise ValueError(
+            "ISLES26 common.spacing.enabled is false while allow_native_spacing is false. "
+            "Enable spacing resampling or set allow_native_spacing=true to opt into native spacing."
+        )
+
+    if spacing_enabled:
         pixdim = LoaderDataUtils.as_float_tuple(
             spacing_cfg["pixdim"],
             expected_len=3,
@@ -146,12 +414,22 @@ def _build_common_preprocess_transforms(
             )
         )
 
+    def _process_t1_modality_with_config(
+        modality_config: str,
+        raw_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        return _process_t1_modality(
+            modality_config=modality_config,
+            raw_tensor=raw_tensor,
+            preprocessing_configs=preprocessing_configs,
+        )
+
     transforms.extend(
         [
             ProcessModalitiesTransform(
                 modalities,
                 resolve_base_modality=_resolve_base_modality,
-                process_modality=_process_t1_modality,
+                process_modality=_process_t1_modality_with_config,
             ),
             MergeProcessedChannelsTransform(
                 modalities,
@@ -262,7 +540,7 @@ def _normalize_modalities(modalities: Optional[Sequence[str]]) -> Tuple[str, ...
     Normalize modality contract for ISLES26.
 
     Modality tokens must follow `<modality_key>_<preprocessing_key>` format
-    (for example `T1_RAW`).
+    (for example `T1_RAW`, `T1_ZSCORE`, `T1_PCTNORM`, `T1_PCT_ZSCORE`).
     Defaults to the single-modality `T1_RAW` channel when no explicit list is given.
     """
     if modalities is None:

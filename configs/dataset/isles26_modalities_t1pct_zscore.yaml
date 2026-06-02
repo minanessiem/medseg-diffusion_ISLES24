@@ -1,0 +1,8 @@
+defaults:
+  - isles26_base
+
+modalities: ['T1_PCT_ZSCORE']
+num_modalities: 1
+nnunet:
+  dataset_id: "263"
+  dataset_name: "isles26_t1_pct_zscore"
