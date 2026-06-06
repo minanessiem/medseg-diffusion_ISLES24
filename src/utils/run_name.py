@@ -123,6 +123,7 @@ def generate_loss_string(loss_cfg):
         str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw100_d010sm5_b010_cal100_w25h')
         For discriminative: 'lDICE_BCE' or 'lDICE' or 'lBCE'
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Handle both dict and DictConfig
     if hasattr(loss_cfg, 'loss_type'):
         loss_type = loss_cfg.loss_type
@@ -265,6 +266,7 @@ def generate_optimizer_string(opt_cfg):
         adamw_1e4lr_wd01 → "adamw1e4_wd01"
         adam_2e4lr → "adam2e4"
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Handle both dict and DictConfig (no defaults - fail fast)
     if hasattr(opt_cfg, 'optimizer_class'):
         opt_class = opt_cfg.optimizer_class
@@ -307,6 +309,7 @@ def generate_scheduler_string(sched_cfg):
         reduce_lr (factor=0.75, patience=2) → "rlr75f_2p"
         constant → "const"
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Handle both dict and DictConfig (no defaults - fail fast)
     if hasattr(sched_cfg, 'scheduler_type'):
         sched_type = sched_cfg.scheduler_type
@@ -385,6 +388,11 @@ def generate_augmentation_string(aug_cfg):
         - "augLIGHT3D" - Light 3D preset (configs/augmentation/light_3d.yaml)
         - "augAGG2D" - Aggressive preset (configs/augmentation/aggressive_2d.yaml)
         - "augAGG3D" - Aggressive 3D preset (configs/augmentation/aggressive_3d.yaml)
+        - "augSPAT3D" - Spatial-only 3D preset
+        - "augPCTLITE3D" - PCTNORM-calibrated light intensity 3D preset
+        - "augZSAFE3D" - Z-score-safe 3D preset
+        - "augRAWBLUR3D" - RAW spatial plus blur 3D preset
+        - "augRAWSCALE3D" - RAW multiplicative scale 3D preset
         - "augCUSTOM" - Custom user-defined config
     
     Examples:
@@ -399,6 +407,7 @@ def generate_augmentation_string(aug_cfg):
     if aug_cfg is None:
         return "augNONE"
     
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Handle dict vs DictConfig
     if isinstance(aug_cfg, dict):
         spatial_enabled = aug_cfg.get('spatial', {}).get('enabled', False)
@@ -412,19 +421,51 @@ def generate_augmentation_string(aug_cfg):
     if not spatial_enabled and not intensity_enabled:
         return "augNONE"
     
-    if 'light' in config_name:
-        if '3d' in config_name:
-            return "augLIGHT3D"
-        return "augLIGHT2D"
-    elif 'aggressive' in config_name or 'agg' in config_name:
-        if '3d' in config_name:
-            return "augAGG3D"
-        return "augAGG2D"
-    elif config_name == 'none':
-        return "augNONE"
-    else:
-        # Custom config or unrecognized preset
-        return "augCUSTOM"
+    named_presets = {
+        'none': 'augNONE',
+        'light_2d': 'augLIGHT2D',
+        'light_3d': 'augLIGHT3D',
+        'aggressive_2d': 'augAGG2D',
+        'aggressive_3d': 'augAGG3D',
+        'spatial_only_3d': 'augSPAT3D',
+        'pctnorm_light_intensity_3d': 'augPCTLITE3D',
+        'zscore_safe_3d': 'augZSAFE3D',
+        'raw_spatial_plus_blur_3d': 'augRAWBLUR3D',
+        'raw_scaled_intensity_3d': 'augRAWSCALE3D',
+    }
+    return named_presets.get(config_name, "augCUSTOM")
+
+
+def generate_modality_preprocessing_string(dataset_cfg):
+    """
+    Generate compact modality preprocessing string for run name.
+
+    Currently encodes ISLES26 T1 modality tokens so preprocessing ablations are
+    visible in queue/output names without opening the composed Hydra config.
+    Non-T1 or missing modality configs are omitted to avoid broad run-name churn.
+    """
+    #TODO make ready for multiple modality strings.
+    if dataset_cfg is None:
+        return ""
+
+    modalities = dataset_cfg.get('modalities', [])
+
+    if isinstance(modalities, str):
+        modalities = [modalities]
+    if modalities is None:
+        return ""
+
+    token_map = {
+        'T1_RAW': 't1RAW',
+        'T1_ZSCORE': 't1ZSC',
+        'T1_PCTNORM': 't1PCT',
+        'T1_PCT_ZSCORE': 't1PZSC',
+    }
+    for modality in modalities:
+        modality_token = str(modality).strip().upper()
+        if modality_token in token_map:
+            return token_map[modality_token]
+    return ""
 
 def generate_amp_string(cfg):
     """Generate AMP string for run name.
@@ -444,6 +485,7 @@ def generate_amp_string(cfg):
         amp.enabled=true, dtype=float16 → "ampFP16"
         amp.enabled=true, dtype=bfloat16 → "ampBF16"
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Access AMP config
     if isinstance(cfg, dict):
         amp_cfg = cfg.get('training', {}).get('amp', {})
@@ -485,6 +527,7 @@ def generate_ensemble_string(cfg):
         ensemble.enabled=true, num_samples=5 → "e5"
         validation section missing → "e1"
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Access validation config
     if isinstance(cfg, dict):
         val_cfg = cfg.get('validation', {})
@@ -527,6 +570,7 @@ def generate_batch_string(cfg):
         - Makes accumulation visible in run names for debugging and comparison
         - Distinguishes b4x4 (with accumulation) from b16x1 (without) even though both are effective batch 16
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     # Access config (fail-fast, no defaults).
     # Run naming uses the explicit data contract at data_runtime.train_batch_size.
     if isinstance(cfg, dict):
@@ -561,6 +605,7 @@ def generate_context_string(cfg):
     Returns empty string for all other loader modes to avoid changing
     unrelated run-name formats.
     """
+    #TODO consolidate dict/DictConfig access through a shared helper.
     if isinstance(cfg, dict):
         data_mode = cfg.get('data_mode', {})
         loader_mode = data_mode.get('loader_mode', None)
@@ -598,6 +643,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     if timestamp is None:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
+    #TODO consolidate dict/DictConfig access through a shared helper.
     if isinstance(cfg, dict):
         training = cfg.get('training', {})
         model = cfg.get('model', {})
@@ -763,6 +809,10 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Loss string: l{loss_type}[_dw{diffusion_weight}_d{dice_weight}_b{bce_weight}_w{warmup}]
     loss_str = generate_loss_string(loss)
     
+    # Add modality preprocessing string next to augmentation so active data
+    # ablation variables are visible in scheduler/output names.
+    modality_str = generate_modality_preprocessing_string(dataset)
+
     # NEW: Add augmentation string
     aug_cfg = cfg.get('augmentation', None) if isinstance(cfg, dict) else (cfg.augmentation if hasattr(cfg, 'augmentation') else None)
     aug_str = generate_augmentation_string(aug_cfg)
@@ -782,7 +832,10 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     parts.append(optimizer_str)
     if clip_str:  # Only add clip string if clip_norm is set
         parts.append(clip_str)
-    parts.extend([scheduler_str, steps_str, loss_str, aug_str, diffusion_str, ensemble_str, timestamp])
+    parts.extend([scheduler_str, steps_str, loss_str])
+    if modality_str:
+        parts.append(modality_str)
+    parts.extend([aug_str, diffusion_str, ensemble_str, timestamp])
     
     run_name = '_'.join(parts)
     
