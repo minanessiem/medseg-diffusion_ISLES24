@@ -1,0 +1,29 @@
+# 3D RAW T1 augmentation that preserves native intensity scale.
+
+defaults:
+  - aggressive_3d
+  - _self_
+
+_name_: raw_spatial_plus_blur_3d
+
+intensity:
+  random_shift:
+    enabled: false
+    prob: 0.0
+
+  random_scale:
+    enabled: false
+    prob: 0.0
+
+  random_gamma:
+    enabled: false
+    prob: 0.0
+
+  random_gaussian_noise:
+    enabled: false
+    prob: 0.0
+
+  random_gaussian_blur:
+    prob: 0.15
+    sigma_range: [0.3, 0.8]
+    sigma_range_z: [0.3, 0.8]

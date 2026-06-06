@@ -1,0 +1,30 @@
+# 3D augmentation for z-score standardized T1 inputs.
+# Avoid gamma and absolute shifts that are awkward in centered, signed intensity space.
+
+defaults:
+  - aggressive_3d
+  - _self_
+
+_name_: zscore_safe_3d
+
+intensity:
+  random_shift:
+    enabled: false
+    prob: 0.0
+
+  random_scale:
+    prob: 0.25
+    factors: 0.05
+
+  random_gamma:
+    enabled: false
+    prob: 0.0
+
+  random_gaussian_noise:
+    prob: 0.2
+    std: 0.05
+
+  random_gaussian_blur:
+    prob: 0.15
+    sigma_range: [0.3, 0.8]
+    sigma_range_z: [0.3, 0.8]

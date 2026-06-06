@@ -1,0 +1,10 @@
+# Spatial-only 3D augmentation for testing intensity-jitter effects.
+
+defaults:
+  - aggressive_3d
+  - _self_
+
+_name_: spatial_only_3d
+
+intensity:
+  enabled: false
