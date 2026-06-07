@@ -11,6 +11,9 @@ Tests Phase 4 implementation:
 from omegaconf import OmegaConf
 from src.utils.run_name import (
     format_learning_rate,
+    generate_augmentation_string,
+    generate_loss_string,
+    generate_modality_preprocessing_string,
     generate_optimizer_string,
     generate_scheduler_string,
     generate_run_name
@@ -85,6 +88,64 @@ def test_generate_scheduler_string():
     assert generate_scheduler_string(sched_configs[4]) == "rlr75f_2p"
     assert generate_scheduler_string(sched_configs[5]) == "const"
     print("✓ All assertions passed")
+
+
+def test_generate_augmentation_string_new_3d_presets():
+    """Test compact names for scale-aware 3D augmentation presets."""
+    preset_expectations = {
+        "spatial_only_3d": "augSPAT3D",
+        "pctnorm_light_intensity_3d": "augPCTLITE3D",
+        "zscore_safe_3d": "augZSAFE3D",
+        "raw_spatial_plus_blur_3d": "augRAWBLUR3D",
+        "raw_scaled_intensity_3d": "augRAWSCALE3D",
+    }
+    for preset_name, expected in preset_expectations.items():
+        cfg = {
+            "_name_": preset_name,
+            "spatial": {"enabled": True},
+            "intensity": {"enabled": True},
+        }
+        assert generate_augmentation_string(cfg) == expected
+
+
+def test_generate_modality_preprocessing_string_t1_variants():
+    """Test compact names for ISLES26 T1 preprocessing variants."""
+    variant_expectations = {
+        "T1_RAW": "t1RAW",
+        "T1_ZSCORE": "t1ZSC",
+        "T1_PCTNORM": "t1PCT",
+        "T1_PCT_ZSCORE": "t1PZSC",
+    }
+    for modality, expected in variant_expectations.items():
+        assert generate_modality_preprocessing_string({"modalities": [modality]}) == expected
+    assert generate_modality_preprocessing_string({"modalities": ["NCCT_wg"]}) == ""
+
+
+def test_generate_loss_string_discriminative_explicit_terms():
+    """Test discriminative run-name loss encoding for explicit term schema."""
+    cfg = {
+        "loss_type": "NONE",
+        "discriminative": {
+            "deep_supervision": {"enabled": True},
+            "terms": [
+                {
+                    "loss": "DiceLoss",
+                    "input_domain": "probabilities",
+                    "weight": 1.0,
+                    "params": {"smooth": 1.0e-5, "apply_sigmoid": False},
+                    "supervision": {"mode": "inherit_default"},
+                },
+                {
+                    "loss": "BCELoss",
+                    "input_domain": "logits",
+                    "weight": 0.5,
+                    "params": {"pos_weight": None, "apply_sigmoid": True},
+                    "supervision": {"mode": "final_only"},
+                },
+            ],
+        },
+    }
+    assert generate_loss_string(cfg) == "ld100sm5p_b050log_dsup"
 
 
 def test_full_run_name_generation():

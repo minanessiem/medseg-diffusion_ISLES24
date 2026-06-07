@@ -1,8 +1,8 @@
 # Dice+BCE discriminative loss with deep supervision enabled.
 #
 # Inherits the no-DS baseline and only activates deep supervision behavior.
-# Existing discriminative.dice / discriminative.bce keys are preserved for
-# backward compatibility while terms[] defines the generic DS schedule contract.
+# Terms explicitly declare their loss implementation, input tensor domain,
+# and supervision schedule.
 
 defaults:
   - discriminative_dicebce
@@ -19,9 +19,8 @@ discriminative:
       normalize: false
 
   terms:
-    - name: dice
-      enabled: true
-      loss: dice
+    - loss: DiceLoss
+      input_domain: probabilities
       weight: 1.0
       params:
         smooth: 1.0e-5
@@ -31,9 +30,8 @@ discriminative:
         heads: null
         weights: null
 
-    - name: bce
-      enabled: true
-      loss: bce
+    - loss: BCELoss
+      input_domain: probabilities
       weight: 1.0
       params:
         pos_weight: null

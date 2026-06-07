@@ -27,8 +27,9 @@ class DiscriminativeAdapter(Diffusion):
     Key differences from diffusion:
     - No noise, no timesteps, no iterative denoising
     - Model input: modalities only (not concatenated with mask)
-    - Model output: predicted segmentation mask (not noise)
-    - Loss: Dice and/or BCE on mask directly (configurable)
+    - Model output: segmentation logits (not noise)
+    - Loss: configurable terms on logits and/or derived probabilities
+    - Public sampling/logging APIs return probabilities for metric compatibility
     
     Args:
         model (nn.Module): Discriminative segmentation model
@@ -71,7 +72,7 @@ class DiscriminativeAdapter(Diffusion):
         print(f"  Final head index: {self.final_head}")
         print(f"  Head parser: {self.head_parser}")
         print(f"  Spatial dims: {self.spatial_dims}")
-        print(f"  Enabled terms: {[term.name for term in resolved_terms]}")
+        print(f"  Loss terms: {[term.loss_key for term in resolved_terms]}")
 
     def _unwrap_model(self, model: nn.Module) -> nn.Module:
         """
@@ -155,6 +156,62 @@ class DiscriminativeAdapter(Diffusion):
 
         return "auto"
 
+    def _logits_to_probabilities(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Convert segmentation logits to probabilities for public inference paths.
+
+        TODO: This assumes current discriminative tasks are binary single-channel
+        segmentations. Future multi-class support should introduce an explicit
+        activation policy instead of hard-coding sigmoid.
+        """
+
+        return torch.sigmoid(logits)
+
+    def _validate_probability_output_rank(
+        self,
+        probability_mask: torch.Tensor,
+        *,
+        caller: str,
+    ) -> None:
+        if self.spatial_dims is None or not torch.is_tensor(probability_mask):
+            return
+
+        expected_dim = int(self.spatial_dims) + 2
+        if probability_mask.dim() != expected_dim:
+            raise ValueError(
+                f"Unexpected {caller} output rank for discriminative inference. "
+                f"Expected tensor dim {expected_dim} for spatial_dims={self.spatial_dims}, "
+                f"got dim {probability_mask.dim()} with shape {tuple(probability_mask.shape)}. "
+                "This often indicates a deep-supervision parser/config mismatch."
+            )
+
+    def _extract_final_probability_head(
+        self,
+        model_output,
+        *,
+        caller: str,
+    ) -> torch.Tensor:
+        """
+        Parse model logits and return the configured final head as probabilities.
+
+        Metrics, validation, and image logging consume probabilities even though
+        loss computation may consume logits per configured loss term.
+        """
+
+        parser = self._resolve_inference_head_parser(model_output)
+        logits_heads = normalize_discriminative_head_outputs(
+            model_output=model_output,
+            head_parser=parser,
+        )
+        if self.final_head not in logits_heads:
+            raise ValueError(
+                f"Configured final_head={self.final_head} is unavailable during {caller}. "
+                f"Available heads: {sorted(logits_heads.keys())}"
+            )
+        probability_mask = self._logits_to_probabilities(logits_heads[self.final_head])
+        self._validate_probability_output_rank(probability_mask, caller=caller)
+        return probability_mask
+
     def forward(self, mask, conditioned_image, return_intermediates=False, global_step=0, *args, **kwargs):
         """
         Forward pass for discriminative training.
@@ -178,8 +235,8 @@ class DiscriminativeAdapter(Diffusion):
         conditioned_image = conditioned_image.to(self.device)
         batch_size = mask.shape[0]
 
-        # Forward pass: model takes ONLY the modalities
-        # No mask concatenation, no timestep conditioning
+        # Forward pass: model takes ONLY the modalities and returns logits.
+        # No mask concatenation, no timestep conditioning.
         model_output = self.model(conditioned_image)
 
         loss_result = compute_discriminative_deep_supervision_loss(
@@ -203,7 +260,7 @@ class DiscriminativeAdapter(Diffusion):
             intermediates = {
                 'img': conditioned_image,
                 'mask': mask,
-                'pred': pred_mask,  # Always final head for visualization compatibility
+                'pred': pred_mask,  # Probability-domain final head for visualization.
                 # Discriminative-specific: no x_t, noise, noise_hat
             }
             return loss, sample_mses, t, intermediates
@@ -228,27 +285,10 @@ class DiscriminativeAdapter(Diffusion):
 
         with torch.no_grad():
             model_output = self.model(conditioned_image)
-            parser = self._resolve_inference_head_parser(model_output)
-            heads = normalize_discriminative_head_outputs(
-                model_output=model_output,
-                head_parser=parser,
+            pred_mask = self._extract_final_probability_head(
+                model_output,
+                caller="sample()",
             )
-            if self.final_head not in heads:
-                raise ValueError(
-                    f"Configured final_head={self.final_head} is unavailable during sample(). "
-                    f"Available heads: {sorted(heads.keys())}"
-                )
-            pred_mask = heads[self.final_head]
-
-            if self.spatial_dims is not None and torch.is_tensor(pred_mask):
-                expected_dim = int(self.spatial_dims) + 2
-                if pred_mask.dim() != expected_dim:
-                    raise ValueError(
-                        "Unexpected sample() output rank for discriminative inference. "
-                        f"Expected tensor dim {expected_dim} for spatial_dims={self.spatial_dims}, "
-                        f"got dim {pred_mask.dim()} with shape {tuple(pred_mask.shape)}. "
-                        "This often indicates a deep-supervision parser/config mismatch."
-                    )
 
         return pred_mask
 
@@ -270,27 +310,10 @@ class DiscriminativeAdapter(Diffusion):
 
         with torch.no_grad():
             model_output = self.model(conditioned_image)
-            parser = self._resolve_inference_head_parser(model_output)
-            heads = normalize_discriminative_head_outputs(
-                model_output=model_output,
-                head_parser=parser,
+            pred_mask = self._extract_final_probability_head(
+                model_output,
+                caller="sample_with_snapshots()",
             )
-            if self.final_head not in heads:
-                raise ValueError(
-                    f"Configured final_head={self.final_head} is unavailable during sample_with_snapshots(). "
-                    f"Available heads: {sorted(heads.keys())}"
-                )
-            pred_mask = heads[self.final_head]
-
-            if self.spatial_dims is not None and torch.is_tensor(pred_mask):
-                expected_dim = int(self.spatial_dims) + 2
-                if pred_mask.dim() != expected_dim:
-                    raise ValueError(
-                        "Unexpected sample_with_snapshots() output rank for discriminative inference. "
-                        f"Expected tensor dim {expected_dim} for spatial_dims={self.spatial_dims}, "
-                        f"got dim {pred_mask.dim()} with shape {tuple(pred_mask.shape)}. "
-                        "This often indicates a deep-supervision parser/config mismatch."
-                    )
 
         # Yield single snapshot at t=0 (final result)
         yield 0, pred_mask

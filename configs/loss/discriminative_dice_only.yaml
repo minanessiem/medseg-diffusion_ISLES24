@@ -9,18 +9,20 @@
 defaults:
   - discriminative_dicebce
 
-# Override: disable BCE, keep only Dice
+# Override: keep only the Dice term.
 discriminative:
   deep_supervision:
     enabled: false       # Baseline: single-head supervision
-  dice:
-    enabled: true
-    weight: 1.0
-    smooth: 1.0e-5
-    apply_sigmoid: false
-  bce:
-    enabled: false        # Disabled
-    weight: 0.0
-    pos_weight: null
-    apply_sigmoid: false
+
+  terms:
+    - loss: DiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        smooth: 1.0e-5
+        apply_sigmoid: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
 

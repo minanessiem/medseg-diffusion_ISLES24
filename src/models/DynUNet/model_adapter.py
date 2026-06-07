@@ -21,8 +21,8 @@ class DynUNetAdapter(nn.Module):
     - NO mask concatenation
     - Direct segmentation prediction from modalities
 
-    The adapter applies sigmoid to DynUNet outputs so downstream discriminative
-    losses can keep using the current `apply_sigmoid: false` defaults.
+    The adapter is logit-native: downstream discriminative loss and inference
+    code decides whether logits or probabilities are needed.
     """
 
     def __init__(self, cfg: DictConfig):
@@ -161,7 +161,6 @@ class DynUNetAdapter(nn.Module):
         Returns:
             - Eval / no deep supervision: [B, out_channels, *spatial_shape]
             - Train + deep supervision: [B, S, out_channels, *spatial_shape]
-            Values are mapped to [0, 1] via sigmoid.
+            Raw logits. Probability conversion is handled by DiscriminativeAdapter.
         """
-        logits = self.model(x)
-        return torch.sigmoid(logits)
+        return self.model(x)

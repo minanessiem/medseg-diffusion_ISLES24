@@ -26,9 +26,8 @@ LossFactory = Callable[[Mapping[str, Any]], nn.Module]
 class DiscriminativeTermSpec:
     """Normalized discriminative loss-term definition."""
 
-    name: str
-    enabled: bool
     loss_key: str
+    input_domain: str
     weight: float
     params: Dict[str, Any]
     supervision: Dict[str, Any]
@@ -52,19 +51,32 @@ class DiscriminativeDeepSupervisionResult:
     head_predictions: Dict[int, torch.Tensor]
 
 
-def build_default_discriminative_loss_factories() -> Dict[str, LossFactory]:
-    """Default loss-factory registry for discriminative terms."""
+def _require_param(params: Mapping[str, Any], key: str, loss_key: str) -> Any:
+    """Return a required loss parameter or raise a config error."""
 
-    return {
-        "dice": lambda params: DiceLoss(
-            smooth=float(params.get("smooth", 1.0e-5)),
-            apply_sigmoid=bool(params.get("apply_sigmoid", False)),
-        ),
-        "bce": lambda params: BCELoss(
-            pos_weight=params.get("pos_weight", None),
-            apply_sigmoid=bool(params.get("apply_sigmoid", False)),
-        ),
-    }
+    if key not in params:
+        raise ValueError(f"Loss term '{loss_key}' requires params.{key}.")
+    return params[key]
+
+
+def _build_dice_loss(params: Mapping[str, Any]) -> nn.Module:
+    return DiceLoss(
+        smooth=float(_require_param(params, "smooth", "DiceLoss")),
+        apply_sigmoid=bool(_require_param(params, "apply_sigmoid", "DiceLoss")),
+    )
+
+
+def _build_bce_loss(params: Mapping[str, Any]) -> nn.Module:
+    return BCELoss(
+        pos_weight=_require_param(params, "pos_weight", "BCELoss"),
+        apply_sigmoid=bool(_require_param(params, "apply_sigmoid", "BCELoss")),
+    )
+
+
+DISCRIMINATIVE_LOSS_FACTORIES: Dict[str, LossFactory] = {
+    "DiceLoss": _build_dice_loss,
+    "BCELoss": _build_bce_loss,
+}
 
 
 def _to_python_config(cfg: Any) -> Any:
@@ -162,88 +174,86 @@ def normalize_discriminative_head_outputs(
     return heads
 
 
-def _build_legacy_terms(discriminative_cfg: Dict[str, Any]) -> List[DiscriminativeTermSpec]:
-    """
-    Build terms list from legacy discriminative.dice / discriminative.bce fields.
-
-    This preserves backward compatibility for existing non-DS configurations.
-    """
-
-    terms: List[DiscriminativeTermSpec] = []
-
-    dice_cfg = _ensure_mapping(discriminative_cfg.get("dice", {}), "discriminative.dice")
-    if bool(dice_cfg.get("enabled", False)):
-        terms.append(
-            DiscriminativeTermSpec(
-                name="dice",
-                enabled=True,
-                loss_key="dice",
-                weight=float(dice_cfg.get("weight", 1.0)),
-                params={
-                    "smooth": float(dice_cfg.get("smooth", 1.0e-5)),
-                    "apply_sigmoid": bool(dice_cfg.get("apply_sigmoid", False)),
-                },
-                supervision={"mode": "final_only"},
-            )
-        )
-
-    bce_cfg = _ensure_mapping(discriminative_cfg.get("bce", {}), "discriminative.bce")
-    if bool(bce_cfg.get("enabled", False)):
-        terms.append(
-            DiscriminativeTermSpec(
-                name="bce",
-                enabled=True,
-                loss_key="bce",
-                weight=float(bce_cfg.get("weight", 1.0)),
-                params={
-                    "pos_weight": bce_cfg.get("pos_weight", None),
-                    "apply_sigmoid": bool(bce_cfg.get("apply_sigmoid", False)),
-                },
-                supervision={"mode": "final_only"},
-            )
-        )
-
-    return terms
-
-
 def resolve_discriminative_terms(
     discriminative_cfg: Mapping[str, Any],
 ) -> List[DiscriminativeTermSpec]:
-    """Resolve discriminative terms from new schema or legacy fields."""
+    """Resolve explicit discriminative loss-term definitions."""
 
     cfg = _ensure_mapping(discriminative_cfg, "discriminative")
+    legacy_fields = [field for field in ("dice", "bce") if field in cfg]
+    if legacy_fields:
+        raise ValueError(
+            "Legacy discriminative loss fields are not supported. "
+            f"Remove {legacy_fields} and define loss.discriminative.terms explicitly."
+        )
+
     raw_terms = cfg.get("terms", None)
-
     if raw_terms is None:
-        terms = _build_legacy_terms(cfg)
-    else:
-        terms = []
-        for idx, raw_term in enumerate(_ensure_list(raw_terms, "discriminative.terms")):
-            term = _ensure_mapping(raw_term, f"discriminative.terms[{idx}]")
-            name = str(term.get("name", f"term{idx}")).strip()
-            if not name:
-                raise ValueError(f"discriminative.terms[{idx}] has empty 'name'.")
+        raise ValueError(
+            "loss.discriminative.terms is required. "
+            "Legacy discriminative.dice/discriminative.bce fields are not supported."
+        )
 
-            terms.append(
-                DiscriminativeTermSpec(
-                    name=name,
-                    enabled=bool(term.get("enabled", True)),
-                    loss_key=str(term.get("loss", name)).strip().lower(),
-                    weight=float(term.get("weight", 1.0)),
-                    params=_ensure_mapping(term.get("params", {}), f"{name}.params"),
-                    supervision=_ensure_mapping(
-                        term.get("supervision", {}), f"{name}.supervision"
-                    ),
-                )
+    terms: List[DiscriminativeTermSpec] = []
+    seen_loss_keys = set()
+    for idx, raw_term in enumerate(_ensure_list(raw_terms, "discriminative.terms")):
+        term = _ensure_mapping(raw_term, f"discriminative.terms[{idx}]")
+        required_fields = {"loss", "input_domain", "weight", "params", "supervision"}
+        unsupported_fields = sorted(set(term.keys()) - required_fields)
+        if unsupported_fields:
+            raise ValueError(
+                f"discriminative.terms[{idx}] has unsupported field(s): "
+                f"{unsupported_fields}. Supported fields: {sorted(required_fields)}."
             )
 
-    enabled_terms = [t for t in terms if t.enabled and t.weight > 0.0]
-    if not enabled_terms:
-        raise ValueError(
-            "No enabled discriminative terms were resolved. "
-            "Enable at least one term (or legacy dice/bce)."
+        missing_fields = [field for field in required_fields if field not in term]
+        if missing_fields:
+            raise ValueError(
+                f"discriminative.terms[{idx}] is missing required field(s): "
+                f"{missing_fields}."
+            )
+
+        loss_key = str(term["loss"]).strip()
+        if not loss_key:
+            raise ValueError(f"discriminative.terms[{idx}].loss must not be empty.")
+        if loss_key in seen_loss_keys:
+            raise ValueError(
+                f"Duplicate discriminative loss term '{loss_key}' is not supported. "
+                "Add alias support before configuring repeated loss classes."
+            )
+        seen_loss_keys.add(loss_key)
+
+        input_domain = str(term["input_domain"]).strip().lower()
+        if input_domain not in {"logits", "probabilities"}:
+            raise ValueError(
+                f"discriminative.terms[{idx}].input_domain must be one of "
+                f"['logits', 'probabilities'], got '{input_domain}'."
+            )
+
+        weight = float(term["weight"])
+        if weight <= 0.0:
+            raise ValueError(
+                f"discriminative.terms[{idx}].weight must be > 0 because term "
+                f"presence means the loss is active. Got {weight}."
+            )
+
+        terms.append(
+            DiscriminativeTermSpec(
+                loss_key=loss_key,
+                input_domain=input_domain,
+                weight=weight,
+                params=_ensure_mapping(term["params"], f"{loss_key}.params"),
+                supervision=_ensure_mapping(
+                    term["supervision"], f"{loss_key}.supervision"
+                ),
+            )
         )
-    return enabled_terms
+
+    if not terms:
+        raise ValueError(
+            "loss.discriminative.terms must contain at least one explicit loss term."
+        )
+    return terms
 
 
 def _parse_weighted_plan(
@@ -369,7 +379,7 @@ def resolve_discriminative_supervision_plan(
     if not deep_supervision_enabled:
         return SupervisionPlan(heads=(final_head,), weights=(1.0,))
 
-    supervision_cfg = _ensure_mapping(term.supervision, f"{term.name}.supervision")
+    supervision_cfg = _ensure_mapping(term.supervision, f"{term.loss_key}.supervision")
     mode = str(supervision_cfg.get("mode", "inherit_default")).strip().lower()
 
     if mode == "final_only":
@@ -407,9 +417,36 @@ def resolve_discriminative_supervision_plan(
         return _parse_weighted_plan(default_cfg, available_heads)
 
     raise ValueError(
-        f"Unsupported supervision mode '{mode}' for term '{term.name}'. "
+        f"Unsupported supervision mode '{mode}' for term '{term.loss_key}'. "
         "Expected one of: final_only, weighted_heads, all_heads, inherit_default."
     )
+
+
+def _build_probability_heads(
+    logits_heads: Mapping[int, torch.Tensor],
+) -> Dict[int, torch.Tensor]:
+    """
+    Convert logit heads to probability heads for binary segmentation.
+
+    TODO: This sigmoid conversion is intentionally scoped to the current
+    single-channel binary discriminative tasks. Future multi-class support
+    should introduce an explicit activation policy rather than assuming sigmoid.
+    """
+
+    return {head_idx: torch.sigmoid(head) for head_idx, head in logits_heads.items()}
+
+
+def _select_term_heads(
+    *,
+    input_domain: str,
+    logits_heads: Mapping[int, torch.Tensor],
+    probability_heads: Mapping[int, torch.Tensor],
+) -> Mapping[int, torch.Tensor]:
+    if input_domain == "logits":
+        return logits_heads
+    if input_domain == "probabilities":
+        return probability_heads
+    raise ValueError(f"Unsupported input_domain='{input_domain}'.")
 
 
 def compute_discriminative_deep_supervision_loss(
@@ -435,18 +472,18 @@ def compute_discriminative_deep_supervision_loss(
         target=target,
     )
 
-    head_predictions = normalize_discriminative_head_outputs(
+    logits_heads = normalize_discriminative_head_outputs(
         model_output=model_output,
         head_parser=effective_head_parser,
     )
 
-    if final_head not in head_predictions:
+    if final_head not in logits_heads:
         raise ValueError(
             f"Configured final_head={final_head} is unavailable. "
-            f"Available heads: {sorted(head_predictions.keys())}"
+            f"Available heads: {sorted(logits_heads.keys())}"
         )
 
-    if not deep_enabled and len(head_predictions) > 1:
+    if not deep_enabled and len(logits_heads) > 1:
         raise ValueError(
             "Model returned multi-head output while deep_supervision.enabled=false. "
             "Either disable model deep supervision or enable "
@@ -455,18 +492,20 @@ def compute_discriminative_deep_supervision_loss(
 
     terms = resolve_discriminative_terms(cfg)
 
-    factories = build_default_discriminative_loss_factories()
+    factories = dict(DISCRIMINATIVE_LOSS_FACTORIES)
     if loss_factories is not None:
-        factories.update({str(k).lower(): v for k, v in loss_factories.items()})
+        factories.update({str(k): v for k, v in loss_factories.items()})
+
+    probability_heads = _build_probability_heads(logits_heads)
 
     total_loss = target.new_tensor(0.0)
     loss_components: Dict[str, float] = {}
 
     for term in terms:
-        loss_key = term.loss_key.lower()
+        loss_key = term.loss_key
         if loss_key not in factories:
             raise ValueError(
-                f"Unknown loss key '{term.loss_key}' for term '{term.name}'. "
+                f"Unknown discriminative loss '{term.loss_key}'. "
                 f"Available loss keys: {sorted(factories.keys())}"
             )
 
@@ -474,17 +513,22 @@ def compute_discriminative_deep_supervision_loss(
         plan = resolve_discriminative_supervision_plan(
             term=term,
             deep_supervision_cfg=deep_cfg,
-            available_heads=head_predictions,
+            available_heads=logits_heads,
             final_head=final_head,
             deep_supervision_enabled=deep_enabled,
+        )
+        term_heads = _select_term_heads(
+            input_domain=term.input_domain,
+            logits_heads=logits_heads,
+            probability_heads=probability_heads,
         )
 
         weighted_head_sum = target.new_tensor(0.0)
         for head_idx, head_weight in zip(plan.heads, plan.weights):
-            pred_head = head_predictions[head_idx]
+            pred_head = term_heads[head_idx]
             if tuple(pred_head.shape) != tuple(target.shape):
                 raise ValueError(
-                    f"Shape mismatch for term '{term.name}' head{head_idx}: "
+                    f"Shape mismatch for term '{term.loss_key}' head{head_idx}: "
                     f"pred.shape={tuple(pred_head.shape)} vs target.shape={tuple(target.shape)}"
                 )
 
@@ -492,22 +536,22 @@ def compute_discriminative_deep_supervision_loss(
             if head_loss.dim() != 0:
                 head_loss = head_loss.mean()
 
-            loss_components[f"{term.name}_head{head_idx}"] = float(
+            loss_components[f"{term.loss_key}_head{head_idx}"] = float(
                 head_loss.detach().item()
             )
             weighted_head_sum = weighted_head_sum + (float(head_weight) * head_loss)
 
         term_total = float(term.weight) * weighted_head_sum
         total_loss = total_loss + term_total
-        loss_components[term.name] = float(term_total.detach().item())
+        loss_components[term.loss_key] = float(term_total.detach().item())
 
     loss_components["total"] = float(total_loss.detach().item())
 
     return DiscriminativeDeepSupervisionResult(
         total_loss=total_loss,
         loss_components=loss_components,
-        final_prediction=head_predictions[final_head],
-        head_predictions=head_predictions,
+        final_prediction=probability_heads[final_head],
+        head_predictions=probability_heads,
     )
 
 

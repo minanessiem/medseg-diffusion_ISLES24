@@ -22,6 +22,7 @@ class SwinUNetRAdapter(nn.Module):
     - NO time conditioning (no timestep input)
     - NO mask concatenation (input is modalities only)
     - Direct mask prediction (not noise prediction)
+    - Raw logits are returned; downstream adapter code owns probability conversion.
     
     Args:
         cfg (DictConfig): Hydra configuration object
@@ -157,11 +158,12 @@ class SwinUNetRAdapter(nn.Module):
             x: Input modalities [B, image_channels, *spatial_shape]
 
         Returns:
-            Predicted segmentation [B, out_channels, *spatial_shape] in [0, 1]
+            Raw segmentation logits [B, out_channels, *spatial_shape]
 
         Note:
             Unlike diffusion models, this takes ONLY the input modalities.
             No timestep, no noisy mask - direct prediction.
+            Current binary segmentation paths convert these logits with sigmoid
+            inside DiscriminativeAdapter before metrics and logging.
         """
-        logits = self.model(x)
-        return torch.sigmoid(logits)
+        return self.model(x)

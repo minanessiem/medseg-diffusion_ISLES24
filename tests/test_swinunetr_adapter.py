@@ -29,7 +29,7 @@ def _build_cfg(spatial_dims: str, image_size: int = 32):
 
 
 def _run_case(spatial_dims: str):
-    """Run one SwinUNetR adapter shape/range case for 2D or 3D."""
+    """Run one SwinUNetR adapter shape/logit case for 2D or 3D."""
     from src.models.SwinUNetR import SwinUNetRAdapter
 
     expected_spatial_dims = 2 if spatial_dims == "2d" else 3
@@ -93,14 +93,13 @@ def _run_case(spatial_dims: str):
     print(f"  ✓ Input shape: {tuple(x.shape)}")
     print(f"  ✓ Output shape: {tuple(out.shape)}")
 
-    print("  ✓ Verifying output range [0, 1]...")
-    assert out.min() >= 0, f"Output min {out.min():.4f} < 0 (sigmoid not applied?)"
-    assert out.max() <= 1, f"Output max {out.max():.4f} > 1 (sigmoid not applied?)"
-    print(f"  ✓ Output range: [{out.min():.4f}, {out.max():.4f}]")
+    print("  ✓ Verifying finite logit output...")
+    assert torch.isfinite(out).all(), "SwinUNETR adapter returned non-finite logits"
+    print(f"  ✓ Logit range: [{out.min():.4f}, {out.max():.4f}]")
 
 
 def test_swinunetr_adapter():
-    """Test SwinUNetR adapter properties, forward pass, and output range for 2D and 3D."""
+    """Test SwinUNetR adapter properties, forward pass, and logit output for 2D and 3D."""
     print("=" * 60)
     print("SwinUNetR Adapter Verification Test (2D + 3D)")
     print("=" * 60)

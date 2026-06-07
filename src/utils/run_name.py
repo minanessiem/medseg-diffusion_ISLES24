@@ -95,6 +95,21 @@ def format_dice_smooth(smooth):
     return f"sm{neg_exp}"
 
 
+def format_loss_input_domain(input_domain):
+    """Format discriminative loss input domain for compact run names."""
+    domain = str(input_domain).strip().lower()
+    if domain == "probabilities":
+        return "p"
+    if domain == "logits":
+        return "log"
+    return domain[:3] if domain else "unk"
+
+
+def _normalize_loss_class_name(loss_name):
+    """Normalize configured loss class identifiers for run-name matching."""
+    return str(loss_name).strip()
+
+
 def _format_stage_sequence(value):
     """
     Format stage-wise sequences (e.g., DynUNet kernel/stride config) compactly.
@@ -121,7 +136,7 @@ def generate_loss_string(loss_cfg):
         
     Returns:
         str: Formatted loss string (e.g., 'lMSE', 'lMSE_dw100_d010sm5_b010_cal100_w25h')
-        For discriminative: 'lDICE_BCE' or 'lDICE' or 'lBCE'
+        For discriminative: explicit loss terms, e.g. 'ld100sm5p_b100p_dsup'
     """
     #TODO consolidate dict/DictConfig access through a shared helper.
     # Handle both dict and DictConfig
@@ -136,43 +151,32 @@ def generate_loss_string(loss_cfg):
     
     # Check for discriminative loss config (used by DiscriminativeAdapter)
     if disc and loss_type == 'NONE':
-        # Discriminative mode: format as lDICE_BCE, lDICE, or lBCE
+        # Discriminative mode uses explicit active terms. Term presence means
+        # active; there is no legacy dice/bce block or enabled flag.
         disc_parts = []
-        
-        dice = disc.get('dice', {})
-        if dice.get('enabled', False):
-            weight_str = format_loss_weight(dice.get('weight', 1.0))
-            smooth_str = format_dice_smooth(dice.get('smooth', 1e-5))
-            disc_parts.append(f"d{weight_str}{smooth_str}")
-        
-        bce = disc.get('bce', {})
-        if bce.get('enabled', False):
-            weight_str = format_loss_weight(bce.get('weight', 1.0))
-            disc_parts.append(f"b{weight_str}")
 
-        # Terms-based discriminative config (generic deep-supervision schema)
-        # only used if legacy dice/bce keys are unavailable.
-        if not disc_parts:
-            terms = disc.get('terms', [])
-            for term in terms:
-                if not hasattr(term, 'get'):
-                    continue
-                if not term.get('enabled', True):
-                    continue
-                if float(term.get('weight', 0.0)) <= 0:
-                    continue
-                loss_name = str(term.get('loss', term.get('name', 'term'))).lower()
-                weight_str = format_loss_weight(float(term.get('weight', 1.0)))
-                if loss_name == 'dice':
-                    smooth = term.get('params', {}).get('smooth', 1e-5)
-                    smooth_str = format_dice_smooth(float(smooth))
-                    disc_parts.append(f"d{weight_str}{smooth_str}")
-                elif loss_name == 'bce':
-                    disc_parts.append(f"b{weight_str}")
-                else:
-                    # Generic fallback for custom terms.
-                    name = str(term.get('name', loss_name)).lower()
-                    disc_parts.append(f"{name}{weight_str}")
+        terms = disc.get('terms', [])
+        for term in terms:
+            if not hasattr(term, 'get'):
+                continue
+            loss_name = _normalize_loss_class_name(term.get('loss', 'UnknownLoss'))
+            input_domain = format_loss_input_domain(term.get('input_domain', 'unknown'))
+            weight_str = format_loss_weight(float(term.get('weight', 1.0)))
+            params = term.get('params', {})
+
+            if loss_name == 'DiceLoss':
+                smooth = params.get('smooth', 1e-5)
+                smooth_str = format_dice_smooth(float(smooth))
+                disc_parts.append(f"d{weight_str}{smooth_str}{input_domain}")
+            elif loss_name == 'BCELoss':
+                disc_parts.append(f"b{weight_str}{input_domain}")
+            else:
+                # Generic fallback for future explicit loss classes.
+                compact_name = loss_name
+                if compact_name.endswith("Loss"):
+                    compact_name = compact_name[:-4]
+                compact_name = compact_name.lower()
+                disc_parts.append(f"{compact_name}{weight_str}{input_domain}")
 
         # Deep supervision marker token (only when enabled)
         deep_supervision = disc.get('deep_supervision', {})

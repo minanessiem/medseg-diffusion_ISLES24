@@ -1,12 +1,11 @@
 # Pure segmentation loss for discriminative models.
 # No diffusion/MSE component - direct mask supervision.
 #
-# Loss configuration follows the same pattern as auxiliary_losses:
-# - Each loss has an 'enabled' flag to turn it on/off
-# - Weight controls contribution (0.0 to 1.0)
-# - Can use dice only, bce only, or both together
+# Discriminative losses are defined as explicit terms. Each term declares
+# the loss implementation, input tensor domain, weight, parameters, and
+# supervision schedule. No loss defaults are implied in code.
 #
-# Total loss: L = dice_weight * Dice + bce_weight * BCE
+# Total loss: L = DiceLoss + BCELoss
 
 # Primary loss type (set to NONE - no diffusion loss used)
 loss_type: NONE
@@ -42,14 +41,27 @@ discriminative:
     enabled: false       # Baseline: single-head supervision
     final_head: 0        # MONAI DynUNet (1.3.0) final prediction index in stacked output
     head_parser: stacked # Expected parser for deep-supervised DynUNet training outputs
-  dice:
-    enabled: true         # Set to false to disable dice loss
-    weight: 1.0           # Contribution weight (0.0 to 1.0)
-    smooth: 1.0e-5        # Smoothing for numerical stability
-    apply_sigmoid: false  # Model outputs sigmoid already
-  bce:
-    enabled: true         # Set to false to disable BCE loss
-    weight: 1.0           # Contribution weight (0.0 to 1.0)
-    pos_weight: null      # null = no class weighting
-    apply_sigmoid: false  # Model outputs sigmoid already
+
+  terms:
+    - loss: DiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        smooth: 1.0e-5
+        apply_sigmoid: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: BCELoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
 
