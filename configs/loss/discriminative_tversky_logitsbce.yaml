@@ -1,0 +1,40 @@
+# MONAI TverskyLoss plus logits-native BCE.
+#
+# Tversky replaces Dice for FP/FN trade-off diagnosis while BCE keeps
+# voxel-wise classification pressure.
+
+defaults:
+  - discriminative_base
+
+discriminative:
+  terms:
+    - loss: TverskyLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        include_background: true
+        to_onehot_y: false
+        sigmoid: false
+        softmax: false
+        alpha: 0.5
+        beta: 0.5
+        reduction: mean
+        smooth_nr: 1.0e-5
+        smooth_dr: 1.0e-5
+        batch: false
+        soft_label: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: BCELoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: true
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]

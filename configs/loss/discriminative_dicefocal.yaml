@@ -1,0 +1,33 @@
+# MONAI DiceFocalLoss.
+#
+# This combined MONAI loss consumes logits. Its Dice component applies sigmoid
+# internally while its focal component uses logits-native behavior.
+
+defaults:
+  - discriminative_base
+
+discriminative:
+  terms:
+    - loss: DiceFocalLoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        include_background: true
+        to_onehot_y: false
+        sigmoid: true
+        softmax: false
+        squared_pred: false
+        jaccard: false
+        reduction: mean
+        smooth_nr: 1.0e-5
+        smooth_dr: 1.0e-5
+        batch: false
+        gamma: 2.0
+        weight: null
+        lambda_dice: 1.0
+        lambda_focal: 0.5
+        alpha: null
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]

@@ -1,0 +1,39 @@
+# MONAI GeneralizedDiceLoss plus logits-native BCE.
+#
+# This lower-priority imbalance-oriented ablation replaces Dice with
+# GeneralizedDiceLoss while keeping BCEWithLogits classification pressure.
+
+defaults:
+  - discriminative_base
+
+discriminative:
+  terms:
+    - loss: GeneralizedDiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        include_background: true
+        to_onehot_y: false
+        sigmoid: false
+        softmax: false
+        w_type: square
+        reduction: mean
+        smooth_nr: 1.0e-5
+        smooth_dr: 1.0e-5
+        batch: false
+        soft_label: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: BCELoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: true
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]

@@ -21,6 +21,18 @@ import torch.nn.functional as F
 from torch.amp import autocast
 
 
+def _monai_loss_class(loss_name):
+    """Import MONAI loss classes lazily so baseline losses remain importable."""
+
+    try:
+        import monai.losses as monai_losses
+    except ImportError as exc:
+        raise ImportError(
+            f"{loss_name} requires MONAI to be installed in the active environment."
+        ) from exc
+    return getattr(monai_losses, loss_name)
+
+
 class DiceLoss(nn.Module):
     """
     Differentiable Dice loss for binary segmentation.
@@ -299,6 +311,181 @@ class BCELoss(nn.Module):
                     weight=pos_weight_tensor,
                     reduction='mean'
                 )
+
+
+class HausdorffDTLoss(nn.Module):
+    """Local wrapper for MONAI Hausdorff distance-transform loss."""
+
+    def __init__(
+        self,
+        alpha,
+        include_background,
+        to_onehot_y,
+        sigmoid,
+        softmax,
+        reduction,
+        batch,
+    ):
+        super().__init__()
+        monai_loss_cls = _monai_loss_class("HausdorffDTLoss")
+        self.loss = monai_loss_cls(
+            alpha=alpha,
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            reduction=reduction,
+            batch=batch,
+        )
+
+    def forward(self, y_pred, y_true):
+        return self.loss(y_pred.to(y_true.device), y_true)
+
+
+class TverskyLoss(nn.Module):
+    """Local wrapper for MONAI Tversky loss."""
+
+    def __init__(
+        self,
+        include_background,
+        to_onehot_y,
+        sigmoid,
+        softmax,
+        alpha,
+        beta,
+        reduction,
+        smooth_nr,
+        smooth_dr,
+        batch,
+        soft_label,
+    ):
+        super().__init__()
+        monai_loss_cls = _monai_loss_class("TverskyLoss")
+        self.loss = monai_loss_cls(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            alpha=alpha,
+            beta=beta,
+            reduction=reduction,
+            smooth_nr=smooth_nr,
+            smooth_dr=smooth_dr,
+            batch=batch,
+            soft_label=soft_label,
+        )
+
+    def forward(self, y_pred, y_true):
+        return self.loss(y_pred.to(y_true.device), y_true)
+
+
+class FocalLoss(nn.Module):
+    """Local wrapper for MONAI logits-native focal loss."""
+
+    def __init__(
+        self,
+        include_background,
+        to_onehot_y,
+        gamma,
+        alpha,
+        weight,
+        reduction,
+        use_softmax,
+    ):
+        super().__init__()
+        monai_loss_cls = _monai_loss_class("FocalLoss")
+        self.loss = monai_loss_cls(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            gamma=gamma,
+            alpha=alpha,
+            weight=weight,
+            reduction=reduction,
+            use_softmax=use_softmax,
+        )
+
+    def forward(self, y_pred, y_true):
+        return self.loss(y_pred.to(y_true.device), y_true)
+
+
+class DiceFocalLoss(nn.Module):
+    """Local wrapper for MONAI combined Dice and focal loss."""
+
+    def __init__(
+        self,
+        include_background,
+        to_onehot_y,
+        sigmoid,
+        softmax,
+        squared_pred,
+        jaccard,
+        reduction,
+        smooth_nr,
+        smooth_dr,
+        batch,
+        gamma,
+        weight,
+        lambda_dice,
+        lambda_focal,
+        alpha,
+    ):
+        super().__init__()
+        monai_loss_cls = _monai_loss_class("DiceFocalLoss")
+        self.loss = monai_loss_cls(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            squared_pred=squared_pred,
+            jaccard=jaccard,
+            reduction=reduction,
+            smooth_nr=smooth_nr,
+            smooth_dr=smooth_dr,
+            batch=batch,
+            gamma=gamma,
+            weight=weight,
+            lambda_dice=lambda_dice,
+            lambda_focal=lambda_focal,
+            alpha=alpha,
+        )
+
+    def forward(self, y_pred, y_true):
+        return self.loss(y_pred.to(y_true.device), y_true)
+
+
+class GeneralizedDiceLoss(nn.Module):
+    """Local wrapper for MONAI generalized Dice loss."""
+
+    def __init__(
+        self,
+        include_background,
+        to_onehot_y,
+        sigmoid,
+        softmax,
+        w_type,
+        reduction,
+        smooth_nr,
+        smooth_dr,
+        batch,
+        soft_label,
+    ):
+        super().__init__()
+        monai_loss_cls = _monai_loss_class("GeneralizedDiceLoss")
+        self.loss = monai_loss_cls(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            w_type=w_type,
+            reduction=reduction,
+            smooth_nr=smooth_nr,
+            smooth_dr=smooth_dr,
+            batch=batch,
+            soft_label=soft_label,
+        )
+
+    def forward(self, y_pred, y_true):
+        return self.loss(y_pred.to(y_true.device), y_true)
 
 
 class CalibrationLoss(nn.Module):

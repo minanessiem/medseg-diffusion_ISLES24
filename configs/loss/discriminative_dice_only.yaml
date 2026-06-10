@@ -7,13 +7,9 @@
 # - Avoiding pixel-wise loss saturation issues
 
 defaults:
-  - discriminative_dicebce
+  - discriminative_base
 
-# Override: keep only the Dice term.
 discriminative:
-  deep_supervision:
-    enabled: false       # Baseline: single-head supervision
-
   terms:
     - loss: DiceLoss
       input_domain: probabilities

@@ -3,6 +3,7 @@ import torch.nn as nn
 from medpy import metric
 import numpy as np
 import cc3d
+import warnings
 from scipy.ndimage import distance_transform_edt, binary_erosion
 from monai.metrics import compute_hausdorff_distance, compute_surface_dice
 from monai.networks.utils import one_hot
@@ -675,13 +676,20 @@ class SurfaceDiceMonai(nn.Module):
 
                 # MONAI's class_thresholds expects a list of thresholds, one per class.
                 # Since we exclude the background, we only need one for our foreground class.
-                sd_val = compute_surface_dice(
-                    y_pred=pred_one_hot,
-                    y=true_one_hot,
-                    class_thresholds=[self.tolerance_mm],
-                    include_background=False,
-                    spacing=self.spacing
-                ).item()
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*get_mask_edges:always_return_as_numpy.*",
+                        category=FutureWarning,
+                        module=r"monai\.utils\.deprecate_utils",
+                    )
+                    sd_val = compute_surface_dice(
+                        y_pred=pred_one_hot,
+                        y=true_one_hot,
+                        class_thresholds=[self.tolerance_mm],
+                        include_background=False,
+                        spacing=self.spacing
+                    ).item()
 
                 sd_scores.append(sd_val)
 

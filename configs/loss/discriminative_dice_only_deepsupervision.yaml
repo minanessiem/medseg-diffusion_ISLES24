@@ -1,22 +1,9 @@
 # Dice-only discriminative loss with deep supervision enabled.
-#
-# Inherits the no-DS baseline and activates deep supervision with a
-# weighted multi-head schedule for Dice.
 
 defaults:
-  - discriminative_dice_only
+  - discriminative_deepsupervision_base
 
 discriminative:
-  deep_supervision:
-    enabled: true
-    final_head: 0
-    head_parser: stacked
-    default_supervision:
-      mode: all_heads
-      weighting: geometric
-      decay: 0.5
-      normalize: false
-
   terms:
     - loss: DiceLoss
       input_domain: probabilities

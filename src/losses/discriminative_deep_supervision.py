@@ -16,7 +16,15 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from .segmentation_losses import BCELoss, DiceLoss
+from .segmentation_losses import (
+    BCELoss,
+    DiceFocalLoss,
+    DiceLoss,
+    FocalLoss,
+    GeneralizedDiceLoss,
+    HausdorffDTLoss,
+    TverskyLoss,
+)
 
 
 LossFactory = Callable[[Mapping[str, Any]], nn.Module]
@@ -73,9 +81,95 @@ def _build_bce_loss(params: Mapping[str, Any]) -> nn.Module:
     )
 
 
+def _build_hausdorff_dt_loss(params: Mapping[str, Any]) -> nn.Module:
+    return HausdorffDTLoss(
+        alpha=float(_require_param(params, "alpha", "HausdorffDTLoss")),
+        include_background=bool(
+            _require_param(params, "include_background", "HausdorffDTLoss")
+        ),
+        to_onehot_y=bool(_require_param(params, "to_onehot_y", "HausdorffDTLoss")),
+        sigmoid=bool(_require_param(params, "sigmoid", "HausdorffDTLoss")),
+        softmax=bool(_require_param(params, "softmax", "HausdorffDTLoss")),
+        reduction=str(_require_param(params, "reduction", "HausdorffDTLoss")),
+        batch=bool(_require_param(params, "batch", "HausdorffDTLoss")),
+    )
+
+
+def _build_tversky_loss(params: Mapping[str, Any]) -> nn.Module:
+    return TverskyLoss(
+        include_background=bool(_require_param(params, "include_background", "TverskyLoss")),
+        to_onehot_y=bool(_require_param(params, "to_onehot_y", "TverskyLoss")),
+        sigmoid=bool(_require_param(params, "sigmoid", "TverskyLoss")),
+        softmax=bool(_require_param(params, "softmax", "TverskyLoss")),
+        alpha=float(_require_param(params, "alpha", "TverskyLoss")),
+        beta=float(_require_param(params, "beta", "TverskyLoss")),
+        reduction=str(_require_param(params, "reduction", "TverskyLoss")),
+        smooth_nr=float(_require_param(params, "smooth_nr", "TverskyLoss")),
+        smooth_dr=float(_require_param(params, "smooth_dr", "TverskyLoss")),
+        batch=bool(_require_param(params, "batch", "TverskyLoss")),
+        soft_label=bool(_require_param(params, "soft_label", "TverskyLoss")),
+    )
+
+
+def _build_focal_loss(params: Mapping[str, Any]) -> nn.Module:
+    return FocalLoss(
+        include_background=bool(_require_param(params, "include_background", "FocalLoss")),
+        to_onehot_y=bool(_require_param(params, "to_onehot_y", "FocalLoss")),
+        gamma=float(_require_param(params, "gamma", "FocalLoss")),
+        alpha=_require_param(params, "alpha", "FocalLoss"),
+        weight=_require_param(params, "weight", "FocalLoss"),
+        reduction=str(_require_param(params, "reduction", "FocalLoss")),
+        use_softmax=bool(_require_param(params, "use_softmax", "FocalLoss")),
+    )
+
+
+def _build_dice_focal_loss(params: Mapping[str, Any]) -> nn.Module:
+    return DiceFocalLoss(
+        include_background=bool(
+            _require_param(params, "include_background", "DiceFocalLoss")
+        ),
+        to_onehot_y=bool(_require_param(params, "to_onehot_y", "DiceFocalLoss")),
+        sigmoid=bool(_require_param(params, "sigmoid", "DiceFocalLoss")),
+        softmax=bool(_require_param(params, "softmax", "DiceFocalLoss")),
+        squared_pred=bool(_require_param(params, "squared_pred", "DiceFocalLoss")),
+        jaccard=bool(_require_param(params, "jaccard", "DiceFocalLoss")),
+        reduction=str(_require_param(params, "reduction", "DiceFocalLoss")),
+        smooth_nr=float(_require_param(params, "smooth_nr", "DiceFocalLoss")),
+        smooth_dr=float(_require_param(params, "smooth_dr", "DiceFocalLoss")),
+        batch=bool(_require_param(params, "batch", "DiceFocalLoss")),
+        gamma=float(_require_param(params, "gamma", "DiceFocalLoss")),
+        weight=_require_param(params, "weight", "DiceFocalLoss"),
+        lambda_dice=float(_require_param(params, "lambda_dice", "DiceFocalLoss")),
+        lambda_focal=float(_require_param(params, "lambda_focal", "DiceFocalLoss")),
+        alpha=_require_param(params, "alpha", "DiceFocalLoss"),
+    )
+
+
+def _build_generalized_dice_loss(params: Mapping[str, Any]) -> nn.Module:
+    return GeneralizedDiceLoss(
+        include_background=bool(
+            _require_param(params, "include_background", "GeneralizedDiceLoss")
+        ),
+        to_onehot_y=bool(_require_param(params, "to_onehot_y", "GeneralizedDiceLoss")),
+        sigmoid=bool(_require_param(params, "sigmoid", "GeneralizedDiceLoss")),
+        softmax=bool(_require_param(params, "softmax", "GeneralizedDiceLoss")),
+        w_type=str(_require_param(params, "w_type", "GeneralizedDiceLoss")),
+        reduction=str(_require_param(params, "reduction", "GeneralizedDiceLoss")),
+        smooth_nr=float(_require_param(params, "smooth_nr", "GeneralizedDiceLoss")),
+        smooth_dr=float(_require_param(params, "smooth_dr", "GeneralizedDiceLoss")),
+        batch=bool(_require_param(params, "batch", "GeneralizedDiceLoss")),
+        soft_label=bool(_require_param(params, "soft_label", "GeneralizedDiceLoss")),
+    )
+
+
 DISCRIMINATIVE_LOSS_FACTORIES: Dict[str, LossFactory] = {
     "DiceLoss": _build_dice_loss,
     "BCELoss": _build_bce_loss,
+    "HausdorffDTLoss": _build_hausdorff_dt_loss,
+    "TverskyLoss": _build_tversky_loss,
+    "FocalLoss": _build_focal_loss,
+    "DiceFocalLoss": _build_dice_focal_loss,
+    "GeneralizedDiceLoss": _build_generalized_dice_loss,
 }
 
 

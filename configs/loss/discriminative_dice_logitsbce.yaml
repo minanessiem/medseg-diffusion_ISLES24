@@ -1,5 +1,8 @@
-# Dice+BCE discriminative loss.
-# Total loss: L = DiceLoss + BCELoss
+# Dice plus logits-native BCE discriminative loss.
+#
+# This is the first logit/probability contract baseline:
+# Dice receives probabilities, while BCE receives raw logits and uses
+# BCEWithLogitsLoss behavior internally.
 
 defaults:
   - discriminative_base
@@ -18,13 +21,12 @@ discriminative:
         weights: [1.0]
 
     - loss: BCELoss
-      input_domain: probabilities
+      input_domain: logits
       weight: 1.0
       params:
         pos_weight: null
-        apply_sigmoid: false
+        apply_sigmoid: true
       supervision:
         mode: final_only
         heads: [0]
         weights: [1.0]
-

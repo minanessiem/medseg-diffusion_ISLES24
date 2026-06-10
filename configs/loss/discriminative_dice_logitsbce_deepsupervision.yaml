@@ -1,4 +1,4 @@
-# Dice+BCE discriminative loss with deep supervision enabled.
+# Dice plus logits-native BCE with DynUNet deep supervision.
 
 defaults:
   - discriminative_deepsupervision_base
@@ -17,11 +17,11 @@ discriminative:
         weights: null
 
     - loss: BCELoss
-      input_domain: probabilities
+      input_domain: logits
       weight: 1.0
       params:
         pos_weight: null
-        apply_sigmoid: false
+        apply_sigmoid: true
       supervision:
         mode: inherit_default
         heads: null

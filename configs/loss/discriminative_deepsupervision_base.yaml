@@ -1,0 +1,18 @@
+# Shared DynUNet deep-supervision scaffold for discriminative losses.
+#
+# Concrete child configs define their own terms. This base only activates the
+# common stacked-head parser and geometric all-head default schedule.
+
+defaults:
+  - discriminative_base
+
+discriminative:
+  deep_supervision:
+    enabled: true
+    final_head: 0
+    head_parser: stacked
+    default_supervision:
+      mode: all_heads
+      weighting: geometric
+      decay: 0.5
+      normalize: false

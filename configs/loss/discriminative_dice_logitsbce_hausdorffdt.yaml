@@ -1,0 +1,47 @@
+# Dice + logits-native BCE with an auxiliary MONAI HausdorffDTLoss term.
+#
+# HausdorffDTLoss receives probabilities and is intended as a boundary/surface
+# fidelity probe, not a replacement for overlap and classification anchors.
+
+defaults:
+  - discriminative_base
+
+discriminative:
+  terms:
+    - loss: DiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        smooth: 1.0e-5
+        apply_sigmoid: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: BCELoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: true
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: HausdorffDTLoss
+      input_domain: probabilities
+      weight: 0.05
+      params:
+        alpha: 2.0
+        include_background: true
+        to_onehot_y: false
+        sigmoid: false
+        softmax: false
+        reduction: mean
+        batch: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]

@@ -1,0 +1,39 @@
+# MONAI GeneralizedDiceLoss plus logits-native BCE with DynUNet deep supervision.
+#
+# GeneralizedDiceLoss is kept final-head-only under the new-loss policy. BCE
+# inherits all-head supervision to keep auxiliary classification gradients.
+
+defaults:
+  - discriminative_deepsupervision_base
+
+discriminative:
+  terms:
+    - loss: GeneralizedDiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        include_background: true
+        to_onehot_y: false
+        sigmoid: false
+        softmax: false
+        w_type: square
+        reduction: mean
+        smooth_nr: 1.0e-5
+        smooth_dr: 1.0e-5
+        batch: false
+        soft_label: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]
+
+    - loss: BCELoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        pos_weight: null
+        apply_sigmoid: true
+      supervision:
+        mode: inherit_default
+        heads: null
+        weights: null

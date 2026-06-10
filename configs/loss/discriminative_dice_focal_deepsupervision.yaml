@@ -1,0 +1,36 @@
+# Dice plus MONAI logits-native FocalLoss with DynUNet deep supervision.
+#
+# Dice inherits the all-head schedule. FocalLoss remains final-head-only as the
+# new hard-voxel experiment term.
+
+defaults:
+  - discriminative_deepsupervision_base
+
+discriminative:
+  terms:
+    - loss: DiceLoss
+      input_domain: probabilities
+      weight: 1.0
+      params:
+        smooth: 1.0e-5
+        apply_sigmoid: false
+      supervision:
+        mode: inherit_default
+        heads: null
+        weights: null
+
+    - loss: FocalLoss
+      input_domain: logits
+      weight: 1.0
+      params:
+        include_background: true
+        to_onehot_y: false
+        gamma: 2.0
+        alpha: null
+        weight: null
+        reduction: mean
+        use_softmax: false
+      supervision:
+        mode: final_only
+        heads: [0]
+        weights: [1.0]

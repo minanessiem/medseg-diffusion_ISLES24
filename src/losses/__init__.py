@@ -6,10 +6,15 @@ aligned with their corresponding evaluation metrics in src.metrics.metrics.
 """
 
 from .segmentation_losses import (
-    DiceLoss,
-    DiceLossPerSample,
     BCELoss,
     CombinedSegmentationLoss,
+    DiceFocalLoss,
+    DiceLoss,
+    DiceLossPerSample,
+    FocalLoss,
+    GeneralizedDiceLoss,
+    HausdorffDTLoss,
+    TverskyLoss,
 )
 from .discriminative_deep_supervision import (
     DiscriminativeDeepSupervisionResult,
@@ -26,6 +31,11 @@ __all__ = [
     'DiceLossPerSample',
     'BCELoss',
     'CombinedSegmentationLoss',
+    'HausdorffDTLoss',
+    'TverskyLoss',
+    'FocalLoss',
+    'DiceFocalLoss',
+    'GeneralizedDiceLoss',
     'DiscriminativeDeepSupervisionResult',
     'DiscriminativeTermSpec',
     'SupervisionPlan',

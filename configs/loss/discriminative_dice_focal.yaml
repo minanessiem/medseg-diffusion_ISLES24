@@ -1,5 +1,7 @@
-# Dice+BCE discriminative loss.
-# Total loss: L = DiceLoss + BCELoss
+# Dice plus MONAI logits-native FocalLoss.
+#
+# This probes whether hard-voxel emphasis sharpens boundaries while preserving
+# a simple probability-domain Dice overlap anchor.
 
 defaults:
   - discriminative_base
@@ -17,14 +19,18 @@ discriminative:
         heads: [0]
         weights: [1.0]
 
-    - loss: BCELoss
-      input_domain: probabilities
+    - loss: FocalLoss
+      input_domain: logits
       weight: 1.0
       params:
-        pos_weight: null
-        apply_sigmoid: false
+        include_background: true
+        to_onehot_y: false
+        gamma: 2.0
+        alpha: null
+        weight: null
+        reduction: mean
+        use_softmax: false
       supervision:
         mode: final_only
         heads: [0]
         weights: [1.0]
-
