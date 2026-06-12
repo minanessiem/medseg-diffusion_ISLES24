@@ -11,10 +11,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
-from scripts.evaluation.contracts import SliceSample
-from scripts.evaluation.metrics_engine import DualLevelStreamingMetricsEngine, VolumeThresholdState
-from scripts.evaluation.metrics_engine import StreamingMetricsEngine
-from scripts.evaluation.metrics_registry_3d import THREED_METRIC_CLASSES, compute_metrics_3d_at_threshold
+from scripts.evaluation.core.contracts import SliceSample
+from scripts.evaluation.metrics.engine import DualLevelStreamingMetricsEngine, VolumeThresholdState
+from scripts.evaluation.metrics.engine import StreamingMetricsEngine
+from scripts.evaluation.metrics.registry_3d import THREED_METRIC_CLASSES, compute_metrics_3d_at_threshold
 from scripts.evaluation.reporting import (
     build_report_payload,
     build_text_summary,
@@ -22,7 +22,7 @@ from scripts.evaluation.reporting import (
     write_threshold_csv,
     write_volume_threshold_csv,
 )
-from scripts.evaluation.threshold_protocol import (
+from scripts.evaluation.reporting.threshold_protocol import (
     enforce_post_threshold_mode,
     make_fixed_protocol,
     select_primary_threshold,
@@ -468,7 +468,7 @@ def _build_spacing_metric_configs(metadata: Dict[str, Any]) -> Dict[str, Dict[st
 
 
 def _new_running_stats(metric_names: Sequence[str]) -> Dict[str, Any]:
-    from scripts.evaluation.contracts import RunningStats
+    from scripts.evaluation.core.contracts import RunningStats
 
     return {name: RunningStats() for name in metric_names}
 

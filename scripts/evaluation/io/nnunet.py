@@ -9,9 +9,9 @@ import nibabel as nib
 import torch
 from torch import Tensor
 
-from scripts.evaluation.contracts import SliceSample
-from scripts.evaluation.mask_builder import build_ground_truth_mask, build_prediction_mask
-from scripts.evaluation.provenance import parse_nnunet_slice_identity
+from scripts.evaluation.core.contracts import SliceSample
+from scripts.evaluation.io.mask_builder import build_ground_truth_mask, build_prediction_mask
+from scripts.evaluation.io.provenance import parse_nnunet_slice_identity
 
 
 def iter_nnunet_slice_samples(

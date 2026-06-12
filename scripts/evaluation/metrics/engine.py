@@ -8,10 +8,10 @@ It updates running statistics incrementally for each incoming sample.
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
-from scripts.evaluation.contracts import RunningStats, ScopeName, ScopedRunningStats, SliceSample, VolumeSample
-from scripts.evaluation.metrics_registry import compute_metrics_at_threshold
-from scripts.evaluation.metrics_registry_3d import THREED_METRIC_CLASSES, compute_metrics_3d_at_threshold
-from scripts.evaluation.volume_assembler import VolumeAssembler
+from scripts.evaluation.core.contracts import RunningStats, ScopeName, ScopedRunningStats, SliceSample, VolumeSample
+from scripts.evaluation.metrics.registry_2d import compute_metrics_at_threshold
+from scripts.evaluation.metrics.registry_3d import THREED_METRIC_CLASSES, compute_metrics_3d_at_threshold
+from scripts.evaluation.io.volume_assembler import VolumeAssembler
 
 
 DEFAULT_METRIC_NAMES: Sequence[str] = (

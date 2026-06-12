@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch import Tensor
 
-from scripts.evaluation.contracts import SliceSample, VolumeSample
+from scripts.evaluation.core.contracts import SliceSample, VolumeSample
 
 
 @dataclass

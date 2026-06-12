@@ -7,7 +7,7 @@ Metric keys intentionally match the class names defined in
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Mapping, MutableMapping, Optional
+from typing import Dict, Iterable, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from torch import Tensor
 
@@ -65,6 +65,55 @@ THREED_METRIC_CLASSES: Dict[str, type] = {
     "PredictedVolumeMm3": PredictedVolumeMm3,
     "GroundTruthVolumeMm3": GroundTruthVolumeMm3,
 }
+
+THREED_VALIDATION_METRIC_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "dice_medpy_3d": ("DiceMedpyCoefficient",),
+    "dice_3d": ("DiceNativeCoefficient",),
+    "abs_volume_diff_3d": ("AbsoluteVolumeDifferenceNative",),
+    "abs_lesion_count_diff_3d": ("AbsoluteLesionCountDifferenceCC3D",),
+    "lesion_f1_3d": ("LesionF1CC3DScore",),
+    "hd95_medpy_3d": ("HausdorffDistance95Medpy",),
+    "hd95_3d": ("HausdorffDistance95Native",),
+    "hd95_monai_mm_3d": ("HausdorffDistance95MonaiMm",),
+    "surface_dice_monai_3d": ("SurfaceDiceMonai",),
+    "voxel_tp_3d": ("VoxelTruePositives",),
+    "voxel_fp_3d": ("VoxelFalsePositives",),
+    "voxel_fn_3d": ("VoxelFalseNegatives",),
+    "voxel_tn_3d": ("VoxelTrueNegatives",),
+    "pred_volume_mm3": ("PredictedVolumeMm3",),
+    "gt_volume_mm3": ("GroundTruthVolumeMm3",),
+}
+
+
+def resolve_3d_metric_class_names(metric_names: Iterable[str]) -> Tuple[str, ...]:
+    """
+    Resolve validation metric aliases or class-name keys to class-name keys.
+    """
+    resolved = []
+    seen = set()
+    for raw_name in metric_names:
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        if name in THREED_METRIC_CLASSES:
+            class_names = (name,)
+        elif name in THREED_VALIDATION_METRIC_ALIASES:
+            class_names = THREED_VALIDATION_METRIC_ALIASES[name]
+        else:
+            available = sorted(
+                set(THREED_METRIC_CLASSES) | set(THREED_VALIDATION_METRIC_ALIASES)
+            )
+            raise ValueError(
+                f"Unknown 3D metric name '{name}'. Expected a metric class name "
+                f"or known validation alias. Available: {available}"
+            )
+        for class_name in class_names:
+            if class_name not in seen:
+                resolved.append(class_name)
+                seen.add(class_name)
+    if not resolved:
+        raise ValueError("3D metric selection cannot be empty.")
+    return tuple(resolved)
 
 
 class ThresholdMetric3DBase:

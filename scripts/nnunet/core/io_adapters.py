@@ -15,8 +15,8 @@ import nibabel as nib
 import torch
 from torch import Tensor
 
-from scripts.evaluation.contracts import VolumeSample
-from scripts.evaluation.io_nnunet import (
+from scripts.evaluation.core.contracts import VolumeSample
+from scripts.evaluation.io.nnunet import (
     count_matched_pairs as count_nnunet_slice_pairs,
     iter_nnunet_slice_samples,
 )

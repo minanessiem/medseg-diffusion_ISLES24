@@ -1,4 +1,4 @@
-"""Streaming IO producer for diffusion/custom model probability predictions."""
+"""Streaming IO producer for live-model 2D slice probability predictions."""
 
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -6,9 +6,9 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
-from scripts.evaluation.contracts import SliceSample
-from scripts.evaluation.mask_builder import build_ground_truth_mask
-from scripts.evaluation.provenance import parse_diffusion_slice_identity
+from scripts.evaluation.core.contracts import SliceSample
+from scripts.evaluation.io.mask_builder import build_ground_truth_mask
+from scripts.evaluation.io.provenance import parse_diffusion_slice_identity
 from src.utils.ensemble import mean_ensemble, soft_staple
 
 BatchType = Any

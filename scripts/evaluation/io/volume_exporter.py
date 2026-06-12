@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import nibabel as nib
 import numpy as np
 
-from scripts.evaluation.contracts import VolumeSample
+from scripts.evaluation.core.contracts import VolumeSample
 
 
 def export_reconstructed_volumes(

@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from scripts.evaluation.contracts import ThresholdProtocol
+from scripts.evaluation.core.contracts import ThresholdProtocol
 
 
 def build_report_payload(

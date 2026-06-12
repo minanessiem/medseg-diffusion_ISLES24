@@ -15,10 +15,61 @@ evaluation mode.
 
 ## Entry points
 
-- Diffusion/custom model:
+- Repository-trained model, config-driven live inference:
+  - `python3 -m scripts.evaluation.evaluate_model ...`
+- Legacy 2D diffusion/discriminative model:
   - `python3 -m scripts.evaluation.compute_segmentation_metrics_for_diffusionmodel_2d_predictions ...`
 - nnU-Net post-threshold predictions:
   - `python3 -m scripts.evaluation.compute_segmentation_metrics_for_nnunet_2d_predictions ...`
+
+`evaluate_model` is the current local entrypoint for repository checkpoints. It
+loads `<RUN_DIR>/.hydra/config.yaml`, merges an evaluation preset from
+`configs/evaluation/`, applies CLI `key=value` overrides, runs live validation
+inference through repository dataloaders, and writes JSON/CSV/text artifacts.
+
+Current first-class support is 3D discriminative volume evaluation. Current 3D
+non-discriminative diffusion is rejected with a capability error because the
+existing diffusion adapters are still 2D-shaped. The older
+`compute_segmentation_metrics_for_diffusionmodel_2d_predictions` entrypoint
+remains available for legacy 2D workflows.
+
+## Package layout
+
+The package root intentionally contains only user-facing entrypoints and package
+metadata. Implementation modules live in focused subpackages:
+
+```text
+scripts/evaluation/
+├── evaluate_model.py
+├── compute_segmentation_metrics_for_diffusionmodel_2d_predictions.py
+├── compute_segmentation_metrics_for_nnunet_2d_predictions.py
+├── core/
+│   ├── contracts.py
+│   ├── evaluation_pipeline.py
+│   ├── model_config.py
+│   └── model_loader.py
+├── io/
+│   ├── model_slices.py
+│   ├── model_volumes.py
+│   ├── nnunet.py
+│   ├── mask_builder.py
+│   ├── provenance.py
+│   ├── volume_assembler.py
+│   └── volume_exporter.py
+├── metrics/
+│   ├── engine.py
+│   ├── registry_2d.py
+│   └── registry_3d.py
+├── reporting/
+│   ├── reports.py
+│   ├── threshold_protocol.py
+│   ├── threshold_records.py
+│   └── threshold_selection.py
+└── slurm_runners/
+    ├── run_evaluate_model.py
+    ├── run_compute_segmentation_metrics_for_diffusionmodel_2d_predictions.py
+    └── run_compute_segmentation_metrics_for_nnunet_2d_predictions.py
+```
 
 ## Key flags
 
@@ -29,7 +80,41 @@ evaluation mode.
 - `--max-export-volumes-per-case`
   - Optional cap for exported reconstructed volumes.
 
-### Diffusion/custom flags
+### Config-driven repository-model flags
+
+- `--evaluation-config-name default|fixed_threshold|threshold_sweep|threshold_sweep_with_oracle`
+- Required overrides for normal use:
+  - `evaluation.run_dir=<RUN_DIR>`
+  - `evaluation.model_name=<MODEL_NAME>`
+- Common overrides:
+  - `dataset.active_subsets.val=val_fast|val_full`
+  - `validation=sliding_window_3d_metrics_subset|sliding_window_3d_metrics_full`
+  - `evaluation.threshold_protocol.mode=fixed|sweep|oracle_per_case|sweep_with_oracle`
+  - `evaluation.output_dir=<OUTPUT_DIR>`
+  - `evaluation.device=cpu|cuda|cuda:0`
+
+### Config-driven repository-model SLURM runner flags
+
+`run_evaluate_model.py` follows the same SLURM submission pattern as the older
+evaluation runners and `scripts/slurm/single_job_runner.py`: it merges the
+plain `BASE_CONFIG` SLURM dictionary with CLI overrides on the submission side,
+then submits a `python3 -m scripts.evaluation.evaluate_model ...` command. The
+Hydra/OmegaConf evaluation config is composed inside the submitted container job.
+
+- Convenience evaluation flags:
+  - `--run-dir <RUN_DIR>`
+  - `--model-name <CHECKPOINT_NAME>`
+  - `--evaluation-config-name threshold_sweep_with_oracle`
+  - `--validation-config sliding_window_3d_metrics_subset|sliding_window_3d_metrics_full`
+  - `--val-subset val_fast|val_full`
+  - `--val-batch-size 1`
+  - `--override key=value ...` for additional forwarded evaluation overrides
+- SLURM/resource flags:
+  - `--gpus`, `--partition`, `--qos`, `--cpus-per-task`, `--mem`, `--time`
+  - `--container-image`, `--host-outputs-dir`, and other `BASE_CONFIG` fields
+    exposed by `scripts.slurm.utils.commandline_utils.add_config_arguments`
+
+### Legacy 2D diffusion/custom flags
 
 - Threshold protocol:
   - `--thresholds 0.05:0.95:0.05` (sweep mode)
@@ -50,7 +135,16 @@ evaluation mode.
 
 ## Outputs
 
-For each analysis case (or one default case for nnU-Net), outputs include:
+For config-driven repository-model evaluation, outputs include:
+
+- `canonical_results.json`
+- `evaluation_summary.txt`
+- `resolved_evaluation_config.yaml`
+- `volume_metrics_per_threshold.csv`
+- `per_case_threshold_metrics.csv`
+- `oracle_per_case_thresholds.csv` when oracle mode is enabled
+
+For legacy 2D analysis cases (or one default case for nnU-Net), outputs include:
 
 - `canonical_results.json`
 - `metrics_per_threshold.csv` (slice-level)
@@ -63,7 +157,49 @@ If export is enabled:
 
 ## Example commands
 
-### Diffusion/custom (local)
+### Repository-trained model, config-driven (local)
+
+Evaluate the saved run exactly as configured, at the default fixed threshold:
+
+```bash
+python3 -m scripts.evaluation.evaluate_model \
+  evaluation.run_dir=/mnt/outputs/<run_dir> \
+  evaluation.model_name=<checkpoint_name_without_pth>
+```
+
+Run a 3D validation sweep with per-case oracle analysis:
+
+```bash
+python3 -m scripts.evaluation.evaluate_model \
+  --evaluation-config-name threshold_sweep_with_oracle \
+  evaluation.run_dir=/mnt/outputs/<run_dir> \
+  evaluation.model_name=<checkpoint_name_without_pth> \
+  dataset.active_subsets.val=val_full \
+  validation=sliding_window_3d_metrics_full \
+  validation.val_batch_size=1
+```
+
+### Repository-trained model via SLURM runner
+
+```bash
+python3 -m scripts.evaluation.slurm_runners.run_evaluate_model \
+  --run-dir /mnt/outputs/<run_dir> \
+  --model-name <checkpoint_name_without_pth> \
+  --evaluation-config-name threshold_sweep_with_oracle \
+  --validation-config sliding_window_3d_metrics_full \
+  --val-subset val_full \
+  --val-batch-size 1 \
+  --gpus 1 \
+  --cpus-per-task 32 \
+  --mem 96G \
+  --time 06:00:00
+```
+
+For smoke runs, use `--validation-config sliding_window_3d_metrics_subset` and
+`--val-subset val_fast`. Add final evaluation overrides with `--override`, for
+example `--override evaluation.threshold_protocol.thresholds=0.05:0.90:0.05`.
+
+### Legacy 2D diffusion/custom (local)
 
 ```bash
 python3 -m scripts.evaluation.compute_segmentation_metrics_for_diffusionmodel_2d_predictions \

@@ -7,8 +7,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from scripts.evaluation.io_nnunet import count_matched_pairs, iter_nnunet_slice_samples
-from scripts.evaluation.metrics_engine import DualLevelStreamingMetricsEngine
+from scripts.evaluation.io.nnunet import count_matched_pairs, iter_nnunet_slice_samples
+from scripts.evaluation.metrics.engine import DualLevelStreamingMetricsEngine
 from scripts.evaluation.reporting import (
     build_report_payload,
     build_text_summary,
@@ -16,12 +16,12 @@ from scripts.evaluation.reporting import (
     write_threshold_csv,
     write_volume_threshold_csv,
 )
-from scripts.evaluation.threshold_protocol import (
+from scripts.evaluation.reporting.threshold_protocol import (
     enforce_post_threshold_mode,
     make_fixed_protocol,
     select_primary_threshold,
 )
-from scripts.evaluation.volume_exporter import export_reconstructed_volumes
+from scripts.evaluation.io.volume_exporter import export_reconstructed_volumes
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

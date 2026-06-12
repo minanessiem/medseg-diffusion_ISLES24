@@ -1,0 +1,7 @@
+# @package _global_
+
+evaluation:
+  threshold_protocol:
+    mode: fixed
+    thresholds: "0.5"
+    fixed_threshold: 0.5

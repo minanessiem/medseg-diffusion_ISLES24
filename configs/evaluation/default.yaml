@@ -1,0 +1,33 @@
+# @package _global_
+
+evaluation:
+  input_source: live_model
+  run_dir: null
+  model_name: null
+  output_dir: null
+  device: null
+
+  checkpoint:
+    use_ema: false
+
+  levels:
+    - volume
+
+  threshold_protocol:
+    mode: fixed
+    thresholds: "0.5"
+    fixed_threshold: 0.5
+    primary:
+      level: volume
+      metric: DiceNativeCoefficient
+      statistic: mean
+      direction: max
+
+  reporting:
+    write_json: true
+    write_summary_text: true
+    write_per_threshold_csv: true
+    write_per_case_threshold_csv: true
+    write_config: true
+    export_reconstructed_volumes: false
+    max_export_volumes_per_case: null

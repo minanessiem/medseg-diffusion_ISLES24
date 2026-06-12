@@ -18,8 +18,8 @@ from scripts.analysis.threshold_analysis import (
     load_config_from_run_dir,
     load_model,
 )
-from scripts.evaluation.io_diffusion import iter_diffusion_case_slice_samples
-from scripts.evaluation.metrics_engine import DualLevelStreamingMetricsEngine
+from scripts.evaluation.io.model_slices import iter_diffusion_case_slice_samples
+from scripts.evaluation.metrics.engine import DualLevelStreamingMetricsEngine
 from scripts.evaluation.reporting import (
     build_report_payload,
     build_text_summary,
@@ -27,12 +27,12 @@ from scripts.evaluation.reporting import (
     write_threshold_csv,
     write_volume_threshold_csv,
 )
-from scripts.evaluation.threshold_protocol import (
+from scripts.evaluation.reporting.threshold_protocol import (
     make_fixed_protocol,
     make_sweep_protocol_from_spec,
     select_primary_threshold,
 )
-from scripts.evaluation.volume_exporter import export_reconstructed_volumes
+from scripts.evaluation.io.volume_exporter import export_reconstructed_volumes
 from src.data.loaders import get_dataloaders, validate_dataset_contract
 
 
@@ -352,9 +352,6 @@ def main() -> None:
 
     cfg = load_config_from_run_dir(str(args.run_dir))
     cfg = apply_cli_overrides(cfg, args.overrides)
-    effective_strategy = OmegaConf.select(cfg, "distribution.strategy")
-    if effective_strategy is not None:
-        print(f"Effective distribution.strategy: {effective_strategy}")
     validate_eval_config_contract(cfg)
     checkpoint_path = find_checkpoint(str(args.run_dir), args.model_name, use_ema=args.ema)
     model = load_model(cfg, checkpoint_path, device)

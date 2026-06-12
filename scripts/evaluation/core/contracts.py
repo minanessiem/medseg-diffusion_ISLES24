@@ -65,6 +65,26 @@ class ThresholdProtocol:
     optimize_metric: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class PrimaryMetricSelector:
+    """Config-driven primary metric selector for threshold choice."""
+
+    level: Literal["slice", "volume"]
+    metric: str
+    statistic: Literal["mean", "median"]
+    direction: Literal["max", "min"]
+
+
+@dataclass(frozen=True)
+class EvaluationThresholdProtocol:
+    """Extended threshold protocol for model evaluation workflows."""
+
+    mode: Literal["fixed", "sweep", "oracle_per_case", "sweep_with_oracle"]
+    thresholds: List[float]
+    fixed_threshold: float
+    primary: PrimaryMetricSelector
+
+
 @dataclass
 class RunningStats:
     """

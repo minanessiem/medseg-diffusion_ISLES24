@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Threshold analysis for trained segmentation models.
+Legacy threshold analysis for trained segmentation models.
+
+Prefer `python3 -m scripts.evaluation.evaluate_model` for new config-driven
+repository-model evaluation and 3D volume thresholding. This script remains
+available for older 2D diffusion/discriminative workflows, plotting, and
+ensemble visual analysis.
 
 Evaluates a trained discriminative model across multiple thresholds,
 computing metrics, generating plots, and creating comparison visualizations.
