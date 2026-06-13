@@ -128,6 +128,14 @@ def _format_stage_sequence(value):
         return '-'.join(parts)
     return str(value)
 
+
+def _format_numeric_token(value):
+    """Format numeric config values for compact run-name tokens."""
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:g}".replace(".", "p")
+
 def generate_loss_string(loss_cfg):
     """Generate loss substring for run name.
     
@@ -265,8 +273,8 @@ def generate_optimizer_string(opt_cfg):
         KeyError: If required config keys are missing (fail-fast, no defaults)
     
     Examples:
-        adamw_1e4lr_wd00 → "adamw1e4_wd00"
-        adamw_2e4lr_wd00 → "adamw2e4_wd00"
+        adamw_1e4lr_wd00 → "adamw1e4"
+        adamw_2e4lr_wd00 → "adamw2e4"
         adamw_1e4lr_wd01 → "adamw1e4_wd01"
         adam_2e4lr → "adam2e4"
     """
@@ -284,13 +292,10 @@ def generate_optimizer_string(opt_cfg):
     lr_str = format_learning_rate(lr)
     parts = [f"{opt_class}{lr_str}"]
     
-    # Add weight decay if non-zero
+    # Add weight decay only when it is an active experimental variable.
     if wd > 0:
         wd_str = f"wd{int(wd * 100):02d}"  # 0.01 → "wd01", 0.1 → "wd10"
         parts.append(wd_str)
-    else:
-        # Always show wd00 for clarity (distinguishes from old format)
-        parts.append("wd00")
     
     return '_'.join(parts)
 
@@ -470,6 +475,33 @@ def generate_modality_preprocessing_string(dataset_cfg):
         if modality_token in token_map:
             return token_map[modality_token]
     return ""
+
+
+def generate_patch_sampling_string(dataset_cfg):
+    """
+    Generate compact random-patch positive/negative sampling token.
+
+    Encodes MONAI RandCropByPosNegLabeld pos/neg weights for random-patch
+    experiments, for example `p1n1`, `p3n1`, or `p6n1`.
+    """
+    if dataset_cfg is None:
+        return ""
+
+    preprocessing_configs = dataset_cfg.get('preprocessing_configs', {})
+    if not hasattr(preprocessing_configs, 'get'):
+        return ""
+    random_patch_cfg = preprocessing_configs.get('random_patches_3d', {})
+    if not hasattr(random_patch_cfg, 'get'):
+        return ""
+    crop_cfg = random_patch_cfg.get('rand_crop_by_pos_neg_label', {})
+    if not hasattr(crop_cfg, 'get'):
+        return ""
+    if 'pos' not in crop_cfg or 'neg' not in crop_cfg:
+        return ""
+
+    pos = _format_numeric_token(crop_cfg.get('pos'))
+    neg = _format_numeric_token(crop_cfg.get('neg'))
+    return f"p{pos}n{neg}"
 
 def generate_amp_string(cfg):
     """Generate AMP string for run name.
@@ -737,18 +769,11 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
                      f"{model['feature_size']}f_{depths_str}_{heads_str}h")
 
     elif architecture == 'dynunet':
-        # DynUNet (discriminative): dynunet_{size}_{spatial}d_k{kernel}_s{strides}_u{upsample}_f{filters}
-        # Example: dynunet_64_3d_k3-3-3-3_s1-2-2-2_u2-2-2_f32-64-128-256
+        # DynUNet (discriminative): dynunet_{size}_{spatial}d
+        # Example: dynunet_64_3d
         spatial_dims = str(model.get('spatial_dims', 'na')).lower()
-        kernel_str = _format_stage_sequence(model.get('kernel_size', []))
-        strides_str = _format_stage_sequence(model.get('strides', []))
-        upsample_str = _format_stage_sequence(model.get('upsample_kernel_size', []))
-        filters_str = _format_stage_sequence(model.get('filters', 'auto'))
 
-        model_str = (
-            f"{architecture}_{model['image_size']}_{spatial_dims}_"
-            f"k{kernel_str}_s{strides_str}_u{upsample_str}_f{filters_str}"
-        )
+        model_str = f"{architecture}_{model['image_size']}_{spatial_dims}"
     
     else:
         # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
@@ -759,6 +784,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)
     context_str = generate_context_string(cfg)
+    patch_sampling_str = generate_patch_sampling_string(dataset)
     
     # AMP string (only added if enabled with FP16/BF16)
     amp_str = generate_amp_string(cfg)
@@ -766,10 +792,6 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Optimizer and scheduler strings (separated)
     optimizer_str = generate_optimizer_string(optimizer)
     scheduler_str = generate_scheduler_string(scheduler)
-    
-    # Gradient clipping string (only if clip_norm is set)
-    clip_norm = training['gradient']['clip_norm']
-    clip_str = format_clip_norm(clip_norm)
     
     # Training steps: 100000 -> 100K
     max_steps = training['max_steps']
@@ -827,15 +849,14 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
     # Insert amp_str after batch_str (only if non-empty)
-    # Insert clip_str after optimizer_str (only if non-empty)
     parts = [model_str, batch_str]
+    if patch_sampling_str:
+        parts.append(patch_sampling_str)
     if context_str:
         parts.append(context_str)
     if amp_str:  # Only add AMP string if enabled (FP16/BF16)
         parts.append(amp_str)
     parts.append(optimizer_str)
-    if clip_str:  # Only add clip string if clip_norm is set
-        parts.append(clip_str)
     parts.extend([scheduler_str, steps_str, loss_str])
     if modality_str:
         parts.append(modality_str)
