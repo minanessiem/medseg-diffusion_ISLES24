@@ -27,9 +27,10 @@ loads `<RUN_DIR>/.hydra/config.yaml`, merges an evaluation preset from
 `configs/evaluation/`, applies CLI `key=value` overrides, runs live validation
 inference through repository dataloaders, and writes JSON/CSV/text artifacts.
 
-Current first-class support is 3D discriminative volume evaluation. Current 3D
-non-discriminative diffusion is rejected with a capability error because the
-existing diffusion adapters are still 2D-shaped. The older
+Current first-class support is 3D discriminative volume evaluation and 2D
+discriminative slice-level evaluation. Current 3D non-discriminative diffusion
+is rejected with a capability error because the existing diffusion adapters are
+still 2D-shaped. The older
 `compute_segmentation_metrics_for_diffusionmodel_2d_predictions` entrypoint
 remains available for legacy 2D workflows.
 
@@ -82,14 +83,17 @@ scripts/evaluation/
 
 ### Config-driven repository-model flags
 
-- `--evaluation-config-name default|fixed_threshold|threshold_sweep|threshold_sweep_with_oracle`
+- `--evaluation-config-name default|fixed_threshold|threshold_sweep|threshold_sweep_with_oracle|threshold_sweep_with_oracle_slice`
 - Required overrides for normal use:
   - `evaluation.run_dir=<RUN_DIR>`
   - `evaluation.model_name=<MODEL_NAME>`
 - Common overrides:
   - `dataset.active_subsets.val=val_fast|val_full`
-  - `validation=sliding_window_3d_metrics_subset|sliding_window_3d_metrics_full`
+  - `validation=default` for 2D slice analysis
+  - `validation=sliding_window_3d_metrics_subset|sliding_window_3d_metrics_full` for 3D volume analysis
+  - `evaluation.levels=[slice]|[volume]`
   - `evaluation.threshold_protocol.mode=fixed|sweep|oracle_per_case|sweep_with_oracle`
+  - `evaluation.threshold_protocol.primary.metric=Dice2DForegroundOnly|DiceNativeCoefficient|...`
   - `evaluation.output_dir=<OUTPUT_DIR>`
   - `evaluation.device=cpu|cuda|cuda:0`
 
@@ -140,7 +144,8 @@ For config-driven repository-model evaluation, outputs include:
 - `canonical_results.json`
 - `evaluation_summary.txt`
 - `resolved_evaluation_config.yaml`
-- `volume_metrics_per_threshold.csv`
+- `slice_metrics_per_threshold.csv` for slice-level analysis
+- `volume_metrics_per_threshold.csv` for volume-level analysis
 - `per_case_threshold_metrics.csv`
 - `oracle_per_case_thresholds.csv` when oracle mode is enabled
 
@@ -178,6 +183,23 @@ python3 -m scripts.evaluation.evaluate_model \
   validation=sliding_window_3d_metrics_full \
   validation.val_batch_size=1
 ```
+
+Run a 2D slice-level validation sweep with per-slice oracle analysis:
+
+```bash
+python3 -m scripts.evaluation.evaluate_model \
+  --evaluation-config-name threshold_sweep_with_oracle_slice \
+  evaluation.run_dir='./outputs/<2d_swinunetr_run>' \
+  evaluation.model_name=diffusion_chkpt_step_000010 \
+  dataset.active_subsets.val=val_fast \
+  validation=default \
+  validation.val_batch_size=4
+```
+
+2D evaluation reports use metric class-name labels such as
+`Dice2DForegroundOnly` and `VoxelF1Score2D`. Validation aliases like
+`dice_2d_fg` are accepted as input selectors when they come from validation
+configs, but reports and CSVs keep the class-name labels.
 
 ### Repository-trained model via SLURM runner
 

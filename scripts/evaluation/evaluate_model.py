@@ -91,6 +91,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("Outputs:")
     for key in (
         "json_path",
+        "slice_csv_path",
         "volume_csv_path",
         "per_case_csv_path",
         "oracle_csv_path",

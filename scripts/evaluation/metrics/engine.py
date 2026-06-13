@@ -9,18 +9,22 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
 from scripts.evaluation.core.contracts import RunningStats, ScopeName, ScopedRunningStats, SliceSample, VolumeSample
-from scripts.evaluation.metrics.registry_2d import compute_metrics_at_threshold
+from scripts.evaluation.metrics.registry_2d import (
+    TWOD_METRIC_CLASSES,
+    compute_metrics_at_threshold,
+    resolve_2d_metric_class_names,
+)
 from scripts.evaluation.metrics.registry_3d import THREED_METRIC_CLASSES, compute_metrics_3d_at_threshold
 from scripts.evaluation.io.volume_assembler import VolumeAssembler
 
 
 DEFAULT_METRIC_NAMES: Sequence[str] = (
-    "dice",
-    "precision",
-    "recall",
-    "specificity",
-    "f1",
-    "f2",
+    "Dice2DForegroundOnly",
+    "VoxelPrecision2D",
+    "VoxelSensitivity2D",
+    "VoxelSpecificity2D",
+    "VoxelF1Score2D",
+    "VoxelF2Score2D",
 )
 
 
@@ -105,7 +109,11 @@ class StreamingMetricsEngine:
         if not thresholds:
             raise ValueError("StreamingMetricsEngine requires at least one threshold.")
         self.thresholds: List[float] = [float(t) for t in thresholds]
-        self.metric_names: Sequence[str] = metric_names or DEFAULT_METRIC_NAMES
+        self.metric_names: Sequence[str] = (
+            resolve_2d_metric_class_names(metric_names)
+            if metric_names is not None
+            else tuple(TWOD_METRIC_CLASSES.keys())
+        )
         self._states: Dict[float, ThresholdState] = {
             t: ThresholdState(
                 threshold=t,
@@ -129,7 +137,12 @@ class StreamingMetricsEngine:
             else:
                 state.slice_counts["empty"] += 1
 
-            metric_values = compute_metrics_at_threshold(pred_input, gt, threshold=threshold)
+            metric_values = compute_metrics_at_threshold(
+                pred_input,
+                gt,
+                threshold=threshold,
+                metric_names=self.metric_names,
+            )
             self._update_metric_scopes(state, metric_values, has_foreground)
 
     def run(self, samples: Iterable[SliceSample]) -> Dict[float, Dict[str, object]]:

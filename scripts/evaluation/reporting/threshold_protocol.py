@@ -16,6 +16,7 @@ from scripts.evaluation.core.contracts import (
     PrimaryMetricSelector,
     ThresholdProtocol,
 )
+from scripts.evaluation.metrics.registry_2d import resolve_2d_metric_class_names
 
 DEFAULT_METRIC_NAMES: Tuple[str, ...] = (
     "dice",
@@ -32,6 +33,12 @@ EVALUATION_THRESHOLD_MODES: Tuple[str, ...] = (
     "sweep_with_oracle",
 )
 PRIMARY_LEVELS: Tuple[str, ...] = ("slice", "volume")
+LEVEL_ALIASES = {
+    "slice": "slice",
+    "slices": "slice",
+    "volume": "volume",
+    "volumes": "volume",
+}
 PRIMARY_STATISTICS: Tuple[str, ...] = ("mean", "median")
 PRIMARY_DIRECTIONS: Tuple[str, ...] = ("max", "min")
 
@@ -149,7 +156,9 @@ def build_primary_metric_selector(cfg: DictConfig) -> PrimaryMetricSelector:
     Build and validate the primary metric selector from config.
     """
     primary_path = "evaluation.threshold_protocol.primary"
-    level = str(OmegaConf.select(cfg, f"{primary_path}.level", default="volume")).strip()
+    level = normalize_evaluation_level(
+        OmegaConf.select(cfg, f"{primary_path}.level", default="volume")
+    )
     metric = str(
         OmegaConf.select(
             cfg,
@@ -164,9 +173,6 @@ def build_primary_metric_selector(cfg: DictConfig) -> PrimaryMetricSelector:
         OmegaConf.select(cfg, f"{primary_path}.direction", default="max")
     ).strip()
 
-    if level not in PRIMARY_LEVELS:
-        allowed = ", ".join(PRIMARY_LEVELS)
-        raise ValueError(f"Unsupported primary metric level '{level}'. Allowed: {allowed}.")
     if not metric:
         raise ValueError("Primary metric name must not be empty.")
     if statistic not in PRIMARY_STATISTICS:
@@ -186,6 +192,17 @@ def build_primary_metric_selector(cfg: DictConfig) -> PrimaryMetricSelector:
         statistic=statistic,  # type: ignore[arg-type]
         direction=direction,  # type: ignore[arg-type]
     )
+
+
+def normalize_evaluation_level(value: object) -> str:
+    """
+    Normalize user-facing evaluation level tokens to internal canonical values.
+    """
+    token = str(value).strip().lower()
+    if token in LEVEL_ALIASES:
+        return LEVEL_ALIASES[token]
+    allowed = ", ".join(sorted(LEVEL_ALIASES))
+    raise ValueError(f"Unsupported evaluation level '{value}'. Allowed: {allowed}.")
 
 
 def enforce_post_threshold_mode(protocol: ThresholdProtocol) -> ThresholdProtocol:
@@ -220,8 +237,17 @@ def select_primary_threshold(
         return float(protocol.thresholds[0])
 
     metric_name = protocol.optimize_metric or "dice"
+    result_metrics = finalized_results[float(protocol.thresholds[0])]["metrics"]
+    if metric_name not in result_metrics:
+        resolved_names = resolve_2d_metric_class_names([metric_name])
+        if len(resolved_names) == 1 and resolved_names[0] in result_metrics:
+            metric_name = resolved_names[0]
     if selection_scope is None:
-        selection_scope = "foreground_only" if metric_name == "dice" else "all_slices"
+        selection_scope = (
+            "foreground_only"
+            if metric_name in {"dice", "Dice2DForegroundOnly"}
+            else "all_slices"
+        )
 
     best_threshold = None
     best_value = None
