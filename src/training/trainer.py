@@ -799,20 +799,43 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     accumulation_steps = cfg.training.gradient.accumulation_steps
     if accumulation_steps is None:
         accumulation_steps = 1
+    accumulation_steps = int(accumulation_steps)
+    return_patches_per_case = int(
+        OmegaConf.select(
+            cfg,
+            "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train",
+            default=1,
+        )
+        or 1
+    )
+    if return_patches_per_case <= 0:
+        raise ValueError(
+            "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train "
+            f"must be > 0, got {return_patches_per_case}."
+        )
     strategy = resolve_strategy(cfg)
     global_physical_batch_size, local_physical_batch_size = resolve_train_batch_sizes(
         int(cfg.data_runtime.train_batch_size),
         strategy=strategy,
     )
     global_effective_batch_size = global_physical_batch_size * accumulation_steps
+    global_effective_patch_batch_size = (
+        global_physical_batch_size * return_patches_per_case * accumulation_steps
+    )
     world_size = max(1, global_physical_batch_size // local_physical_batch_size)
     accumulation_counter = 0
     
     print(f"\nGradient Accumulation Configuration:")
     print(f"  Global batch size: {global_physical_batch_size}")
     print(f"  Per-rank batch size: {local_physical_batch_size} (world_size={world_size})")
+    print(f"  Return patches per case: {return_patches_per_case}")
     print(f"  Accumulation steps: {accumulation_steps}")
-    print(f"  Global effective batch size: {global_effective_batch_size}")
+    print(f"  Global effective batch size (cases): {global_effective_batch_size}")
+    print(
+        "  Global effective patch batch size: "
+        f"{global_physical_batch_size}*{return_patches_per_case}*{accumulation_steps}"
+        f"={global_effective_patch_batch_size}"
+    )
     
     # ==========================================================================
     # AMP (Automatic Mixed Precision) setup

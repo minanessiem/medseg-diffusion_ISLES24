@@ -64,6 +64,8 @@ preprocessing_configs:
   random_patches_3d:
     patches_per_volume:
       train: 1
+    return_patches_per_case:
+      train: 1
     rand_crop_by_pos_neg_label:
       pos: 1
       neg: 1

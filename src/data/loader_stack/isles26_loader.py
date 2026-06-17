@@ -535,6 +535,35 @@ def build_random_patches_3d_pipeline(
     return build_monai_compose_safe(transforms)
 
 
+def resolve_random_patch_return_patches_per_case(
+    preprocessing_configs: Mapping[str, Any],
+) -> int:
+    """
+    Resolve random-patch grouped return factor for training.
+
+    Backward compatibility contract:
+    - Missing `return_patches_per_case.train` defaults to 1.
+    """
+    random_patch_cfg = preprocessing_configs.get("random_patches_3d", {})
+    if not hasattr(random_patch_cfg, "get"):
+        return 1
+
+    return_cfg = random_patch_cfg.get("return_patches_per_case", {})
+    if not hasattr(return_cfg, "get"):
+        return_patches_per_case = 1
+    elif "train" not in return_cfg:
+        return_patches_per_case = 1
+    else:
+        return_patches_per_case = int(return_cfg["train"])
+
+    if return_patches_per_case <= 0:
+        raise ValueError(
+            "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train "
+            f"must be > 0, got {return_patches_per_case}."
+        )
+    return return_patches_per_case
+
+
 def _normalize_modalities(modalities: Optional[Sequence[str]]) -> Tuple[str, ...]:
     """
     Normalize modality contract for ISLES26.
@@ -837,8 +866,9 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
     ISLES26 random 3D patch dataset.
 
     Flatten policy:
-    - __len__ = num_cases * patches_per_volume.train
-    - __getitem__ returns one patch sample
+    - __len__ = num_cases * (patches_per_volume.train / return_patches_per_case.train)
+    - __getitem__ returns one patch when return_patches_per_case.train == 1
+    - __getitem__ returns grouped patches when return_patches_per_case.train > 1
     """
 
     def __init__(
@@ -901,6 +931,24 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
                 "dataset.preprocessing_configs.random_patches_3d.patches_per_volume.train "
                 f"must be > 0, got {self.patches_per_volume}."
             )
+        self.return_patches_per_case = resolve_random_patch_return_patches_per_case(
+            self.preprocessing_configs
+        )
+        if self.return_patches_per_case > self.patches_per_volume:
+            raise ValueError(
+                "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train "
+                "must be <= dataset.preprocessing_configs.random_patches_3d.patches_per_volume.train. "
+                f"Got return_patches_per_case={self.return_patches_per_case}, "
+                f"patches_per_volume={self.patches_per_volume}."
+            )
+        if self.patches_per_volume % self.return_patches_per_case != 0:
+            raise ValueError(
+                "dataset.preprocessing_configs.random_patches_3d.patches_per_volume.train must be "
+                "divisible by dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train. "
+                f"Got patches_per_volume={self.patches_per_volume}, "
+                f"return_patches_per_case={self.return_patches_per_case}."
+            )
+        self.patch_groups_per_case = self.patches_per_volume // self.return_patches_per_case
         self.preprocessed_volume_pipeline = build_common_preprocessed_volume_pipeline(
             modalities=self.modalities,
             preprocessing_configs=self.preprocessing_configs,
@@ -917,7 +965,7 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
             print("Initialized 3D augmentation pipeline for ISLES26 random-patch training dataset")
 
     def __len__(self):
-        return len(self.database) * self.patches_per_volume
+        return len(self.database) * self.patch_groups_per_case
 
     def _load_case_patches(self, filedict: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         case_input = LoaderDataUtils.resolve_case_input_paths(
@@ -939,20 +987,9 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
             )
         return patch_samples
 
-    def __getitem__(self, index):
-        if index < 0 or index >= len(self):
-            raise IndexError(
-                f"Patch index out of range: {index}. Dataset length is {len(self)}."
-            )
-        case_idx = int(index) // self.patches_per_volume
-        patch_idx = int(index) % self.patches_per_volume
-        filedict = self.database[case_idx]
-
-        patch_samples = self._load_case_patches(filedict)
-        patch_sample = patch_samples[patch_idx]
-        image = patch_sample["image"]
-        label = patch_sample["label"]
-
+    def _apply_patch_postprocessing(
+        self, image: torch.Tensor, label: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Random-patch mode policy: crop first, then augment per returned patch.
         if self.augmentation is not None:
             data_dict = {"image": image, "label": label}
@@ -965,12 +1002,50 @@ class ISLES26RandomPatches3D(torch.utils.data.Dataset):
             image = self.transform(image)
             torch.set_rng_state(state)
             label = self.transform(label)
+        return image, label
 
-        patch_path = ISLES26_PATCH_PATH_TEMPLATE.format(
-            case_id=filedict["caseID"],
-            patch_idx=int(patch_idx),
-        )
-        return image, label, patch_path
+    def __getitem__(self, index):
+        if index < 0 or index >= len(self):
+            raise IndexError(
+                f"Patch-group index out of range: {index}. Dataset length is {len(self)}."
+            )
+        case_idx = int(index) // self.patch_groups_per_case
+        patch_group_idx = int(index) % self.patch_groups_per_case
+        patch_start_idx = patch_group_idx * self.return_patches_per_case
+        patch_end_idx = patch_start_idx + self.return_patches_per_case
+        filedict = self.database[case_idx]
+
+        patch_samples = self._load_case_patches(filedict)
+        selected_patch_samples = patch_samples[patch_start_idx:patch_end_idx]
+        if len(selected_patch_samples) != self.return_patches_per_case:
+            raise RuntimeError(
+                "Random patch group selection returned unexpected number of samples. "
+                f"Expected {self.return_patches_per_case}, got {len(selected_patch_samples)}."
+            )
+
+        processed_images: list[torch.Tensor] = []
+        processed_labels: list[torch.Tensor] = []
+        patch_paths: list[str] = []
+        for local_offset, patch_sample in enumerate(selected_patch_samples):
+            image = patch_sample["image"]
+            label = patch_sample["label"]
+            image, label = self._apply_patch_postprocessing(image=image, label=label)
+            processed_images.append(image)
+            processed_labels.append(label)
+            patch_idx = patch_start_idx + local_offset
+            patch_paths.append(
+                ISLES26_PATCH_PATH_TEMPLATE.format(
+                    case_id=filedict["caseID"],
+                    patch_idx=int(patch_idx),
+                )
+            )
+
+        if self.return_patches_per_case == 1:
+            return processed_images[0], processed_labels[0], patch_paths[0]
+
+        grouped_images = torch.stack(processed_images, dim=0)
+        grouped_labels = torch.stack(processed_labels, dim=0)
+        return grouped_images, grouped_labels, patch_paths
 
 
 class ISLES26Dataset2D(torch.utils.data.Dataset):

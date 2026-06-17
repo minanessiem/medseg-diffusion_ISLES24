@@ -46,6 +46,62 @@ _ACTIVE_RUNTIME_ROUTES = {
 }
 
 
+def _collate_isles26_random_patch_train_batch(batch):
+    """
+    Collate ISLES26 random-patch training samples.
+
+    Supports both dataset return contracts:
+    - Legacy single-patch items: (image[C,...], label[C,...], patch_path:str)
+    - Grouped patch items: (images[K,C,...], labels[K,C,...], patch_paths:list[str])
+
+    Grouped items are flattened to image/label batch dimension [B*K, ...].
+    """
+    if len(batch) == 0:
+        raise ValueError("Random patch collate received an empty batch.")
+
+    images, labels, patch_paths = zip(*batch)
+
+    grouped_mode = isinstance(patch_paths[0], list)
+    if grouped_mode:
+        flat_images = []
+        flat_labels = []
+        flat_patch_paths: list[str] = []
+        for sample_idx, (sample_images, sample_labels, sample_paths) in enumerate(
+            zip(images, labels, patch_paths)
+        ):
+            if not isinstance(sample_paths, list):
+                raise TypeError(
+                    "Inconsistent random-patch collate payload: expected list patch_paths "
+                    f"for grouped mode, got {type(sample_paths).__name__} at sample {sample_idx}."
+                )
+            if not isinstance(sample_images, torch.Tensor) or not isinstance(
+                sample_labels, torch.Tensor
+            ):
+                raise TypeError(
+                    "Grouped random-patch collate expects tensor image/label payloads."
+                )
+            if sample_images.shape[0] != sample_labels.shape[0]:
+                raise ValueError(
+                    "Grouped random-patch collate requires matching leading dimensions "
+                    f"for image/label tensors, got image={tuple(sample_images.shape)}, "
+                    f"label={tuple(sample_labels.shape)}."
+                )
+            if sample_images.shape[0] != len(sample_paths):
+                raise ValueError(
+                    "Grouped random-patch collate requires one path per returned patch, "
+                    f"got patches={sample_images.shape[0]} and paths={len(sample_paths)}."
+                )
+            flat_images.append(sample_images)
+            flat_labels.append(sample_labels)
+            flat_patch_paths.extend(str(path_value) for path_value in sample_paths)
+        return torch.cat(flat_images, dim=0), torch.cat(flat_labels, dim=0), flat_patch_paths
+
+    stacked_images = torch.stack(list(images), dim=0)
+    stacked_labels = torch.stack(list(labels), dim=0)
+    flat_patch_paths = [str(path_value) for path_value in patch_paths]
+    return stacked_images, stacked_labels, flat_patch_paths
+
+
 def _resolve_active_dataset_contract(cfg) -> tuple[str, str, DatasetCapabilities]:
     """
     Resolve dataset/mode through the registry-backed factory.
@@ -559,11 +615,16 @@ def get_dataloaders(cfg):
         prefetch_factor=OmegaConf.select(cfg, "data_runtime.test_prefetch_factor", default=None),
     )
 
+    train_collate_fn = None
+    if loader_mode == "random_patches_3d" and capabilities.loader_module == _ISLES26_LOADER_MODULE:
+        train_collate_fn = _collate_isles26_random_patch_train_batch
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=per_rank_train_batch_size,
         shuffle=not is_ddp,
         sampler=train_sampler,
+        collate_fn=train_collate_fn,
         **train_kwargs,
     )
     val_dataloader = DataLoader(
