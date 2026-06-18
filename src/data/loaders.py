@@ -553,9 +553,31 @@ def get_dataloaders(cfg):
         int(cfg.data_runtime.train_batch_size),
         strategy=strategy,
     )
+    return_patches_per_case = 1
+    if loader_mode == "random_patches_3d":
+        return_patches_per_case = int(
+            OmegaConf.select(
+                cfg,
+                "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train",
+                default=1,
+            )
+            or 1
+        )
+        if return_patches_per_case <= 0:
+            raise ValueError(
+                "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train "
+                f"must be > 0, got {return_patches_per_case}."
+            )
+    global_train_patch_batch_size = global_train_batch_size * return_patches_per_case
+    per_rank_train_patch_batch_size = per_rank_train_batch_size * return_patches_per_case
     print(
-        f"Train batch semantics: global={global_train_batch_size}, "
-        f"per_rank={per_rank_train_batch_size}, strategy={strategy}"
+        "Train batch semantics: "
+        f"global_cases={global_train_batch_size}, "
+        f"per_rank_cases={per_rank_train_batch_size}, "
+        f"return_patches_per_case={return_patches_per_case}, "
+        f"global_patches={global_train_patch_batch_size}, "
+        f"per_rank_patches={per_rank_train_patch_batch_size}, "
+        f"strategy={strategy}"
     )
 
     val_dataset = val_source_dataset

@@ -800,14 +800,18 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
     if accumulation_steps is None:
         accumulation_steps = 1
     accumulation_steps = int(accumulation_steps)
-    return_patches_per_case = int(
-        OmegaConf.select(
-            cfg,
-            "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train",
-            default=1,
+    loader_mode = str(OmegaConf.select(cfg, "data_mode.loader_mode", default="") or "")
+    if loader_mode == "random_patches_3d":
+        return_patches_per_case = int(
+            OmegaConf.select(
+                cfg,
+                "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train",
+                default=1,
+            )
+            or 1
         )
-        or 1
-    )
+    else:
+        return_patches_per_case = 1
     if return_patches_per_case <= 0:
         raise ValueError(
             "dataset.preprocessing_configs.random_patches_3d.return_patches_per_case.train "
@@ -1076,12 +1080,14 @@ def step_based_train(cfg, diffusion, dataloaders, optimizer, scheduler, logger, 
         
         # Increment global_step here, after training but before logging
         global_step += 1
-        samples = global_step * global_effective_batch_size
+        samples = global_step * global_effective_patch_batch_size
+        samples_cases = global_step * global_effective_batch_size
         
         # Log macro-batch metrics (once per optimizer update)
         if main_process:
             logger.logkv('step', global_step, accumulator='train')
             logger.logkv('samples', samples, accumulator='train')
+            logger.logkv('samples_cases', samples_cases, accumulator='train')
             logger.logkv('lr', optimizer.param_groups[0]['lr'], accumulator='train')
             logger.logkv_mean('grad_norm', grad_norm, accumulator='train')
             logger.logkv_mean('param_norm', param_norm, accumulator='train')
