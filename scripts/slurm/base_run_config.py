@@ -19,9 +19,8 @@ BASE_CONFIG = {
     "cpus_per_task": 128,
     "mem": "256G",
     "dependency": None,
-    "dependency_directive": "",
+    "include": None,
     "exclude": None,
-    "exclude_directive": "",
     
     # Host paths (where files exist on the host system)
     "host_code_dir": os.path.join(HOME_DIR, "code"),
@@ -55,8 +54,9 @@ SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --qos={qos}
 #SBATCH --gres=gpu:{gpus}
 #SBATCH --time={time}
-{dependency_directive}
-{exclude_directive}
+#SBATCH --dependency={dependency}
+#SBATCH --nodelist={include}
+#SBATCH --exclude={exclude}
 #SBATCH --cpus-per-task={cpus_per_task}
 #SBATCH --mem={mem}
 #SBATCH --output={output_file}

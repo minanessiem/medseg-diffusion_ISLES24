@@ -490,8 +490,11 @@ def main():
                         help='Memory allocation (e.g., "256G", overrides BASE_CONFIG)')
     parser.add_argument('--time', type=str, default=None,
                         help='Time limit (e.g., "00:30:00" for 30 min, overrides BASE_CONFIG)')
-    parser.add_argument('--exclude', type=str, default=None,
-                        help='SLURM node exclusion list (e.g., "mcml-dgx-002" or "node[01-03]").')
+    node_selector_group = parser.add_mutually_exclusive_group()
+    node_selector_group.add_argument('--include', type=str, default=None,
+                                     help='SLURM node include list (mapped to --nodelist, e.g., "mcml-dgx-003").')
+    node_selector_group.add_argument('--exclude', type=str, default=None,
+                                     help='SLURM node exclusion list (e.g., "mcml-dgx-002" or "node[01-03]").')
     parser.add_argument('--dependency', type=str, default=None,
                         help='SLURM dependency expression (e.g., "afterany:12345" or "afterok:12345").')
     
@@ -502,10 +505,9 @@ def main():
         'cpus_per_task',
         'mem',
         'time',
+        'include',
         'exclude',
         'dependency',
-        'dependency_directive',
-        'exclude_directive',
     }
     filtered_config = {k: v for k, v in BASE_CONFIG.items() if k not in excluded_params}
     add_config_arguments(parser, filtered_config)
@@ -526,6 +528,8 @@ def main():
         config["mem"] = args.mem
     if args.time is not None:
         config["time"] = args.time
+    if args.include is not None:
+        config["include"] = args.include
     if args.exclude is not None:
         config["exclude"] = args.exclude
     if args.dependency is not None:

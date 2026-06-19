@@ -118,17 +118,32 @@ class SlurmJobRunner:
         else:
             config['hydra_overrides_str'] = ''
 
-        dependency = config.get("dependency")
-        config["dependency_directive"] = (
-            f"#SBATCH --dependency={dependency}" if dependency else ""
-        )
+        include = config.get("include")
         exclude = config.get("exclude")
-        config["exclude_directive"] = (
-            f"#SBATCH --exclude={exclude}" if exclude else ""
-        )
-            
+        if include and exclude:
+            raise ValueError(
+                "SLURM include/exclude are mutually exclusive. "
+                "Provide only one of 'include' or 'exclude'."
+            )
+
+        # Keep SBATCH syntax centralized in the template and drop optional lines
+        # when their corresponding values are unset.
+        slurm_template = template
+        if not config.get("dependency"):
+            slurm_template = slurm_template.replace(
+                "#SBATCH --dependency={dependency}\n", ""
+            )
+        if not include:
+            slurm_template = slurm_template.replace(
+                "#SBATCH --nodelist={include}\n", ""
+            )
+        if not exclude:
+            slurm_template = slurm_template.replace(
+                "#SBATCH --exclude={exclude}\n", ""
+            )
+
         # Create the SLURM script
-        slurm_script = template.format(**config)
+        slurm_script = slurm_template.format(**config)
         script_file = f"temp_{job_name}.sbatch"
         
         try:
