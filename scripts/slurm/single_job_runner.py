@@ -490,9 +490,23 @@ def main():
                         help='Memory allocation (e.g., "256G", overrides BASE_CONFIG)')
     parser.add_argument('--time', type=str, default=None,
                         help='Time limit (e.g., "00:30:00" for 30 min, overrides BASE_CONFIG)')
+    parser.add_argument('--exclude', type=str, default=None,
+                        help='SLURM node exclusion list (e.g., "mcml-dgx-002" or "node[01-03]").')
+    parser.add_argument('--dependency', type=str, default=None,
+                        help='SLURM dependency expression (e.g., "afterany:12345" or "afterok:12345").')
     
     # Add configuration override arguments from BASE_CONFIG (exclude already-added params)
-    excluded_params = {'gpus', 'partition', 'cpus_per_task', 'mem', 'time'}
+    excluded_params = {
+        'gpus',
+        'partition',
+        'cpus_per_task',
+        'mem',
+        'time',
+        'exclude',
+        'dependency',
+        'dependency_directive',
+        'exclude_directive',
+    }
     filtered_config = {k: v for k, v in BASE_CONFIG.items() if k not in excluded_params}
     add_config_arguments(parser, filtered_config)
     
@@ -512,6 +526,10 @@ def main():
         config["mem"] = args.mem
     if args.time is not None:
         config["time"] = args.time
+    if args.exclude is not None:
+        config["exclude"] = args.exclude
+    if args.dependency is not None:
+        config["dependency"] = args.dependency
     
     # Parse overrides
     overrides = list(args.overrides)  # Make a copy to avoid modifying original

@@ -117,6 +117,15 @@ class SlurmJobRunner:
             config['hydra_overrides_str'] = ' '.join(config['hydra_overrides'])
         else:
             config['hydra_overrides_str'] = ''
+
+        dependency = config.get("dependency")
+        config["dependency_directive"] = (
+            f"#SBATCH --dependency={dependency}" if dependency else ""
+        )
+        exclude = config.get("exclude")
+        config["exclude_directive"] = (
+            f"#SBATCH --exclude={exclude}" if exclude else ""
+        )
             
         # Create the SLURM script
         slurm_script = template.format(**config)
