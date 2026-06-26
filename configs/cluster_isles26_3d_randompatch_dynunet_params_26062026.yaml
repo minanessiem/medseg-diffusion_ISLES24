@@ -1,0 +1,110 @@
+# Cluster ISLES26 DynUNet topology-parameter sweep preset.
+#
+# Experiment group: DynUNet parameter/capacity sweep, 2026-06-26.
+#
+# Goal:
+#   Test whether the current ISLES26 DynUNet ceiling is limited by model
+#   capacity or effective receptive field rather than by loss choice, threshold
+#   calibration, ROI size, or simple positive-crop weighting.
+#
+# Fixed lessons from prior experiments:
+#   - ROI 128 performed best in the ROI x positive-weighting sweep, so this
+#     preset keeps model.image_size=128.
+#   - Positive weighting did not improve results, so this preset keeps the
+#     random patch sampler at p1n1.
+#   - DiceFocal deep-supervised DynUNet with spatial-only 3D augmentation is
+#     the current strongest baseline family for this line of experiments.
+#   - Runtime defaults use b3, 12 train workers, 12 validation workers, and
+#     sliding-window sw_batch_size=4.
+#
+# Grid:
+#   A0 baseline topology:
+#     model defaults from dynunet_base
+#   A1 narrow width:
+#     model.filters=[24,48,96,192]
+#   A2 wide width:
+#     model.filters=[48,96,192,384]
+#   B1 deeper-light:
+#     model.kernel_size=[3,3,3,3,3]
+#     model.strides=[1,2,2,2,2]
+#     model.upsample_kernel_size=[2,2,2,2]
+#     model.filters=[24,48,96,192,320]
+#     model.deep_supr_num=2
+#   B2 deeper-base:
+#     model.kernel_size=[3,3,3,3,3]
+#     model.strides=[1,2,2,2,2]
+#     model.upsample_kernel_size=[2,2,2,2]
+#     model.filters=[32,64,128,256,320]
+#     model.deep_supr_num=2
+#   C1 bottleneck-k5:
+#     model.kernel_size=[3,3,3,5]
+#   C2 late-k5:
+#     model.kernel_size=[3,3,5,5]
+#
+# Reasoning:
+#   A variants test representational width at the same depth and context.
+#   B variants add an encoder/decoder stage to increase global integration at
+#   128^3 ROI while keeping the bottleneck spatially valid.
+#   C variants test larger late-stage kernels as a lower-risk receptive-field
+#   expansion without changing downsampling topology.
+
+defaults:
+  - cluster
+  - override /distribution: dp
+  - override /environment: isles26_cluster
+  - override /model: dynunet_base
+  - override /data_profile: isles26_3d_randompatch_t1raw
+  - override /diffusion: discriminative
+  - override /loss: discriminative_dicefocal_deepsupervision
+  - override /logging: 3d_discriminative
+  - override /validation: sliding_window_3d_metrics_subset
+  - override /training: train_100Kms_ampbfloat16
+  - override /augmentation: spatial_only_3d
+  - _self_
+
+distribution:
+  timeout_minutes: 300
+
+model:
+  image_size: 128
+  deep_supervision: true
+  deep_supr_num: 2
+
+data_runtime:
+  loader_smoke_testing: false
+  train_batch_size: 3
+  num_train_workers: 12
+  num_valid_workers: 12
+
+validation:
+  val_batch_size: 1
+  validation_interval: 5000
+  inference:
+    sliding_window:
+      sw_batch_size: 4
+
+logging:
+  image_log_interval: 1000
+  min_log_step: 100
+
+environment:
+  training:
+    output_root: '/mnt/outputs/dynunet_isles26_DynUNetParams_spatial3d_100K_26062026/'
+
+dataset:
+  active_subsets:
+    val: val_full
+  preprocessing_configs:
+    random_patches_3d:
+      patches_per_volume:
+        train: 1
+      rand_crop_by_pos_neg_label:
+        pos: 1
+        neg: 1
+
+training:
+  checkpoint_interval:
+    save_interval: 1000
+  checkpoint_best:
+    enabled: true
+    metric_name: dice_3d

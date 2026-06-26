@@ -231,7 +231,6 @@ def test_full_run_name_generation():
     print("Breakdown:")
     print(f"  Model:     medsegdiff_256_4l_16c_6x4a_128t_1btl")
     print(f"  Batch:     b4")
-    print(f"  Sampling:  p1n1")
     print(f"  Optimizer: adamw1e4")
     print(f"  Scheduler: wcos10")
     print(f"  Steps:     s100K")
@@ -240,7 +239,7 @@ def test_full_run_name_generation():
     print(f"  Timestamp: 2025-11-19_12-00-00")
     
     # Assertions
-    assert "p1n1" in run_name
+    assert "p1n1" not in run_name
     assert "adamw1e4" in run_name
     assert "wd00" not in run_name
     assert "clip1" not in run_name

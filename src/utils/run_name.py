@@ -582,14 +582,29 @@ def generate_ensemble_string(cfg):
 
 
 def generate_batch_string(cfg):
-    """Generate explicit batch-factor token for run name.
-
-    Encodes physical case batch size, grouped patch return factor, and
-    accumulation steps as:
-        b{batch_size}*{return_patches_per_case}*{accumulation_steps}
-
-    This keeps all multiplicative factors visible in run names instead of
-    collapsing into one effective value.
+    """Generate batch string with optional accumulation encoding.
+    
+    Encodes both physical batch size and accumulation steps into run name.
+    This provides transparency about memory requirements (physical batch)
+    and training strategy (accumulation).
+    
+    Args:
+        cfg: Configuration object (dict or DictConfig)
+    
+    Returns:
+        str: Batch string for run name
+        
+    Examples:
+        accumulation_steps=None → "b4" (no accumulation)
+        accumulation_steps=1 → "b4" (no accumulation, explicit)
+        accumulation_steps=4 → "b4x4" (physical=4, effective=16)
+        accumulation_steps=8 → "b4x8" (physical=4, effective=32)
+        
+    Rationale:
+        - b{physical} alone: No accumulation (clean format)
+        - b{physical}x{accumulation}: Shows both memory footprint and training strategy
+        - Makes accumulation visible in run names for debugging and comparison
+        - Distinguishes b4x4 (with accumulation) from b16x1 (without) even though both are effective batch 16
     """
     #TODO consolidate dict/DictConfig access through a shared helper.
     # Access config (fail-fast, no defaults).
@@ -601,13 +616,6 @@ def generate_batch_string(cfg):
             )
         batch_size = cfg['data_runtime']['train_batch_size']
         accum = cfg['training']['gradient']['accumulation_steps']
-        random_patch_cfg = (
-            cfg.get('dataset', {})
-            .get('preprocessing_configs', {})
-            .get('random_patches_3d', {})
-        )
-        return_cfg = random_patch_cfg.get('return_patches_per_case', {})
-        return_patches_per_case = return_cfg.get('train', 1)
     else:
         if not hasattr(cfg, 'data_runtime') or not hasattr(cfg.data_runtime, 'train_batch_size'):
             raise ValueError(
@@ -615,20 +623,12 @@ def generate_batch_string(cfg):
             )
         batch_size = cfg.data_runtime.train_batch_size
         accum = cfg.training.gradient.accumulation_steps
-        random_patch_cfg = (
-            cfg.get('dataset', {})
-            .get('preprocessing_configs', {})
-            .get('random_patches_3d', {})
-        )
-        return_cfg = random_patch_cfg.get('return_patches_per_case', {})
-        return_patches_per_case = return_cfg.get('train', 1)
-
-    if accum is None:
-        accum = 1
-    if return_patches_per_case is None:
-        return_patches_per_case = 1
-
-    return f"b{int(batch_size)}*{int(return_patches_per_case)}*{int(accum)}"
+    
+    # None or 1 means no accumulation (show clean format)
+    if accum is None or accum == 1:
+        return f"b{batch_size}"
+    else:
+        return f"b{batch_size}x{accum}"
 
 
 def generate_context_string(cfg):
@@ -769,11 +769,16 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
                      f"{model['feature_size']}f_{depths_str}_{heads_str}h")
 
     elif architecture == 'dynunet':
-        # DynUNet (discriminative): dynunet_{size}_{spatial}d
-        # Example: dynunet_64_3d
+        # DynUNet topology sweep: keep the varied kernel/filter axes visible.
+        # Example: dynunet_128_3d_k3-3-3-3_f32-64-128-256
         spatial_dims = str(model.get('spatial_dims', 'na')).lower()
+        kernel_str = _format_stage_sequence(model.get('kernel_size', []))
+        filters_str = _format_stage_sequence(model.get('filters', 'auto'))
 
-        model_str = f"{architecture}_{model['image_size']}_{spatial_dims}"
+        model_str = (
+            f"{architecture}_{model['image_size']}_{spatial_dims}_"
+            f"k{kernel_str}_f{filters_str}"
+        )
     
     else:
         # MedSegDiff (default): {architecture}_{image_size}_{num_layers}l_{first_conv_channels}c_{att_heads}x{att_head_dim}a_{time_embedding_dim}t_{bottleneck_transformer_layers}btl
@@ -784,7 +789,6 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)
     context_str = generate_context_string(cfg)
-    patch_sampling_str = generate_patch_sampling_string(dataset)
     
     # AMP string (only added if enabled with FP16/BF16)
     amp_str = generate_amp_string(cfg)
@@ -834,6 +838,8 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     
     # Loss string: l{loss_type}[_dw{diffusion_weight}_d{dice_weight}_b{bce_weight}_w{warmup}]
     loss_str = generate_loss_string(loss)
+    if architecture == 'dynunet' and "_dsup" in loss_str and model.get('deep_supervision', False):
+        loss_str = loss_str.replace("_dsup", f"_dsup{model.get('deep_supr_num', 1)}")
     
     # Add modality preprocessing string next to augmentation so active data
     # ablation variables are visible in scheduler/output names.
@@ -848,13 +854,12 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
-    # Insert amp_str after batch_str (only if non-empty)
     parts = [model_str, batch_str]
-    if patch_sampling_str:
-        parts.append(patch_sampling_str)
     if context_str:
         parts.append(context_str)
-    if amp_str:  # Only add AMP string if enabled (FP16/BF16)
+    # Patch-sampling and AMP tokens are fixed for current DynUNet sweep presets,
+    # so omit them from run names to keep topology axes easy to scan.
+    if amp_str and architecture != 'dynunet':
         parts.append(amp_str)
     parts.append(optimizer_str)
     parts.extend([scheduler_str, steps_str, loss_str])
