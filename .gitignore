@@ -16,6 +16,9 @@ env/
 # pytest cache
 .pytest_cache/
 
+# Generated test visualization artifacts
+tests/augmentation_visualizations/
+
 # mypy cache
 .mypy_cache/
 

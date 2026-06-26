@@ -1,8 +1,10 @@
 """
 Verification test for SwinUNetR adapter (Phase 2.3).
 
-Run with: python tests/test_swinunetr_adapter.py
+Run with: python3 -m unittest tests.test_swinunetr_adapter
 """
+
+import unittest
 
 import torch
 from omegaconf import OmegaConf
@@ -28,7 +30,7 @@ def _build_cfg(spatial_dims: str, image_size: int = 32):
     )
 
 
-def _run_case(spatial_dims: str):
+def _run_case(test_case: unittest.TestCase, spatial_dims: str):
     """Run one SwinUNetR adapter shape/logit case for 2D or 3D."""
     from src.models.SwinUNetR import SwinUNetRAdapter
 
@@ -45,22 +47,12 @@ def _run_case(spatial_dims: str):
     cfg_shape = _build_cfg(spatial_dims, image_size=32)
     model_shape = SwinUNetRAdapter(cfg_shape)
 
-    assert model_shape.spatial_dims == expected_spatial_dims, (
-        f"Expected spatial_dims={expected_spatial_dims}, got {model_shape.spatial_dims}"
-    )
-    assert model_shape.image_size == 32, f"Expected image_size=32, got {model_shape.image_size}"
-    assert model_shape.expanded_img_size == expected_img_size, (
-        f"Expected expanded_img_size={expected_img_size}, got {model_shape.expanded_img_size}"
-    )
-    assert model_shape.image_channels == 2, (
-        f"Expected image_channels=2, got {model_shape.image_channels}"
-    )
-    assert model_shape.mask_channels == 1, (
-        f"Expected mask_channels=1, got {model_shape.mask_channels}"
-    )
-    assert model_shape.output_channels == 1, (
-        f"Expected output_channels=1, got {model_shape.output_channels}"
-    )
+    test_case.assertEqual(model_shape.spatial_dims, expected_spatial_dims)
+    test_case.assertEqual(model_shape.image_size, 32)
+    test_case.assertEqual(model_shape.expanded_img_size, expected_img_size)
+    test_case.assertEqual(model_shape.image_channels, 2)
+    test_case.assertEqual(model_shape.mask_channels, 1)
+    test_case.assertEqual(model_shape.output_channels, 1)
     print(f"  ✓ spatial_dims = {model_shape.spatial_dims}")
     print(f"  ✓ image_size = {model_shape.image_size}")
     print(f"  ✓ expanded_img_size = {model_shape.expanded_img_size}")
@@ -74,10 +66,7 @@ def _run_case(spatial_dims: str):
     model_forward.eval()
 
     print(f"  ✓ Testing forward pass at image_size={forward_image_size}...")
-    assert model_forward.expanded_img_size == forward_expected_img_size, (
-        f"Expected expanded_img_size={forward_expected_img_size}, "
-        f"got {model_forward.expanded_img_size}"
-    )
+    test_case.assertEqual(model_forward.expanded_img_size, forward_expected_img_size)
 
     if expected_spatial_dims == 2:
         x = torch.randn(1, 2, forward_image_size, forward_image_size)
@@ -89,32 +78,33 @@ def _run_case(spatial_dims: str):
     with torch.no_grad():
         out = model_forward(x)
 
-    assert out.shape == expected_shape, f"Expected shape {expected_shape}, got {out.shape}"
+    test_case.assertEqual(out.shape, expected_shape)
     print(f"  ✓ Input shape: {tuple(x.shape)}")
     print(f"  ✓ Output shape: {tuple(out.shape)}")
 
     print("  ✓ Verifying finite logit output...")
-    assert torch.isfinite(out).all(), "SwinUNETR adapter returned non-finite logits"
+    test_case.assertTrue(torch.isfinite(out).all())
     print(f"  ✓ Logit range: [{out.min():.4f}, {out.max():.4f}]")
 
 
-def test_swinunetr_adapter():
-    """Test SwinUNetR adapter properties, forward pass, and logit output for 2D and 3D."""
-    print("=" * 60)
-    print("SwinUNetR Adapter Verification Test (2D + 3D)")
-    print("=" * 60)
+class TestSwinUNetRAdapter(unittest.TestCase):
+    def test_swinunetr_adapter(self):
+        """Test SwinUNetR adapter properties, forward pass, and logit output for 2D and 3D."""
+        print("=" * 60)
+        print("SwinUNetR Adapter Verification Test (2D + 3D)")
+        print("=" * 60)
 
-    print("\n[1/2] Testing 2D case...")
-    _run_case("2d")
+        print("\n[1/2] Testing 2D case...")
+        _run_case(self, "2d")
 
-    print("\n[2/2] Testing 3D case...")
-    _run_case("3d")
+        print("\n[2/2] Testing 3D case...")
+        _run_case(self, "3d")
 
-    print("\n" + "=" * 60)
-    print("✓ All SwinUNetR adapter tests passed!")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("✓ All SwinUNetR adapter tests passed!")
+        print("=" * 60)
 
 
 if __name__ == "__main__":
-    test_swinunetr_adapter()
+    unittest.main()
 

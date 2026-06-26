@@ -15,6 +15,7 @@ from src.utils.run_name import (
     generate_loss_string,
     generate_modality_preprocessing_string,
     generate_optimizer_string,
+    generate_patch_sampling_string,
     generate_scheduler_string,
     generate_run_name
 )
@@ -53,10 +54,10 @@ def test_generate_optimizer_string():
         print(f"  {opt_cfg['optimizer_class']}, lr={opt_cfg['learning_rate']:.0e}, wd={opt_cfg['weight_decay']} → '{result}'")
     
     # Assertions
-    assert generate_optimizer_string(opt_configs[0]) == "adamw1e4_wd00"
+    assert generate_optimizer_string(opt_configs[0]) == "adamw1e4"
     assert generate_optimizer_string(opt_configs[1]) == "adamw1e4_wd01"
-    assert generate_optimizer_string(opt_configs[2]) == "adamw2e4_wd00"
-    assert generate_optimizer_string(opt_configs[3]) == "adam2e4_wd00"
+    assert generate_optimizer_string(opt_configs[2]) == "adamw2e4"
+    assert generate_optimizer_string(opt_configs[3]) == "adam2e4"
     print("✓ All assertions passed")
 
 
@@ -121,6 +122,22 @@ def test_generate_modality_preprocessing_string_t1_variants():
     assert generate_modality_preprocessing_string({"modalities": ["NCCT_wg"]}) == ""
 
 
+def test_generate_patch_sampling_string_random_patch_pos_neg_weights():
+    """Test compact RandCropByPosNegLabeld pos/neg sampling token."""
+    cfg = {
+        "preprocessing_configs": {
+            "random_patches_3d": {
+                "rand_crop_by_pos_neg_label": {
+                    "pos": 3,
+                    "neg": 1,
+                }
+            }
+        }
+    }
+    assert generate_patch_sampling_string(cfg) == "p3n1"
+    assert generate_patch_sampling_string({"preprocessing_configs": {}}) == ""
+
+
 def test_generate_loss_string_discriminative_explicit_terms():
     """Test discriminative run-name loss encoding for explicit term schema."""
     cfg = {
@@ -166,8 +183,17 @@ def test_full_run_name_generation():
             'bottleneck_transformer_layers': 1
         },
         'dataset': {
-            'train_batch_size': 4
+            'modalities': ['T1_RAW'],
+            'preprocessing_configs': {
+                'random_patches_3d': {
+                    'rand_crop_by_pos_neg_label': {
+                        'pos': 1,
+                        'neg': 1,
+                    }
+                }
+            },
         },
+        'data_runtime': {'train_batch_size': 4},
         'optimizer': {
             'optimizer_class': 'adamw',
             'learning_rate': 1e-4,
@@ -178,7 +204,9 @@ def test_full_run_name_generation():
             'warmup_fraction': 0.1
         },
         'training': {
-            'max_steps': 100000
+            'max_steps': 100000,
+            'gradient': {'accumulation_steps': 1, 'clip_norm': 1.0},
+            'amp': {'enabled': False, 'dtype': 'float32'},
         },
         'loss': {
             'loss_type': 'MSE',
@@ -190,7 +218,8 @@ def test_full_run_name_generation():
             'timesteps': 1000,
             'noise_schedule': 'cosine',
             'timestep_respacing': '250'
-        }
+        },
+        'validation': {'ensemble': {'enabled': False, 'num_samples': 1}},
     }
     
     cfg = OmegaConf.create(cfg_dict)
@@ -202,7 +231,8 @@ def test_full_run_name_generation():
     print("Breakdown:")
     print(f"  Model:     medsegdiff_256_4l_16c_6x4a_128t_1btl")
     print(f"  Batch:     b4")
-    print(f"  Optimizer: adamw1e4_wd00")
+    print(f"  Sampling:  p1n1")
+    print(f"  Optimizer: adamw1e4")
     print(f"  Scheduler: wcos10")
     print(f"  Steps:     s100K")
     print(f"  Loss:      lMSE")
@@ -210,7 +240,10 @@ def test_full_run_name_generation():
     print(f"  Timestamp: 2025-11-19_12-00-00")
     
     # Assertions
-    assert "adamw1e4_wd00" in run_name
+    assert "p1n1" in run_name
+    assert "adamw1e4" in run_name
+    assert "wd00" not in run_name
+    assert "clip1" not in run_name
     assert "wcos10" in run_name
     assert "s100K" in run_name
     print("✓ All assertions passed")
@@ -226,13 +259,19 @@ def test_various_combinations():
         'model': {'architecture': 'medsegdiff', 'image_size': 256, 'num_layers': 4,
                   'first_conv_channels': 16, 'att_heads': 6, 'att_head_dim': 4,
                   'time_embedding_dim': 128, 'bottleneck_transformer_layers': 1},
-        'dataset': {'train_batch_size': 4},
+        'dataset': {},
+        'data_runtime': {'train_batch_size': 4},
         'optimizer': {'optimizer_class': 'adamw', 'learning_rate': 1e-4, 'weight_decay': 0.0},
         'scheduler': {'scheduler_type': 'warmup_cosine', 'warmup_fraction': 0.1},
-        'training': {'max_steps': 100000},
+        'training': {
+            'max_steps': 100000,
+            'gradient': {'accumulation_steps': 1, 'clip_norm': None},
+            'amp': {'enabled': False, 'dtype': 'float32'},
+        },
         'loss': {'loss_type': 'MSE', 'auxiliary_losses': {'enabled': False}},
         'diffusion': {'type': 'OpenAI_DDPM', 'sampling_mode': 'ddim', 'timesteps': 1000,
-                     'noise_schedule': 'cosine', 'timestep_respacing': '250'}
+                     'noise_schedule': 'cosine', 'timestep_respacing': '250'},
+        'validation': {'ensemble': {'enabled': False, 'num_samples': 1}},
     }
     cfg = OmegaConf.create(cfg_dict)
     
@@ -292,6 +331,7 @@ def run_all_tests():
     test_format_learning_rate()
     test_generate_optimizer_string()
     test_generate_scheduler_string()
+    test_generate_patch_sampling_string_random_patch_pos_neg_weights()
     test_full_run_name_generation()
     test_various_combinations()
     
