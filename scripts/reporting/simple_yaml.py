@@ -143,9 +143,22 @@ def _parse_nested_or_none(
     index: int,
     parent_indent: int,
 ) -> tuple[Any, int]:
-    if _has_nested_child(lines, index, parent_indent):
+    if _has_nested_value(lines, index, parent_indent):
         return _parse_block(lines, index, lines[index][0])
     return None, index
+
+
+def _has_nested_value(lines: Sequence[Line], index: int, parent_indent: int) -> bool:
+    if index >= len(lines):
+        return False
+    indent, content = lines[index]
+    if indent > parent_indent:
+        return True
+    # OmegaConf commonly emits YAML's indentless sequence style:
+    #
+    # key:
+    # - item
+    return indent == parent_indent and content.startswith("-")
 
 
 def _has_nested_child(lines: Sequence[Line], index: int, parent_indent: int) -> bool:

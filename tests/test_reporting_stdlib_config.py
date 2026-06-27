@@ -7,7 +7,35 @@ from pathlib import Path
 from scripts.reporting.config_projection import project_params
 from scripts.reporting.run_reader import load_run_config
 from scripts.reporting.schema import ParamAlias
+from scripts.reporting.simple_yaml import load_simple_yaml
 from scripts.reporting.summarize import build_parser, summarize_from_args
+
+
+def test_simple_yaml_reads_omegaconf_indentless_sequences(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "validation:",
+                "  aggregators:",
+                "  - name: ThreeDMetricsAggregator",
+                "    params: {}",
+                "model:",
+                "  filters:",
+                "  - 32",
+                "  - 64",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_simple_yaml(config_path)
+
+    assert cfg["validation"]["aggregators"] == [
+        {"name": "ThreeDMetricsAggregator", "params": {}}
+    ]
+    assert cfg["model"]["filters"] == [32, 64]
 
 
 def test_project_params_reads_list_values_without_omegaconf(tmp_path: Path) -> None:
