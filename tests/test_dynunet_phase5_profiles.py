@@ -25,7 +25,7 @@ class TestDynUNetPhase5Profiles(unittest.TestCase):
         run_name = generate_run_name(cfg, timestamp="2026-05-30_00-00-00")
         self.assertIn("dynunet_", run_name)
         self.assertIn("dynunet_64_3d_k3-3-3-3_f32-64-128-256", run_name)
-        self.assertNotIn("p1n1", run_name)
+        self.assertIn("p1n1", run_name)
         self.assertNotIn("ampBF16", run_name)
         self.assertIn("dsup2", run_name)
         self.assertNotIn("_s1-2-2-2_", run_name)
@@ -46,7 +46,7 @@ class TestDynUNetPhase5Profiles(unittest.TestCase):
         run_name = generate_run_name(cfg, timestamp="2026-05-30_00-00-00")
         self.assertIn("dynunet_", run_name)
         self.assertIn("dynunet_128_3d_k3-3-3-3_f32-64-128-256", run_name)
-        self.assertNotIn("p1n1", run_name)
+        self.assertIn("p1n1", run_name)
         self.assertNotIn("ampBF16", run_name)
         self.assertIn("dsup2", run_name)
         self.assertNotIn("_s1-2-2-2_", run_name)
@@ -66,6 +66,19 @@ class TestDynUNetPhase5Profiles(unittest.TestCase):
         run_name = generate_run_name(cfg, timestamp="2026-05-30_00-00-00")
         self.assertIn("dynunet_", run_name)
         self.assertIn("dsup2", run_name)
+
+    def test_run_name_includes_non_default_patch_sampling_weights(self):
+        cfg = self._compose(
+            "cluster_isles26_3d_randompatch_dynunet",
+            overrides=[
+                "dataset.preprocessing_configs.random_patches_3d.rand_crop_by_pos_neg_label.pos=5",
+                "dataset.preprocessing_configs.random_patches_3d.rand_crop_by_pos_neg_label.neg=1",
+                "training.max_steps=1",
+                "data_runtime.train_batch_size=1",
+            ],
+        )
+        run_name = generate_run_name(cfg, timestamp="2026-05-30_00-00-00")
+        self.assertIn("_p5n1_", run_name)
 
 
 if __name__ == "__main__":

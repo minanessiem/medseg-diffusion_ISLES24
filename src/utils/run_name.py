@@ -789,6 +789,7 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Batch string (with accumulation encoding if enabled)
     batch_str = generate_batch_string(cfg)
     context_str = generate_context_string(cfg)
+    patch_sampling_str = generate_patch_sampling_string(dataset)
     
     # AMP string (only added if enabled with FP16/BF16)
     amp_str = generate_amp_string(cfg)
@@ -855,10 +856,12 @@ def generate_run_name(cfg, timestamp: str = None) -> str:
     # Combine all parts with separated optimizer and scheduler
     # Insert aug_str between loss_str and diffusion_str
     parts = [model_str, batch_str]
+    if patch_sampling_str:
+        parts.append(patch_sampling_str)
     if context_str:
         parts.append(context_str)
-    # Patch-sampling and AMP tokens are fixed for current DynUNet sweep presets,
-    # so omit them from run names to keep topology axes easy to scan.
+    # AMP is fixed for current DynUNet sweep presets, so omit it from DynUNet
+    # run names to keep topology axes easy to scan.
     if amp_str and architecture != 'dynunet':
         parts.append(amp_str)
     parts.append(optimizer_str)
