@@ -237,38 +237,34 @@ def assign_site_balanced_validation_pool(
     target_val_full_count: int,
     seed: int = 42,
 ) -> pd.DataFrame:
-    """Assign train vs validation_pool with site coverage in both sets."""
+    """Assign train vs validation_pool, keeping singleton sites in training."""
     if "SITE" not in metadata_df.columns:
         raise ValueError("SITE column is required for site-balanced validation assignment.")
 
     split_df = metadata_df.copy()
-    total_cases = len(split_df)
     site_counts = split_df["SITE"].value_counts().sort_index()
+    singleton_sites = site_counts[site_counts == 1].index.tolist()
+    splittable_site_counts = site_counts[site_counts >= 2]
 
-    min_val_count = len(site_counts)
-    max_val_count = total_cases - len(site_counts)
+    min_val_count = len(splittable_site_counts)
+    max_val_count = int((splittable_site_counts - 1).sum())
     if target_val_full_count < min_val_count:
         raise ValueError(
             f"Target validation size {target_val_full_count} is too small; at least {min_val_count} "
-            "cases are needed to place every site in validation."
+            "cases are needed to place every multi-case site in validation."
         )
     if target_val_full_count > max_val_count:
         raise ValueError(
             f"Target validation size {target_val_full_count} is too large; at most {max_val_count} "
-            "cases are allowed while keeping every site in training."
-        )
-    if (site_counts < 2).any():
-        sparse_sites = site_counts[site_counts < 2].index.tolist()
-        raise ValueError(
-            "Cannot keep each site in both train and validation for these sites: "
-            f"{sparse_sites}"
+            "cases are allowed while keeping every multi-case site in training and singleton "
+            "sites assigned to training."
         )
 
     site_quotas = allocate_group_quotas(
-        counts=site_counts,
+        counts=splittable_site_counts,
         target=target_val_full_count,
         min_per_group=1,
-        max_per_group=site_counts - 1,
+        max_per_group=splittable_site_counts - 1,
     )
 
     rng = np.random.default_rng(seed)
@@ -282,6 +278,7 @@ def assign_site_balanced_validation_pool(
     validation_pool_df = split_df[split_df["split"] == "validation_pool"]
 
     split_df.attrs["outer_split_seed"] = seed
+    split_df.attrs["singleton_training_sites"] = singleton_sites
     split_df.attrs["outer_balance_score"] = score_subset_balance(split_df, validation_pool_df)
     return split_df
 
@@ -597,10 +594,13 @@ def print_nested_validation_report(
     if nested_score is not None:
         print(f"Total nested score (lower is better): {nested_score:.4f}")
 
+    singleton_training_sites = metadata_df.attrs.get("singleton_training_sites", [])
     print(
-        "Assignment policy: outer split keeps one case per site in both train and full validation; "
-        "inner split uses proportional site quotas without strict one-case-per-site requirements."
+        "Assignment policy: outer split keeps every singleton site in training and keeps at least "
+        "one case from every multi-case site in both train and full validation; inner split uses "
+        "proportional site quotas without strict one-case-per-site requirements."
     )
+    print(f"Singleton sites assigned to training only: {singleton_training_sites}")
     print("JSON output policy: split labels only (train/val_rest/val_fast), no fold field.")
 
     print("\nSITE coverage:")
@@ -805,6 +805,8 @@ def create_directory_list(
         "base_seed": split_df.attrs.get("base_seed"),
         "outer_candidates": split_df.attrs.get("num_outer_split_candidates", 1),
         "inner_candidates_per_outer": split_df.attrs.get("num_inner_split_candidates", 1),
+        "singleton_site_policy": "Singleton sites are assigned to training only.",
+        "singleton_training_sites": split_df.attrs.get("singleton_training_sites", []),
     }
 
     return {
