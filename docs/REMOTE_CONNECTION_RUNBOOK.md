@@ -139,7 +139,7 @@ For a non-interactive command, activate the environment in the same `bash -lc` i
 
 The verified equivalent of this project on the home desktop is:
 
-```te
+```text
 /mnt/c/Users/minanessiem/Development/medseg-diffusion
 ```
 Related project paths are:
@@ -175,6 +175,64 @@ ssh -tt -i "$env:USERPROFILE\.ssh\home_desktop" `
 ```
 
 For longer automation, prefer an interactive WSL session or send an LF-terminated Bash script without a UTF-8 BOM. Piping multiline text from Windows PowerShell through Windows OpenSSH can introduce a BOM or CRLF line endings; Bash may then misread the first command or retain a trailing carriage return in paths. Automation scripts that create outputs should also use `set -euo pipefail`, write to a temporary file, validate it, and publish it with an explicit no-overwrite check.
+
+### Git workflow across the laptop and home desktop
+
+The local laptop's GitHub-approved SSH key is in the laptop WSL2 environment, not in Windows OpenSSH:
+
+| Item | Value |
+|---|---|
+| Laptop WSL user | `nathanail` |
+| Laptop WSL key | `/home/nathanail/.ssh/id_ed25519` |
+| Approved fingerprint | `SHA256:Dbreg/tw8d/u0p3hlHIEdQccLThqMCbkIYJ7kRhsZG4` |
+| Laptop repository in WSL | `/mnt/c/Users/konst/Development/medseg-diffusion_ISLES24` |
+
+Windows OpenSSH uses `~/.ssh/home_desktop` to reach the home desktop. It does not automatically use the GitHub key stored inside laptop WSL. Therefore, run GitHub fetch/push operations for the laptop checkout through WSL:
+
+```powershell
+wsl.exe -- git -C /mnt/c/Users/konst/Development/medseg-diffusion_ISLES24 status --short --branch
+wsl.exe -- git -C /mnt/c/Users/konst/Development/medseg-diffusion_ISLES24 push origin HEAD
+```
+
+Before updating the home checkout, inspect its branch and working tree. Never assume it is clean or synchronized merely because its local remote-tracking display looks current:
+
+```bash
+cd /mnt/c/Users/minanessiem/Development/medseg-diffusion
+git status --short --branch
+git fetch origin
+git log --oneline --left-right HEAD...origin/$(git branch --show-current)
+git diff --name-only HEAD..origin/$(git branch --show-current)
+```
+
+Use a fast-forward-only pull so Git cannot create an implicit merge commit:
+
+```bash
+git pull --ff-only origin "$(git branch --show-current)"
+```
+
+If incoming paths overlap unpublished home changes, stop and inspect both diffs. Do not stash the entire worktree, especially when it contains large untracked datasets, runs, or generated files. When explicitly appropriate, stash only the overlapping tracked path, pull, and immediately restore it:
+
+```bash
+git stash push -m scoped-pull-preservation -- path/to/overlapping_file.py
+git pull --ff-only origin "$(git branch --show-current)"
+git stash pop stash@{0}
+```
+
+If the stash reapplication conflicts, leave the retained stash in place and resolve deliberately. Never discard or broadly reset home worktree changes to make a pull succeed.
+
+Home WSL may occasionally fail to resolve `github.com`. Diagnose first:
+
+```bash
+getent hosts github.com
+cat /etc/resolv.conf
+```
+
+Do not record a GitHub IP address permanently; GitHub addresses can change. If an urgent one-command workaround is necessary, resolve a fresh address using trusted DNS on a working machine and override only that Git invocation while retaining `github.com` for host-key verification:
+
+```bash
+git -c 'core.sshCommand=ssh -o HostName=<fresh-github-ip> -o HostKeyAlias=github.com' \
+  pull --ff-only origin "$(git branch --show-current)"
+```
 
 ---
 
@@ -329,16 +387,146 @@ The expected dataset root is:
 
 ```text
 isles26_combined/
-└── atlas21_training_raw/
-    ├── isles26_5fold_split_test.json
-    ├── isles26_nested_15_5_best.json
-    ├── isles26_stratified_15pct.json
-    └── Training_Raw/
+`-- atlas21_training_raw/
+    |-- isles26_5fold_split_test.json
+    |-- isles26_nested_15_5_best.json
+    |-- isles26_nested_15_5_best_2026-07-28.json
+    |-- isles26_stratified_15pct.json
+    `-- Training_Raw/
 ```
 
 ---
 
-## 7. Synchronize the dataset from home to LRZ
+## 7. Regenerate an ISLES26 split safely
+
+Run split generation from home WSL after pulling the intended repository revision.
+
+### Stable paths and environment
+
+```bash
+cd /mnt/c/Users/minanessiem/Development/medseg-diffusion
+source /mnt/c/Users/minanessiem/Development/MedSegDiff_env/bin/activate
+
+dataset=/mnt/c/Users/minanessiem/Development/isles26_combined
+split_dir="$dataset/atlas21_training_raw"
+```
+
+The dataset root is the split creator's input. Final split JSON files belong in `atlas21_training_raw` next to the older split files, not at the top level of `isles26_combined`.
+
+### Preflight
+
+Confirm the repository revision, environment, script interface, dataset case discovery, and intended filename before writing anything:
+
+```bash
+pwd
+command -v python
+git status --short --branch
+git log -1 --oneline
+python scripts/dataset_setup/ISLES26_json_creator.py --help
+find "$split_dir" -maxdepth 1 -type f -name '*.json' -print | sort
+```
+
+Use an ISO date in the filename, for example `isles26_nested_15_5_best_YYYY-MM-DD.json`. Refuse to continue when that exact target already exists.
+
+### Test and generate through a temporary file
+
+The standard nested search uses 15% full validation and 5% fast validation. `val_full` is the union of `val_rest` and `val_fast`.
+
+In the command below, 100 outer seeds and 100 inner seeds mean 10,000 nested candidate combinations, not 100 total candidates. On 1,284 cases this took approximately 13 minutes on the home desktop.
+
+```bash
+set -euo pipefail
+
+python -m unittest tests.test_isles26_json_creator -v
+
+date_tag=$(date +%F)
+target="$split_dir/isles26_nested_15_5_best_${date_tag}.json"
+if [[ -e "$target" ]]; then
+  printf 'Refusing to overwrite existing split: %s\n' "$target" >&2
+  exit 1
+fi
+
+tmp=$(mktemp "$split_dir/.isles26_nested_15_5_best_${date_tag}.json.tmp.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
+python scripts/dataset_setup/ISLES26_json_creator.py \
+  "$dataset" \
+  "$tmp" \
+  --val_full_size 15 \
+  --val_fast_size 5 \
+  --seed 42 \
+  --num_outer_split_seeds 100 \
+  --num_inner_split_seeds 100
+```
+
+Do not publish the temporary JSON until all of the following have been checked:
+
+- The JSON parses successfully and contains a `training` list and `validation_policy` object.
+- Every `caseID` is unique.
+- The only split labels are `train`, `val_rest`, and `val_fast`.
+- `val_rest + val_fast` equals the rounded 15% `val_full` target.
+- `val_fast` equals the rounded 5% target.
+- The policy records 100 outer and 100 inner candidates.
+- Every singleton site's only case is assigned to training.
+- `singleton_training_sites` matches the singleton sites derived from the case metadata.
+- Every multi-case site retains at least one training and one full-validation case.
+
+After validation, publish without an overwrite race and record the checksum:
+
+```bash
+ln "$tmp" "$target"
+rm "$tmp"
+trap - EXIT
+sha256sum "$target"
+```
+
+Hard-link creation is atomic on this dataset filesystem and fails if the target appeared after the initial existence check. A generation failure leaves only the temporary file, which the shell trap removes.
+
+### Split-assignment policy
+
+The outer split assigns proportional site quotas. Singleton sites receive a validation quota of zero and remain in training. Every site with two or more cases receives at least one full-validation case and retains at least one training case.
+
+Within each site, selection is spread across available days-post-stroke and chronicity strata. The inner `val_fast` subset uses proportional site quotas but does not require every site to appear because it is much smaller.
+
+Candidate quality is scored using the summed absolute percentage-point differences across:
+
+- Days-post-stroke bins
+- Chronicity
+- ATLAS2 dataset/source membership
+
+Site balance is enforced through quotas and coverage constraints rather than included directly in this numerical score. The total nested score is:
+
+```text
+distance(val_full, all) + distance(val_fast, val_full) + distance(val_fast, all)
+```
+
+Lower is better.
+
+### Generation record: 2026-07-28
+
+| Item | Result |
+|---|---|
+| Dataset cases | 1,284 |
+| Train | 1,091 (84.97%) |
+| `val_rest` | 129 (10.05%) |
+| `val_fast` | 64 (4.98%) |
+| `val_full` | 193 (15.03%) |
+| Singleton training-only sites | `R016`, `R020`, `R063` |
+| Base seed | `42` |
+| Selected outer seed | `3813457838` |
+| Selected inner seed | `2920397057` |
+| Outer balance score | `10.50` |
+| Inner score, `val_fast` vs `val_full` | `15.77` |
+| Inner score, `val_fast` vs all | `17.39` |
+| Total nested score | `43.66` |
+| Output file | `atlas21_training_raw/isles26_nested_15_5_best_2026-07-28.json` |
+| SHA-256 | `349f890a1d64e578b7ac258668d903a4b7861899cf64ab6f215b62d85825576b` |
+
+This table is a dated operational record, not a permanent expected result. Recompute and record counts, selected seeds, scores, singleton sites, and checksum whenever the dataset changes.
+
+---
+
+## 8. Synchronize the dataset from home to LRZ
 
 Run `rsync` from home WSL. The direction is always:
 
@@ -419,7 +607,7 @@ Run the dry-run again after transfer if an explicit zero-diff verification is re
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### Home connection fails at port 22 with `Permission denied`
 
@@ -489,7 +677,7 @@ Use `-i` to distinguish new files (`<f+++++++++`) from content changes (`<fc...`
 
 ---
 
-## 9. Security and operating rules
+## 10. Security and operating rules
 
 1. Never commit or paste the home private key.
 2. Never commit, print, or paste the LRZ password file.
@@ -504,7 +692,7 @@ Use `-i` to distinguish new files (`<f+++++++++`) from content changes (`<fc...`
 
 ---
 
-## 10. Quick operational checklist
+## 11. Quick operational checklist
 
 ### Reach home
 
@@ -522,6 +710,16 @@ ssh -tt -i "$env:USERPROFILE\.ssh\home_desktop" -o IdentitiesOnly=yes minanessie
 
 ```bash
 sshpass -f ~/.config/lrz/password ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no di38tap@login.ai.lrz.de
+```
+
+### Regenerate an ISLES26 split
+
+```bash
+cd /mnt/c/Users/minanessiem/Development/medseg-diffusion
+source /mnt/c/Users/minanessiem/Development/MedSegDiff_env/bin/activate
+git status --short --branch
+python -m unittest tests.test_isles26_json_creator -v
+# Follow Section 7: generate to a temporary file, validate, then publish without overwrite.
 ```
 
 ### Sync dataset safely
