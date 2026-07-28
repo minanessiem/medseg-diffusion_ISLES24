@@ -5,10 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Iterable, Sequence
 
-from omegaconf import DictConfig, ListConfig, OmegaConf
-
 from scripts.reporting.run_reader import load_run_config
 from scripts.reporting.schema import ParamAlias, RunSummary
+from scripts.reporting.simple_yaml import select_path
 
 
 def parse_param_alias(spec: str) -> ParamAlias:
@@ -38,18 +37,18 @@ def parse_param_aliases(specs: Iterable[str]) -> Sequence[ParamAlias]:
     return aliases
 
 
-def project_params(cfg: DictConfig, aliases: Sequence[ParamAlias]) -> Dict[str, Any]:
+def project_params(cfg: Dict[str, Any], aliases: Sequence[ParamAlias]) -> Dict[str, Any]:
     """Resolve configured aliases from a loaded Hydra config."""
     values: Dict[str, Any] = {}
     missing = object()
     for alias in aliases:
-        value = OmegaConf.select(cfg, alias.config_path, default=missing)
+        value = select_path(cfg, alias.config_path, default=missing)
         if value is missing:
             raise KeyError(
                 f"Config path '{alias.config_path}' for alias '{alias.alias}' "
                 "was not found."
             )
-        values[alias.alias] = _normalize_scalar(value, alias)
+        values[alias.alias] = _normalize_report_value(value, alias)
     return values
 
 
@@ -75,19 +74,34 @@ def attach_projected_params(
             summary.errors.append(str(exc))
 
 
-def _normalize_scalar(value: Any, alias: ParamAlias) -> Any:
-    if isinstance(value, (DictConfig, ListConfig)):
-        primitive = OmegaConf.to_container(value, resolve=True)
-        if isinstance(primitive, (dict, list)):
-            raise TypeError(
-                f"Config path '{alias.config_path}' for alias '{alias.alias}' "
-                "resolved to a non-scalar value."
-            )
-        return primitive
+def _normalize_report_value(value: Any, alias: ParamAlias) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, list):
+        if not all(_is_report_scalar(item) for item in value):
+            raise TypeError(
+                f"Config path '{alias.config_path}' for alias '{alias.alias}' "
+                "resolved to a nested sequence or mapping."
+            )
+        return "[" + ", ".join(str(item) for item in value) + "]"
+    if isinstance(value, tuple):
+        if not all(_is_report_scalar(item) for item in value):
+            raise TypeError(
+                f"Config path '{alias.config_path}' for alias '{alias.alias}' "
+                "resolved to a nested sequence or mapping."
+            )
+        return "[" + ", ".join(str(item) for item in value) + "]"
+    if isinstance(value, dict):
+        raise TypeError(
+            f"Config path '{alias.config_path}' for alias '{alias.alias}' "
+            "resolved to a mapping."
+        )
     raise TypeError(
         f"Config path '{alias.config_path}' for alias '{alias.alias}' "
         f"resolved to unsupported value type {type(value).__name__}."
     )
+
+
+def _is_report_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
 

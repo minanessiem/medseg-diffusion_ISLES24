@@ -20,7 +20,11 @@ from monai.utils import set_determinism
 # Ensure project root is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data.augmentation import AugmentationPipeline2D
+from src.data.augmentation import (
+    AugmentationPipeline,
+    AugmentationPipeline2D,
+    AugmentationPipeline3D,
+)
 from src.utils.run_name import generate_augmentation_string
 
 
@@ -56,6 +60,52 @@ class TestTransformBuilding(unittest.TestCase):
             num_light = len(pipeline_light.transform.transforms)
             num_agg = len(pipeline_agg.transform.transforms)
             self.assertGreater(num_agg, num_light)
+
+
+class TestDimensionAwareAugmentation(unittest.TestCase):
+    """Test dimension-aware augmentation routing behavior."""
+
+    def test_dimension_agnostic_pipeline_infers_3d(self):
+        cfg = OmegaConf.create({
+            'spatial': {
+                'enabled': True,
+                'random_flip': {
+                    'enabled': True,
+                    'prob': 1.0,
+                    'spatial_axis': [0]
+                }
+            },
+            'intensity': {'enabled': False}
+        })
+        pipeline = AugmentationPipeline(cfg)
+        data = {
+            'image': torch.arange(2 * 3 * 4, dtype=torch.float32).view(1, 2, 3, 4),
+            'label': torch.arange(2 * 3 * 4, dtype=torch.float32).view(1, 2, 3, 4),
+        }
+        image_before = data['image'].clone()
+        out = pipeline(data)
+        self.assertEqual(tuple(out['image'].shape), (1, 2, 3, 4))
+        self.assertFalse(torch.allclose(out['image'], image_before))
+
+    def test_3d_wrapper_builds_transform(self):
+        cfg = OmegaConf.load('configs/augmentation/light_2d.yaml')
+        pipeline = AugmentationPipeline3D(cfg)
+        self.assertIsNotNone(pipeline.transform)
+
+    def test_invalid_flip_axis_for_2d_raises(self):
+        cfg = OmegaConf.create({
+            'spatial': {
+                'enabled': True,
+                'random_flip': {
+                    'enabled': True,
+                    'prob': 1.0,
+                    'spatial_axis': [2]
+                }
+            },
+            'intensity': {'enabled': False}
+        })
+        with self.assertRaisesRegex(ValueError, "Invalid spatial_axis"):
+            AugmentationPipeline2D(cfg)
 
 
 class TestAugmentationApplication(unittest.TestCase):
@@ -147,6 +197,13 @@ class TestAugmentationApplication(unittest.TestCase):
 
 class TestDeterministicBehavior(unittest.TestCase):
     """Test that augmentations are reproducible with same seed."""
+
+    @staticmethod
+    def _clone_data_dict(data):
+        return {
+            "image": data["image"].clone(),
+            "label": data["label"].clone(),
+        }
     
     def test_same_seed_same_output(self):
         """Same seed should produce same augmentation."""
@@ -186,7 +243,7 @@ class TestDeterministicBehavior(unittest.TestCase):
         pipeline1 = AugmentationPipeline2D(cfg)
         if hasattr(pipeline1.transform, 'set_random_state'):
             pipeline1.transform.set_random_state(seed=42)
-        out1 = pipeline1(data.copy())
+        out1 = pipeline1(self._clone_data_dict(data))
         
         # Second run with seed 42
         torch.manual_seed(42)
@@ -195,7 +252,7 @@ class TestDeterministicBehavior(unittest.TestCase):
         pipeline2 = AugmentationPipeline2D(cfg)
         if hasattr(pipeline2.transform, 'set_random_state'):
             pipeline2.transform.set_random_state(seed=42)
-        out2 = pipeline2(data.copy())
+        out2 = pipeline2(self._clone_data_dict(data))
         
         # Should produce identical outputs
         self.assertTrue(torch.allclose(out1['image'], out2['image']))
@@ -204,15 +261,20 @@ class TestDeterministicBehavior(unittest.TestCase):
     def test_different_seed_different_output(self):
         """Different seeds should produce different augmentations."""
         cfg = OmegaConf.create({
-            'spatial': {
+            'spatial': {'enabled': False},
+            'intensity': {
                 'enabled': True,
-                'random_flip': {
+                'random_shift': {
                     'enabled': True,
-                    'prob': 0.5,
-                    'spatial_axis': [0, 1]
+                    'prob': 1.0,
+                    'offsets': 0.5
+                },
+                'random_scale': {
+                    'enabled': True,
+                    'prob': 1.0,
+                    'factors': 0.5
                 }
             },
-            'intensity': {'enabled': False}
         })
         
         data = {
@@ -227,7 +289,7 @@ class TestDeterministicBehavior(unittest.TestCase):
         pipeline1 = AugmentationPipeline2D(cfg)
         if hasattr(pipeline1.transform, 'set_random_state'):
             pipeline1.transform.set_random_state(seed=42)
-        out1 = pipeline1(data.copy())
+        out1 = pipeline1(self._clone_data_dict(data))
         
         # Run with seed 123
         torch.manual_seed(123)
@@ -236,7 +298,7 @@ class TestDeterministicBehavior(unittest.TestCase):
         pipeline2 = AugmentationPipeline2D(cfg)
         if hasattr(pipeline2.transform, 'set_random_state'):
             pipeline2.transform.set_random_state(seed=123)
-        out2 = pipeline2(data.copy())
+        out2 = pipeline2(self._clone_data_dict(data))
         
         # Should produce different outputs (with high probability)
         self.assertFalse(torch.allclose(out1['image'], out2['image']))
@@ -282,6 +344,28 @@ class TestRunNameGeneration(unittest.TestCase):
         
         aug_str = generate_augmentation_string(cfg)
         self.assertEqual(aug_str, "augAGG2D")
+
+    def test_light_3d_encoded_as_augLIGHT3D(self):
+        """light_3d.yaml should encode as augLIGHT3D."""
+        cfg = OmegaConf.create({
+            'spatial': {'enabled': True},
+            'intensity': {'enabled': True},
+            '_name_': 'light_3d'
+        })
+
+        aug_str = generate_augmentation_string(cfg)
+        self.assertEqual(aug_str, "augLIGHT3D")
+
+    def test_aggressive_3d_encoded_as_augAGG3D(self):
+        """aggressive_3d.yaml should encode as augAGG3D."""
+        cfg = OmegaConf.create({
+            'spatial': {'enabled': True},
+            'intensity': {'enabled': True},
+            '_name_': 'aggressive_3d'
+        })
+
+        aug_str = generate_augmentation_string(cfg)
+        self.assertEqual(aug_str, "augAGG3D")
     
     def test_custom_encoded_as_augCUSTOM(self):
         """Custom config should encode as augCUSTOM."""

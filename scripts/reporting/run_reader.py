@@ -5,23 +5,22 @@ from __future__ import annotations
 import csv
 import re
 from pathlib import Path
-from typing import Dict, List
-
-from omegaconf import DictConfig, OmegaConf
+from typing import Any, Dict, List
 
 from scripts.reporting.metric_selection import select_best_snapshot
 from scripts.reporting.schema import MetricSnapshot, RunSummary
+from scripts.reporting.simple_yaml import load_simple_yaml
 
 
 STEP_PATTERN = re.compile(r"best_model_step_(\d+)_")
 
 
-def load_run_config(run_dir: Path) -> DictConfig:
+def load_run_config(run_dir: Path) -> Dict[str, Any]:
     """Load the resolved Hydra config for a run directory."""
     config_path = Path(run_dir) / ".hydra" / "config.yaml"
     if not config_path.is_file():
         raise FileNotFoundError(f"Missing Hydra config: {config_path}")
-    return OmegaConf.load(config_path)
+    return load_simple_yaml(config_path)
 
 
 def read_metrics_csv(path: Path) -> Dict[str, float]:
